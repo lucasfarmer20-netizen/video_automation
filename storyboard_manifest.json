@@ -8,8 +8,8 @@
     {
       "scene_id": "s001",
       "narration": "If you hear your name in the woods, don't answer. Not the first time. Not the third.",
-      "prompt": "A vast birch forest at dusk, endless pale trunks receding into near-black shadow, a single warm amber shaft of light between them, heavy ink linework, watercolor washes, paper grain, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
+      "prompt": "A vast forest at dusk, pale birch trunks interwoven with dark towering conifers, endless trunks receding into near-black shadow, a single warm amber shaft of light between them, heavy ink linework, watercolor washes, paper grain, cinematic 16:9, Deep Root Lore style",
+      "chosen_variation": 1,
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
@@ -27,14 +27,15 @@
         "assets/s001/var_1.png",
         "assets/s001/var_2.png"
       ],
-      "draft_image": "assets/s001/var_0.png",
-      "approved": false
+      "draft_image": "assets/s001/var_1.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s002",
       "narration": "The old ones in the villages had a rule for the forest. Keep the sun on the same shoulder the whole way through. If it moves to the other one, and you never turned — you're already his.",
-      "prompt": "A lone hooded traveler seen from behind, faceless in deep shadow, small against towering pines, one shoulder rimmed in warm amber light, no visible face, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 1,
+      "prompt": "A lone hooded traveler seen from behind, faceless in deep shadow, small against a mixed forest of towering dark conifers and pale birch trunks, one shoulder rimmed in warm amber light, no visible face, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
+      "chosen_variation": 0,
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
@@ -52,14 +53,15 @@
         "assets/s002/var_1.png",
         "assets/s002/var_2.png"
       ],
-      "draft_image": "assets/s002/var_1.png",
-      "approved": false
+      "draft_image": "assets/s002/var_0.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s003",
       "narration": "His. The Leshy's. Lord of the woods, in the old Slavic tongue. The forest doesn't belong to the tsar or the church out here. It belongs to him.",
       "prompt": "A colossal humanoid silhouette formed from bark, moss and antler-like branches, eyes two faint green embers deep in the canopy, backlit, mostly shadow, ink linework, watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 1,
+      "chosen_variation": 2,
       "motion_type": "parallax",
       "camera": {
         "move": "push_out",
@@ -69,7 +71,9 @@
         "floating spores",
         "green ember glow"
       ],
-      "references": [],
+      "references": [
+        "leshy"
+      ],
       "video_model": null,
       "audio_anchor": null,
       "draft_variations": [
@@ -77,8 +81,9 @@
         "assets/s003/var_1.png",
         "assets/s003/var_2.png"
       ],
-      "draft_image": "assets/s003/var_1.png",
-      "approved": false
+      "draft_image": "assets/s003/var_2.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s004",
@@ -103,7 +108,8 @@
         "assets/s004/var_2.png"
       ],
       "draft_image": "assets/s004/var_1.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s005",
@@ -119,7 +125,9 @@
         "harsh noon light",
         "insect haze"
       ],
-      "references": [],
+      "references": [
+        "leshy"
+      ],
       "video_model": null,
       "audio_anchor": null,
       "draft_variations": [
@@ -128,7 +136,8 @@
         "assets/s005/var_2.png"
       ],
       "draft_image": "assets/s005/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s006",
@@ -153,7 +162,8 @@
         "assets/s006/var_2.png"
       ],
       "draft_image": "assets/s006/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s007",
@@ -178,7 +188,8 @@
         "assets/s007/var_2.png"
       ],
       "draft_image": "assets/s007/var_2.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s008",
@@ -203,7 +214,8 @@
         "assets/s008/var_2.png"
       ],
       "draft_image": "assets/s008/var_2.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s009",
@@ -228,7 +240,8 @@
         "assets/s009/var_2.png"
       ],
       "draft_image": "assets/s009/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s010",
@@ -253,12 +266,13 @@
         "assets/s010/var_2.png"
       ],
       "draft_image": "assets/s010/var_2.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s011",
       "narration": "Good axe. Knew the woods since he was a boy. He'd walked that path more times than he had years.",
-      "prompt": "A bearded peasant man walking away down a forest path at golden hour, a worn axe resting over one shoulder, seen from behind and slightly to the side, weathered coat, hands relaxed at his sides and not the focus, tall trees, heavy ink linework, watercolor washes, paper grain, cinematic 16:9, Deep Root Lore style",
+      "prompt": "A bearded peasant man walking away down a forest path at golden hour, the same worn short-handled firewood axe resting over one shoulder (not a large battle-axe), seen from behind and slightly to the side, weathered coat, hands relaxed at his sides and not the focus, tall trees, heavy ink linework, watercolor washes, paper grain, cinematic 16:9, Deep Root Lore style",
       "chosen_variation": 0,
       "motion_type": "static",
       "camera": {
@@ -269,7 +283,9 @@
         "dappled light flicker",
         "dust motes"
       ],
-      "references": [],
+      "references": [
+        "man"
+      ],
       "video_model": null,
       "audio_anchor": null,
       "draft_variations": [
@@ -278,13 +294,14 @@
         "assets/s011/var_2.png"
       ],
       "draft_image": "assets/s011/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s012",
       "narration": "Halfway in, the birds stopped. Not flew off. Stopped. Like someone had shut a door on the sound.",
       "prompt": "A hushed forest interior, a single startled bird frozen mid-flight, everything unnaturally still, muted washes, deep shadow between trunks, ink linework, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
+      "chosen_variation": 2,
       "motion_type": "static",
       "camera": {
         "move": "static",
@@ -302,8 +319,9 @@
         "assets/s012/var_1.png",
         "assets/s012/var_2.png"
       ],
-      "draft_image": "assets/s012/var_0.png",
-      "approved": false
+      "draft_image": "assets/s012/var_2.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s013",
@@ -328,7 +346,8 @@
         "assets/s013/var_2.png"
       ],
       "draft_image": "assets/s013/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s014",
@@ -344,7 +363,9 @@
         "candle flicker",
         "dust in light"
       ],
-      "references": [],
+      "references": [
+        "wife"
+      ],
       "video_model": null,
       "audio_anchor": null,
       "draft_variations": [
@@ -353,7 +374,8 @@
         "assets/s014/var_2.png"
       ],
       "draft_image": "assets/s014/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s015",
@@ -378,12 +400,13 @@
         "assets/s015/var_2.png"
       ],
       "draft_image": "assets/s015/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s016",
       "narration": "He looked down. Bright sun overhead, his own shadow long on the moss. Hers — nothing. Grass, lit clean, right where a shadow ought to lie.",
-      "prompt": "Low forest-floor angle: a bearded man's long dark shadow stretching across sunlit moss, and right beside it a tall figure's bare feet casting no shadow at all on the glowing grass, ink and watercolor, cinematic 16:9, Deep Root Lore style",
+      "prompt": "Low forest-floor angle: a bearded man's long dark shadow stretching across sunlit moss, and right beside it a tall figure's bare feet casting no shadow at all on the glowing grass, the man's cast shadow a plain featureless dark silhouette with no facial features, ink and watercolor, cinematic 16:9, Deep Root Lore style",
       "chosen_variation": 0,
       "motion_type": "parallax",
       "camera": {
@@ -403,7 +426,8 @@
         "assets/s016/var_2.png"
       ],
       "draft_image": "assets/s016/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s017",
@@ -428,7 +452,8 @@
         "assets/s017/var_2.png"
       ],
       "draft_image": "assets/s017/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s018",
@@ -444,7 +469,9 @@
         "slow spin",
         "fog drift"
       ],
-      "references": [],
+      "references": [
+        "man"
+      ],
       "video_model": null,
       "audio_anchor": null,
       "draft_variations": [
@@ -453,13 +480,14 @@
         "assets/s018/var_2.png"
       ],
       "draft_image": "assets/s018/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s019",
       "narration": "Now. Here's what his grandmother taught him, and what saved him. When the woods turn on you, you turn on the woods. Everything you're wearing — off, and back on, inside-out.",
       "prompt": "A bearded peasant man crouched low among forest trees and ferns in a dim beam of light, pulling his coat off with the rough seams turned outward, focused and afraid, outdoors in the woods not indoors, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
+      "chosen_variation": 1,
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
@@ -469,7 +497,9 @@
         "candle-warm rim light",
         "leaf fall"
       ],
-      "references": [],
+      "references": [
+        "man"
+      ],
       "video_model": null,
       "audio_anchor": null,
       "draft_variations": [
@@ -477,8 +507,9 @@
         "assets/s019/var_1.png",
         "assets/s019/var_2.png"
       ],
-      "draft_image": "assets/s019/var_0.png",
-      "approved": false
+      "draft_image": "assets/s019/var_1.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s020",
@@ -494,7 +525,9 @@
         "subtle depth shift",
         "mist pull-back"
       ],
-      "references": [],
+      "references": [
+        "man"
+      ],
       "video_model": null,
       "audio_anchor": null,
       "draft_variations": [
@@ -503,12 +536,13 @@
         "assets/s020/var_2.png"
       ],
       "draft_image": "assets/s020/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s021",
       "narration": "And you don't leave empty-handed. You leave something for him. Bread and salt on a stump, at a crossroads, wherever two ways meet. Payment for passage. A guest's manners in another lord's hall.",
-      "prompt": "A tree stump at a forest crossroads with a torn hunk of dark bread and a small mound of white salt on a cloth, warm candle-like glow, reverent stillness, ink and watercolor, cinematic 16:9, Deep Root Lore style",
+      "prompt": "A tree stump at a forest crossroads with a torn hunk of dark bread and a small mound of white salt on a cloth, lit only by a warm amber glow with no candle or flame visible, reverent stillness, ink and watercolor, cinematic 16:9, Deep Root Lore style",
       "chosen_variation": 0,
       "motion_type": "static",
       "camera": {
@@ -528,13 +562,14 @@
         "assets/s021/var_2.png"
       ],
       "draft_image": "assets/s021/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s022",
       "narration": "He left the bread. Turned his coat. And he did the last thing — the hardest one. He stopped listening for her voice.",
       "prompt": "The man walking away with hands over his ears, the sweet familiar silhouette behind him fading back into the trees, unanswered, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
+      "chosen_variation": 1,
       "motion_type": "parallax",
       "camera": {
         "move": "push_out",
@@ -544,7 +579,9 @@
         "fading silhouette",
         "cold fog"
       ],
-      "references": [],
+      "references": [
+        "man"
+      ],
       "video_model": null,
       "audio_anchor": null,
       "draft_variations": [
@@ -552,14 +589,15 @@
         "assets/s022/var_1.png",
         "assets/s022/var_2.png"
       ],
-      "draft_image": "assets/s022/var_0.png",
-      "approved": false
+      "draft_image": "assets/s022/var_1.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s023",
       "narration": "The birds came back first. Then the light thinned into evening, honest evening, the kind that moves. And the treeline opened onto his own field.",
       "prompt": "The forest edge parting to reveal a rye field at dusk, a small cottage with one warm lit window in the distance, birds scattering into an open sky, ink and watercolor, amber glow, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
+      "chosen_variation": 1,
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
@@ -577,14 +615,15 @@
         "assets/s023/var_1.png",
         "assets/s023/var_2.png"
       ],
-      "draft_image": "assets/s023/var_0.png",
-      "approved": false
+      "draft_image": "assets/s023/var_1.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s024",
       "narration": "His wife met him at the door. She said she'd never once called for him. She'd been at the loom the whole day. Of course she had.",
       "prompt": "A woman opening the heavy wooden door of a Slavic log-cabin izba at night, snow-dusted pines outside, warm firelight spilling from within, a bearded man's dark exhausted silhouette standing on the threshold seen from behind, a wooden loom inside, European folk cottage, NOT a bamboo hut, no palm trees, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 1,
+      "chosen_variation": 0,
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
@@ -594,7 +633,10 @@
         "hearth flicker",
         "doorway light bloom"
       ],
-      "references": [],
+      "references": [
+        "man",
+        "wife"
+      ],
       "video_model": null,
       "audio_anchor": null,
       "draft_variations": [
@@ -602,8 +644,9 @@
         "assets/s024/var_1.png",
         "assets/s024/var_2.png"
       ],
-      "draft_image": "assets/s024/var_1.png",
-      "approved": false
+      "draft_image": "assets/s024/var_0.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s025",
@@ -628,7 +671,8 @@
         "assets/s025/var_2.png"
       ],
       "draft_image": "assets/s025/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s026",
@@ -644,7 +688,10 @@
         "low mist",
         "fading light"
       ],
-      "references": [],
+      "references": [
+        "man",
+        "wife"
+      ],
       "video_model": null,
       "audio_anchor": null,
       "draft_variations": [
@@ -653,12 +700,13 @@
         "assets/s026/var_2.png"
       ],
       "draft_image": "assets/s026/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s027",
       "narration": "And if something up the path calls you by a name only love should know — look at the ground. If nothing dark lies where it's standing, then whatever loves you is not there. Keep walking. Don't answer.",
-      "prompt": "Final shot: deep in the trees a familiar human silhouette waits in a shaft of pale light, casting NO shadow at all on the bright grass beneath it, near-black forest closing around, eerie and still, ink and watercolor, cinematic 16:9, Deep Root Lore style",
+      "prompt": "Final shot: deep in the trees a familiar human silhouette waits in a shaft of pale light, casting absolutely no shadow on the bright grass beneath it (the lit ground unbroken), near-black forest closing around, eerie and still, ink and watercolor, cinematic 16:9, Deep Root Lore style",
       "chosen_variation": 0,
       "motion_type": "ai_video",
       "camera": {
@@ -678,7 +726,8 @@
         "assets/s027/var_2.png"
       ],
       "draft_image": "assets/s027/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     }
   ]
 }

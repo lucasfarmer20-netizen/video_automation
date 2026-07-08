@@ -1,0 +1,14 @@
+{
+  "man": {
+    "description": "A middle-aged bearded Slavic peasant woodcutter from the Pripyat marshes: weathered face, shaggy dark hair and a full beard, wearing a rough belted wool coat over a tunic, cloth leg-wraps and bast shoes, carrying a single worn short-handled firewood axe resting over one shoulder. An ordinary, tired, mortal man.",
+    "seed": ["assets/s010/var_2.png"]
+  },
+  "wife": {
+    "description": "The woodcutter's wife, a mid-adult Slavic peasant woman: hair fully covered by a headscarf (platok), wearing a long linen dress with an apron, a calm plain face. A loom-worker. Keep the exact face shown in the reference images.",
+    "seed": ["assets/s013/var_0.png", "assets/s014/var_0.png"]
+  },
+  "leshy": {
+    "description": "The Leshy, a colossal Slavic forest spirit: a towering humanoid formed of dark bark, moss and shadow, crowned with great branching antlers, its eyes two faint green embers. No wings, no clothing, part-tree and part-giant, ancient and looming.",
+    "seed": ["assets/s004/var_1.png"]
+  }
+}

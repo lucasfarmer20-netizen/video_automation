@@ -54,6 +54,7 @@ class Shot:
     draft_variations: list[str] = field(default_factory=list)  # paths to fal draft variations
     draft_image: str | None = None            # path to chosen draft still
     approved: bool = False                    # human sign-off (Gate 1)
+    notes: str = ""                           # human continuity/review notes (Gate 1)
 
     def needs_paid_video(self) -> bool:
         return self.motion_type == MotionType.AI_VIDEO
