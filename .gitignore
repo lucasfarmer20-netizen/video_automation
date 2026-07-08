@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Virtual environment
+.venv/
+
+# Generated media / large binaries
+assets/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Temp / output / cache dirs
+tmp/
+temp/
+output/
+cache/
+.cache/
