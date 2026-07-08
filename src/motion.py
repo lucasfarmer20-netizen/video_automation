@@ -143,10 +143,12 @@ class FX:
         self.w, self.h = out_w, out_h
         rng = np.random.default_rng(seed)
         self.vig = _radial(out_w, out_h)
-        # soft, low-frequency haze (a few big blobs, heavily blurred) = atmosphere
-        haze = _smooth_noise(out_h, out_w, 100, rng)
-        self.mist = ndimage.gaussian_filter(haze, sigma=max(out_w, out_h) / 48.0)
-        self.mist = self.mist - float(self.mist.mean())
+        # soft, low-frequency haze (a few big blobs, heavily blurred) = atmosphere.
+        # Generated wider than the frame so a drifting window never wraps (no seam).
+        self._mist_pad = int(out_w * 0.09) + 2
+        haze = _smooth_noise(out_h, out_w + self._mist_pad, 100, rng)
+        mist = ndimage.gaussian_filter(haze, sigma=max(out_w, out_h) / 48.0)
+        self.mist = mist - float(mist.mean())            # shape (h, w + pad)
         # temporally-static paper grain
         self.grain = (rng.random((out_h, out_w), dtype=np.float32) - 0.5)
         # sparse dust-mote seed field
@@ -161,8 +163,8 @@ class FX:
         if self._has("candle", "flicker", "firelight", "fire"):
             f = f * (1.0 + 0.045 * math.sin(t * 2 * math.pi * 4.5))
         if self._has("mist", "smoke", "fog", "light ray", "rays", "haze"):
-            roll = int(t * self.w * 0.06)
-            veil = np.roll(self.mist, roll, axis=1) * 0.16
+            off = min(int(t * self.w * 0.06), self._mist_pad)  # slide, never wrap
+            veil = self.mist[:, off:off + self.w] * 0.16
             f = f + veil[..., None] * np.array([0.9, 0.85, 0.72], np.float32)
         if self._has("dust", "mote", "ember", "spark"):
             roll = int(t * self.h * 0.05)
