@@ -103,8 +103,15 @@ def generate_drafts(
     only: set[str] | None = None,
     limit: int | None = None,
     lora: dict | None = None,
+    skip_existing: bool = True,
+    save_after_each: bool = False,
 ) -> Storyboard:
-    """Generate draft variations for some or all beats. Mutates the storyboard."""
+    """Generate draft variations for some or all beats. Mutates the storyboard.
+
+    Resilient for long batches: skips beats that already have drafts (so a
+    re-run resumes), tolerates a single beat failing, and can persist the
+    manifest after each beat so a crash never loses completed work.
+    """
     config.require_for("assets")
     if lora is None:
         lora = load_lora()
@@ -115,10 +122,23 @@ def generate_drafts(
     if limit:
         shots = shots[:limit]
 
+    failures: list[str] = []
     for shot in shots:
-        print(f"Generating {n} drafts for {shot.scene_id} ...")
-        paths = generate_for_shot(shot, n, lora)
-        print(f"  -> {paths}")
+        if skip_existing and shot.draft_variations:
+            print(f"{shot.scene_id}: already has {len(shot.draft_variations)} drafts — skipping.")
+            continue
+        try:
+            print(f"Generating {n} drafts for {shot.scene_id} ...")
+            paths = generate_for_shot(shot, n, lora)
+            print(f"  -> {len(paths)} images")
+        except Exception as exc:  # one bad beat must not kill the batch
+            print(f"  !! {shot.scene_id} FAILED: {exc}")
+            failures.append(shot.scene_id)
+        if save_after_each:
+            save(storyboard)
+
+    if failures:
+        print(f"\nFailed beats ({len(failures)}): {failures} — re-run to retry just these.")
     return storyboard
 
 
@@ -127,6 +147,7 @@ def _main() -> None:
     parser.add_argument("--scene", nargs="*", help="scene id(s) to generate (default: all).")
     parser.add_argument("--variations", type=int, default=DEFAULT_VARIATIONS)
     parser.add_argument("--limit", type=int, default=None, help="cap number of beats.")
+    parser.add_argument("--force", action="store_true", help="regenerate beats that already have drafts.")
     args = parser.parse_args()
 
     storyboard = load()
@@ -142,6 +163,8 @@ def _main() -> None:
         only=set(args.scene) if args.scene else None,
         limit=args.limit,
         lora=lora,
+        skip_existing=not args.force,
+        save_after_each=True,
     )
     save(storyboard)
     print(f"Saved draft variations into {config.MANIFEST_PATH}")
