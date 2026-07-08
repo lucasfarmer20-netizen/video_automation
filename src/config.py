@@ -23,6 +23,7 @@ ASSETS = ROOT / "assets"              # generated media cache (gitignored)
 AUDIO_POOL = ROOT / "audio_pool"      # curated, owned/licensed music (gitignored)
 LORA_TRAINING = ROOT / "lora_training"  # style-LoRA training frames (gitignored)
 MANIFEST_PATH = ROOT / "storyboard_manifest.json"
+LORA_CONFIG = ROOT / "lora_config.json"  # trained "Deep Root Lore" LoRA pointer
 
 # --- Secrets (fetched natively; presence validated on demand) ---------------
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")

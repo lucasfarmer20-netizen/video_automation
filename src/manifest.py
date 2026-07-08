@@ -50,6 +50,7 @@ class Shot:
     fx: list[str] = field(default_factory=list)  # e.g. ["candle_flicker", "grain"]
     video_model: str | None = None            # set only when motion_type == AI_VIDEO
     audio_anchor: float | None = None         # librosa beat (s) this cut lands on
+    draft_variations: list[str] = field(default_factory=list)  # paths to fal draft variations
     draft_image: str | None = None            # path to chosen draft still
     approved: bool = False                    # human sign-off (Gate 1)
 

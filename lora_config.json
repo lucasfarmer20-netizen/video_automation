@@ -1,0 +1,9 @@
+{
+  "lora_url": "https://v3b.fal.media/files/b/0aa1681a/6UWqGLM1fVkOfm3zwfV7P_pytorch_lora_weights.safetensors",
+  "config_url": "https://v3b.fal.media/files/b/0aa1681a/lz-JozBBMsPh0MTQAgyNe_config.json",
+  "trigger_word": "DEEPROOTLORE",
+  "inference_endpoint": "fal-ai/flux-lora",
+  "steps": 1000,
+  "image_count": 15,
+  "trained_at": "2026-07-08T00:57:51"
+}
