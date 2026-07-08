@@ -42,8 +42,9 @@ class Shot:
     """A single storyboard beat."""
 
     scene_id: str
-    prompt: str = ""
-    chosen_variation: int | None = None       # index into generated drafts
+    narration: str = ""                        # words the narrator speaks over this beat
+    prompt: str = ""                           # visual description -> flux draft prompt
+    chosen_variation: int | None = None        # index into generated drafts
     motion_type: MotionType = MotionType.PARALLAX
     camera: Camera = field(default_factory=Camera)
     fx: list[str] = field(default_factory=list)  # e.g. ["candle_flicker", "grain"]

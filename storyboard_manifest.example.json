@@ -7,6 +7,7 @@
   "shots": [
     {
       "scene_id": "s001",
+      "narration": "Every island keeps one. A thing the elders won't name after dark.",
       "prompt": "aged map of the Philippine islands lit by a single candle on a dark wooden table, ink and watercolor, Deep Root Lore style",
       "chosen_variation": 2,
       "motion_type": "static",
@@ -19,6 +20,7 @@
     },
     {
       "scene_id": "s014",
+      "narration": "She saw the shape on the wall before she heard the wings.",
       "prompt": "nighttime bamboo hut interior, a winged silhouette cast across the woven wall, shadow-play, ink and watercolor, Deep Root Lore style",
       "chosen_variation": 0,
       "motion_type": "parallax",
@@ -31,6 +33,7 @@
     },
     {
       "scene_id": "s022",
+      "narration": "The top half lifts away. The legs stay standing in the field.",
       "prompt": "manananggal wings unfurling as the torso detaches, cinematic reveal, ink and watercolor, Deep Root Lore style",
       "chosen_variation": 1,
       "motion_type": "ai_video",
