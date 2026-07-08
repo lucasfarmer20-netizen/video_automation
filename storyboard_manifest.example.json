@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "title": "The Manananggal of Barrio Consuelo",
+  "script_locked": true,
+  "storyboard_approved": false,
+  "music_track": "audio_pool/dark_ambient_drone_01.mp3",
+  "shots": [
+    {
+      "scene_id": "s001",
+      "prompt": "aged map of the Philippine islands lit by a single candle on a dark wooden table, ink and watercolor, Deep Root Lore style",
+      "chosen_variation": 2,
+      "motion_type": "static",
+      "camera": { "move": "push_in", "duration": 6.0 },
+      "fx": ["candle_flicker", "dust", "grain", "vignette_breathe"],
+      "video_model": null,
+      "audio_anchor": 0.0,
+      "draft_image": "assets/s001/var_2.png",
+      "approved": false
+    },
+    {
+      "scene_id": "s014",
+      "prompt": "nighttime bamboo hut interior, a winged silhouette cast across the woven wall, shadow-play, ink and watercolor, Deep Root Lore style",
+      "chosen_variation": 0,
+      "motion_type": "parallax",
+      "camera": { "move": "pan_right", "duration": 7.5 },
+      "fx": ["grain", "flicker_light"],
+      "video_model": null,
+      "audio_anchor": 42.5,
+      "draft_image": "assets/s014/var_0.png",
+      "approved": false
+    },
+    {
+      "scene_id": "s022",
+      "prompt": "manananggal wings unfurling as the torso detaches, cinematic reveal, ink and watercolor, Deep Root Lore style",
+      "chosen_variation": 1,
+      "motion_type": "ai_video",
+      "camera": { "move": "static", "duration": 5.0 },
+      "fx": ["grain"],
+      "video_model": "fal-ai/kling-video/v3/image-to-video",
+      "audio_anchor": 88.0,
+      "draft_image": "assets/s022/var_1.png",
+      "approved": false
+    }
+  ]
+}

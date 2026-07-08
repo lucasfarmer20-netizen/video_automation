@@ -7,6 +7,12 @@
 # Generated media / large binaries
 assets/
 
+# Curated music (owned/licensed, large)
+audio_pool/
+
+# Style-LoRA training frames (large)
+lora_training/
+
 # Python bytecode
 __pycache__/
 *.pyc
@@ -17,3 +23,4 @@ temp/
 output/
 cache/
 .cache/
+*.tmp
