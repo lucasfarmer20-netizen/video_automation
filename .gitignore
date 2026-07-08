@@ -13,6 +13,10 @@ audio_pool/
 # Style-LoRA training frames (large)
 lora_training/
 
+# Reference images + registry (owned art, cached fal URLs)
+references/
+references.json
+
 # Python bytecode
 __pycache__/
 *.pyc

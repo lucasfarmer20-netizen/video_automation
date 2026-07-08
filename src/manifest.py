@@ -48,6 +48,7 @@ class Shot:
     motion_type: MotionType = MotionType.PARALLAX
     camera: Camera = field(default_factory=Camera)
     fx: list[str] = field(default_factory=list)  # e.g. ["candle_flicker", "grain"]
+    references: list[str] = field(default_factory=list)  # character refs (Nano Banana), style is implicit
     video_model: str | None = None            # set only when motion_type == AI_VIDEO
     audio_anchor: float | None = None         # librosa beat (s) this cut lands on
     draft_variations: list[str] = field(default_factory=list)  # paths to fal draft variations
