@@ -168,8 +168,13 @@ class FX:
 # render
 # --------------------------------------------------------------------------- #
 def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT,
-                out_dir: Path = RENDER_DIR) -> Path:
-    """Render one approved shot to a silent H.264 clip; return the output path."""
+                out_dir: Path = RENDER_DIR, placeholder: bool = False) -> Path:
+    """Render one approved shot to a silent H.264 clip; return the output path.
+
+    ``placeholder=True`` renders a Tier-C (ai_video) shot from its still as a
+    stand-in until the paid Kling clip exists — using the local parallax engine
+    if the shot has a camera move, else a static hold.
+    """
     if not shot.draft_image:
         raise ValueError(f"{shot.scene_id}: no chosen draft_image to render.")
     src = config.ROOT / shot.draft_image
@@ -182,7 +187,7 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
     img = depthmod.load_rgb(src)
     src_rgb = np.asarray(Image.fromarray(img).resize((out_w, out_h), Image.LANCZOS),
                          dtype=np.float32) / 255.0
-    is_parallax = shot.motion_type == MotionType.PARALLAX
+    is_parallax = shot.motion_type == MotionType.PARALLAX or (placeholder and move != "static")
     if is_parallax:
         depth = depthmod.estimate_depth(img)
         depth = np.asarray(Image.fromarray(depth).resize((out_w, out_h), Image.BILINEAR),
@@ -218,20 +223,23 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
 
 
 def render_all(only: set[str] | None = None, fps: int = DEFAULT_FPS,
-               height: int = DEFAULT_HEIGHT) -> list[Path]:
-    """Render every approved local-tier shot (static/parallax). Paid shots skipped."""
+               height: int = DEFAULT_HEIGHT, placeholders: bool = False) -> list[Path]:
+    """Render approved local-tier shots. With ``placeholders``, also render the
+    paid ai_video shots from their stills as stand-ins."""
     sb = load()
     outs: list[Path] = []
     for shot in sb.shots:
         if only and shot.scene_id not in only:
             continue
-        if shot.motion_type == MotionType.AI_VIDEO:
+        is_ai = shot.motion_type == MotionType.AI_VIDEO
+        if is_ai and not placeholders:
             continue  # Tier-C handled by the paid video stage, not here
         if not only and not shot.approved:
             continue
-        print(f"Rendering {shot.scene_id} ({shot.motion_type.value}, {shot.camera.move}) ...")
+        tag = "placeholder" if is_ai else shot.motion_type.value
+        print(f"Rendering {shot.scene_id} ({tag}, {shot.camera.move}) ...")
         try:
-            p = render_shot(shot, fps=fps, height=height)
+            p = render_shot(shot, fps=fps, height=height, placeholder=is_ai)
             print(f"  -> {p.relative_to(config.ROOT)}")
             outs.append(p)
         except Exception as exc:  # noqa: BLE001 — resilient batch
@@ -244,9 +252,11 @@ def _main() -> None:
     parser.add_argument("--scene", nargs="*", help="scene id(s) to render (default: all approved local).")
     parser.add_argument("--fps", type=int, default=DEFAULT_FPS)
     parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT)
+    parser.add_argument("--placeholders", action="store_true",
+                        help="also render ai_video shots from their stills as stand-ins.")
     args = parser.parse_args()
     outs = render_all(only=set(args.scene) if args.scene else None,
-                      fps=args.fps, height=args.height)
+                      fps=args.fps, height=args.height, placeholders=args.placeholders)
     print(f"\nRendered {len(outs)} clip(s) into {RENDER_DIR.relative_to(config.ROOT)}/")
 
 

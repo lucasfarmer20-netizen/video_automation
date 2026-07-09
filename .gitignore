@@ -27,6 +27,10 @@ render/
 # Generated audio (narration + sfx)
 audio/
 
+# Generated timelines (machine-specific media paths)
+*.otio
+*.fcpxml
+
 # Temp / output / cache dirs
 tmp/
 temp/

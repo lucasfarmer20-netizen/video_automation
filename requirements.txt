@@ -4,6 +4,7 @@ librosa==0.10.2.post1
 fal-client==0.5.6
 flask==3.1.0
 opentimelineio==0.17.0
+otio-fcpx-xml-adapter==1.0.0
 moviepy==2.1.2
 python-dotenv==1.0.1
 
