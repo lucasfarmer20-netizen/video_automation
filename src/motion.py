@@ -55,19 +55,19 @@ def _camera(move: str, t: float) -> tuple[float, float, float]:
     """
     e = _ease(t)
     if move == "push_in":
-        return 0.032 * e, 0.0, 0.0
+        return 0.05 * e, 0.0, 0.0
     if move == "push_out":
-        return 0.032 * (1.0 - e), 0.0, 0.0
+        return 0.05 * (1.0 - e), 0.0, 0.0
     if move == "pan_left":
-        return 0.0, (0.026 * (0.5 - e)), 0.0
+        return 0.0, (0.04 * (0.5 - e)), 0.0
     if move == "pan_right":
-        return 0.0, (0.026 * (e - 0.5)), 0.0
+        return 0.0, (0.04 * (e - 0.5)), 0.0
     return 0.0, 0.0, 0.0  # static
 
 
 def _plane_parallax(depth_center: float) -> float:
-    """Nearer planes (higher depth) move/scale a little more under the camera."""
-    return 0.25 + 0.55 * depth_center
+    """Nearer planes (higher depth) move/scale more under the camera."""
+    return 0.30 + 0.70 * depth_center
 
 
 # --------------------------------------------------------------------------- #
@@ -108,7 +108,7 @@ def _composite_frame(layers: depthmod.ParallaxLayers, bg_img: Image.Image,
     zoom, dx, dy = _camera(move, t)
 
     # Background gets the smallest share of the move (far plane).
-    frame = _transform(bg_img, zoom * 0.15, dx * 0.15, dy * 0.15, out_w, out_h)
+    frame = _transform(bg_img, zoom * 0.20, dx * 0.20, dy * 0.20, out_w, out_h)
     # Foreground planes, far -> near, each scaled by its parallax factor.
     for pimg, dcenter in plane_imgs:
         p = _plane_parallax(dcenter)
@@ -154,13 +154,7 @@ class FX:
         haze = _smooth_noise(out_h, out_w + self._mist_pad, 100, rng)
         mist = ndimage.gaussian_filter(haze, sigma=max(out_w, out_h) / 48.0)
         self.mist = mist - float(mist.mean())            # shape (h, w + pad)
-        # temporally-static *paper* grain: coarse (clumps like paper tooth), not
-        # per-pixel snow. Generated small then upsampled.
-        g = rng.random((max(2, out_h // 3), max(2, out_w // 3)), dtype=np.float32)
-        self.grain = np.asarray(
-            Image.fromarray((g * 255).astype(np.uint8)).resize((out_w, out_h), Image.BILINEAR),
-            dtype=np.float32,
-        ) / 255.0 - 0.5
+        self._rng = rng                                  # drives per-frame film grain
         # sparse dust-mote seed field
         self.motes = rng.random((out_h, out_w), dtype=np.float32)
 
@@ -180,9 +174,16 @@ class FX:
             roll = int(t * self.h * 0.05)
             motes = (np.roll(self.motes, roll, axis=0) > 0.9994).astype(np.float32)
             f = f + motes[..., None] * np.array([0.9, 0.82, 0.55], np.float32)
-        # paper grain, modulated by luminance so shadows stay clean (no snow on black)
+        # Film grain, the standard procedural way: fresh monochromatic noise every
+        # frame (grain is temporal), given a grain "size" by a light blur, and made
+        # signal-dependent — strong through the midtones, suppressed toward pure black
+        # so the deep shadows read clean instead of snowy.
+        n = ndimage.gaussian_filter(
+            self._rng.standard_normal((self.h, self.w), dtype=np.float32), 0.7)
+        n *= 1.0 / (float(n.std()) + 1e-6)               # restore unit std after blur
         lum = f.mean(axis=2)
-        f = f + (self.grain * (0.3 + 0.7 * np.clip(lum, 0.0, 1.0)))[..., None] * 0.022
+        mod = np.clip(lum * 2.4, 0.0, 1.0) * (1.0 - 0.35 * np.clip(lum, 0.0, 1.0))
+        f = f + (n * mod)[..., None] * 0.045
         return np.clip(f, 0.0, 1.0)
 
 
