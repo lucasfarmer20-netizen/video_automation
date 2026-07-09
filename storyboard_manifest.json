@@ -20,7 +20,7 @@
         "drifting mist",
         "dust motes"
       ],
-      "sfx": "",
+      "sfx": "Distant low wind moving through a dense birch-and-pine forest at dusk, sparse and sustained, the hush of deep woods, no birds and no music.",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -248,7 +248,7 @@
         "ground fog",
         "leaf drift"
       ],
-      "sfx": "",
+      "sfx": "Slow lone footsteps crunching over damp leaves and twigs, unhurried and isolated, a solitary walk through quiet forest.",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -334,7 +334,7 @@
         "dead-still air",
         "faint dust suspended"
       ],
-      "sfx": "",
+      "sfx": "A forest alive with birdsong and insects that abruptly and completely cuts to total dead silence after about two seconds, the unnatural absence of all sound.",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -362,7 +362,7 @@
         "golden haze",
         "gentle leaf fall"
       ],
-      "sfx": "",
+      "sfx": "A woman's warm voice calling a name once, faint and far off from up a forest path, gentle and inviting but with a subtle unnatural echo, alone in the trees.",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -390,7 +390,7 @@
         "candle flicker",
         "dust in light"
       ],
-      "sfx": "",
+      "sfx": "A wooden hand-loom clacking in a steady rhythm in a quiet cottage, the soft thud of beater and shuttle, warm and domestic.",
       "references": [
         "wife"
       ],
@@ -476,7 +476,7 @@
         "warping perspective",
         "swirling fog"
       ],
-      "sfx": "",
+      "sfx": "A disorienting low groaning drone as a forest bends and folds unnaturally, subtle rising unease, no melody.",
       "references": [],
       "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,
@@ -534,7 +534,7 @@
         "candle-warm rim light",
         "leaf fall"
       ],
-      "sfx": "",
+      "sfx": "Coarse wool and leather clothing pulled off and turned quickly inside-out, urgent fabric rustle and buckle clinks, close and dry.",
       "references": [
         "man"
       ],
@@ -594,7 +594,7 @@
         "candle flicker",
         "slow smoke"
       ],
-      "sfx": "",
+      "sfx": "The soft reverent placement of a torn loaf of bread and a handful of salt on a mossy wooden stump, quiet and close, a held breath of stillness.",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -652,7 +652,7 @@
         "warm sunset wash",
         "birds in flight"
       ],
-      "sfx": "",
+      "sfx": "Birdsong slowly returning to a forest at honest evening, a gentle warm breeze, the woods breathing again after a long silence, relief.",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -680,7 +680,7 @@
         "hearth flicker",
         "doorway light bloom"
       ],
-      "sfx": "",
+      "sfx": "A heavy wooden cabin door creaking open at night with a warm hearth fire crackling softly within, a threshold of safety.",
       "references": [
         "man",
         "wife"
@@ -770,7 +770,7 @@
         "green ember eyes",
         "slow mist swallow"
       ],
-      "sfx": "",
+      "sfx": "A low cold wind through a night forest with a faint wrong whisper of a familiar voice far off, dread and unresolved, fading to silence.",
       "references": [],
       "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,
