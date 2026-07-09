@@ -39,3 +39,4 @@ cache/
 .cache/
 *.tmp
 models/
+sizzle/
