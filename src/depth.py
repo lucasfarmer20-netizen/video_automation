@@ -62,26 +62,70 @@ def _heuristic_depth(gray: np.ndarray) -> np.ndarray:
     return _norm(depth)
 
 
-def _try_onnx_depth(img: np.ndarray) -> np.ndarray | None:
-    """Upgrade seam: run a configured ONNX depth model if one is available.
+# Depth-Anything V2 (ONNX) — loaded once, reused. DirectML on AMD/Windows, CPU
+# fallback. Absent model / runtime => None => heuristic covers it.
+_SESSION: "object | None" = None
+_SESSION_TRIED = False
+_IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
+_IMAGENET_STD = np.array([0.229, 0.224, 0.225], np.float32)
+_INPUT_LONG = 518  # ViT input; Depth-Anything wants dims that are multiples of 14
 
-    Returns a normalized depth map, or ``None`` to fall back to the heuristic.
-    Kept import-safe when onnxruntime / the model file are absent.
-    """
-    try:
-        import onnxruntime as ort  # noqa: F401  (presence probe)
 
-        from . import config
+def _round14(n: float, lo: int = 14) -> int:
+    return max(lo, int(round(n / 14.0)) * 14)
 
-        model_path = getattr(config, "DEPTH_MODEL", None)
-        if not model_path or not Path(model_path).exists():
-            return None
-        # Integration point for Depth-Anything V2 (small) ONNX:
-        #   sess = ort.InferenceSession(str(model_path), providers=[
-        #       "DmlExecutionProvider", "CPUExecutionProvider"])
-        #   ... preprocess -> run -> resize to img -> _norm ...
-        # Left explicit rather than half-implemented; heuristic is the $0 default.
+
+def _get_session():
+    """Lazily build (and cache) the ONNX session; return None if unavailable."""
+    global _SESSION, _SESSION_TRIED
+    if _SESSION_TRIED:
+        return _SESSION
+    _SESSION_TRIED = True
+
+    from . import config
+
+    model_path = getattr(config, "DEPTH_MODEL", None)
+    if not model_path or not Path(model_path).exists():
         return None
+    try:
+        import onnxruntime as ort
+    except Exception:
+        return None
+    for providers in (["DmlExecutionProvider", "CPUExecutionProvider"],
+                      ["CPUExecutionProvider"]):
+        try:
+            _SESSION = ort.InferenceSession(str(model_path), providers=providers)
+            return _SESSION
+        except Exception:
+            continue
+    return None
+
+
+def _try_onnx_depth(img: np.ndarray) -> np.ndarray | None:
+    """Run Depth-Anything V2 (ONNX) if available; return normalized depth or None.
+
+    Output convention matches the heuristic: near = 1, far = 0 (the model emits a
+    disparity-like map where nearer is larger, which normalizes straight through).
+    """
+    sess = _get_session()
+    if sess is None:
+        return None
+    try:
+        h0, w0 = img.shape[:2]
+        if w0 >= h0:
+            tw, th = _INPUT_LONG, _round14(_INPUT_LONG * h0 / w0)
+        else:
+            th, tw = _INPUT_LONG, _round14(_INPUT_LONG * w0 / h0)
+        x = np.asarray(Image.fromarray(img[..., :3]).resize((tw, th), Image.LANCZOS),
+                       dtype=np.float32) / 255.0
+        x = (x - _IMAGENET_MEAN) / _IMAGENET_STD
+        x = np.transpose(x, (2, 0, 1))[None].astype(np.float32)
+        iname = sess.get_inputs()[0].name
+        oname = sess.get_outputs()[0].name
+        depth = np.squeeze(sess.run([oname], {iname: x})[0]).astype(np.float32)
+        depth = np.asarray(Image.fromarray(depth).resize((w0, h0), Image.BICUBIC),
+                           dtype=np.float32)
+        return _norm(depth)
     except Exception:
         return None
 

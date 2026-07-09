@@ -31,3 +31,4 @@ output/
 cache/
 .cache/
 *.tmp
+models/

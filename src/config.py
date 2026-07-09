@@ -26,6 +26,9 @@ MANIFEST_PATH = ROOT / "storyboard_manifest.json"
 LORA_CONFIG = ROOT / "lora_config.json"  # trained "Deep Root Lore" LoRA pointer
 REFERENCES_DIR = ROOT / "references"     # style + character reference images
 REFERENCES_CONFIG = ROOT / "references.json"  # name -> files/urls registry
+MODELS_DIR = ROOT / "models"             # local ML models (gitignored, large)
+# Depth-Anything V2 (ONNX) for the 2.5D depth stage; overridable via env.
+DEPTH_MODEL = os.environ.get("DEPTH_MODEL") or str(MODELS_DIR / "depth_anything_v2_vits.onnx")
 
 # --- Secrets (fetched natively; presence validated on demand) ---------------
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
