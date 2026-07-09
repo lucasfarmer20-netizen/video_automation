@@ -63,6 +63,14 @@ class Reel:
 UKIYO = (", ukiyo-e Japanese woodblock print, nishiki-e, bold sumi ink outlines, "
          "flat mineral pigment colors, visible woodgrain and washi paper texture, "
          "Edo period, in the style of Kuniyoshi and Hokusai yokai prints, no gore")
+# Style register only renders reliably when the MEDIUM leads and wrong styles are
+# negated — burying "ukiyo-e" at the end gives soft illustration instead.
+UKIYO_LEAD = ("A genuine antique ukiyo-e mokuhanga woodblock print, Edo period, hand-carved "
+              "bold black key-block outlines, flat blocks of limited mineral pigment in "
+              "prussian-blue and cream, visible washi paper texture, red hanko seal stamps, "
+              "in the exact manner of Utagawa Kuniyoshi yokai prints: ")
+UKIYO_NEG = (". Flat decorative composition, bold black outlines, NOT a painting, NOT "
+             "photorealistic, NOT soft anime, no gradient shading, no gore")
 PHOTO = (", photorealistic, cinematic, volumetric fog, storm lighting, desaturated "
          "moody color, film grain, atmospheric folk horror, no gore, no blood")
 BOOK = ("photorealistic weathered human hands opening a huge ancient leather-bound "
@@ -85,19 +93,21 @@ REELS = [
              "ominous, no beat"),
         shots=[
             RShot("a01", BOOK.format(ill="woodblock illustration"), "push_in", 1.2, ["dust motes"]),
-            RShot("a02", "Yuki-onna the snow woman, a tall pale spectral woman in a flowing "
-                  "white kimono standing in a mountain blizzard at night, long black hair, "
-                  "serene and terrible pale face, swirling snow and wind" + UKIYO,
+            RShot("a02", UKIYO_LEAD + "Yuki-onna the snow woman, a tall pale spectral woman in a "
+                  "flowing white kimono standing in a mountain blizzard at night, long black hair "
+                  "streaming, serene and terrible pale face, swirling snow" + UKIYO_NEG,
                   "push_in", 1.15, ["cold mist"], sfx="a sudden sharp gust of howling cold winter wind"),
-            RShot("a03", "a lone traveler in a straw mino raincloak and conical hat struggling "
-                  "through a deep mountain blizzard at night, tiny beneath towering snow-laden "
-                  "pines, a paper lantern glowing" + UKIYO, "push_in", 1.0, ["drifting mist", "dust motes"]),
-            RShot("a04", "the pale Yuki-onna leaning close over a sleeping traveler inside a "
-                  "snow-covered mountain hut, her white frozen breath drifting over him, frost "
-                  "blooming across the walls, cold blue palette" + UKIYO, "push_in", 1.0, ["cold mist"]),
-            RShot("a05", "a single figure standing upright and utterly still in deep snow at dawn, "
-                  "encased in glittering white frost, eyes open, silent snow-covered mountains "
-                  "behind, eerie stillness, no gore" + UKIYO, "push_out", 1.1, ["dust motes"]),
+            RShot("a03", UKIYO_LEAD + "a lone traveler in a straw mino raincloak and conical hat "
+                  "struggling through a deep mountain blizzard at night, tiny beneath towering "
+                  "snow-laden pines, a paper lantern glowing" + UKIYO_NEG, "push_in", 1.0,
+                  ["drifting mist", "dust motes"]),
+            RShot("a04", UKIYO_LEAD + "the pale Yuki-onna leaning close over a sleeping traveler "
+                  "inside a snow-covered mountain hut, her white frozen breath drifting over him, "
+                  "frost blooming across the walls, cold blue palette" + UKIYO_NEG, "push_in", 1.0,
+                  ["cold mist"]),
+            RShot("a05", UKIYO_LEAD + "a single figure standing upright and still in deep snow at "
+                  "dawn, encased in white frost, eyes open, silent snow-covered mountains behind, "
+                  "eerie stillness" + UKIYO_NEG, "push_out", 1.1, ["dust motes"]),
             RShot("a06", "", weight=0.8, title=("YUKI-ONNA", "THE GLOBAL BESTIARY")),
         ],
     ),
