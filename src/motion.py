@@ -36,7 +36,6 @@ from .manifest import MotionType, Shot, load
 RENDER_DIR = config.ROOT / "render"
 DEFAULT_FPS = 24
 DEFAULT_HEIGHT = 720            # 16:9 -> 1280x720; bump to 1080 for finals
-OVERSCAN = 1.14                 # headroom so camera moves never expose an edge
 
 
 # --------------------------------------------------------------------------- #
@@ -50,8 +49,8 @@ def _ease(t: float) -> float:
 def _camera(move: str, t: float) -> tuple[float, float, float]:
     """Return (zoom, dx, dy) for the *camera* at eased time ``t`` in [0, 1].
 
-    dx/dy are fractions of frame size; zoom is an extra scale on top of OVERSCAN.
-    Amplitudes stay within the overscan margin so no border is ever revealed.
+    dx/dy are fractions of frame size; zoom is an extra magnification. Depth
+    inverse-warping clamps at the edges, so no border is ever revealed.
     """
     e = _ease(t)
     if move == "push_in":
@@ -65,55 +64,28 @@ def _camera(move: str, t: float) -> tuple[float, float, float]:
     return 0.0, 0.0, 0.0  # static
 
 
-def _plane_parallax(depth_center: float) -> float:
-    """Nearer planes (higher depth) move/scale more under the camera."""
-    return 0.30 + 0.70 * depth_center
-
-
 # --------------------------------------------------------------------------- #
-# per-plane transform + compositing
+# continuous depth warp (2.5D parallax)
 # --------------------------------------------------------------------------- #
-def _prep(img: np.ndarray, out_w: int, out_h: int) -> Image.Image:
-    """Resize a plate to the oversized working canvas (RGBA)."""
-    w = int(round(out_w * OVERSCAN))
-    h = int(round(out_h * OVERSCAN))
-    mode = "RGBA" if img.shape[-1] == 4 else "RGB"
-    return Image.fromarray(img, mode).resize((w, h), Image.LANCZOS).convert("RGBA")
-
-
-def _transform(plane: Image.Image, zoom: float, dx: float, dy: float,
-               out_w: int, out_h: int) -> Image.Image:
-    """Sub-pixel scale-about-centre + translate, sampled straight to output size.
-
-    Uses a single bilinear affine warp (no integer paste), so slow moves stay
-    smooth instead of stair-stepping frame to frame.
-    """
-    W, H = plane.size
-    s = 1.0 + zoom
-    cx, cy = out_w / 2.0, out_h / 2.0
-    ox, oy = (W - out_w) / 2.0, (H - out_h) / 2.0   # centre-crop offset (overscan)
-    tx, ty = dx * out_w, dy * out_h
-    # output (xo,yo) -> input (xi,yi): xi = a*xo + b*yo + c ; yi = d*xo + e*yo + f
-    a = e = 1.0 / s
-    c = ox + cx * (1.0 - 1.0 / s) - tx
-    f = oy + cy * (1.0 - 1.0 / s) - ty
-    return plane.transform((out_w, out_h), Image.AFFINE, (a, 0.0, c, 0.0, e, f),
-                           resample=Image.BILINEAR, fillcolor=(0, 0, 0, 0))
-
-
-def _composite_frame(layers: depthmod.ParallaxLayers, bg_img: Image.Image,
-                     plane_imgs: list[tuple[Image.Image, float]],
-                     move: str, t: float, out_w: int, out_h: int) -> np.ndarray:
-    """Build one composited RGB frame at time ``t``."""
+# Every pixel is displaced by its own depth (inverse-sampled), so objects move as
+# coherent units — no discrete planes to split a trunk across a boundary (which
+# doubled outlines) and no hard disocclusion holes; depth discontinuities become
+# gentle local stretches instead. `disp` gives even far pixels a little motion so
+# a push-in reads as the whole frame breathing, nearer faster.
+def _warp_frame(src: np.ndarray, disp: np.ndarray, base_y: np.ndarray,
+                base_x: np.ndarray, move: str, t: float,
+                out_w: int, out_h: int) -> np.ndarray:
+    """Inverse-warp the source by the per-pixel depth displacement at time ``t``."""
     zoom, dx, dy = _camera(move, t)
-
-    # Background gets the smallest share of the move (far plane).
-    frame = _transform(bg_img, zoom * 0.20, dx * 0.20, dy * 0.20, out_w, out_h)
-    # Foreground planes, far -> near, each scaled by its parallax factor.
-    for pimg, dcenter in plane_imgs:
-        p = _plane_parallax(dcenter)
-        frame.alpha_composite(_transform(pimg, zoom * p, dx * p, dy * p, out_w, out_h))
-    return np.asarray(frame.convert("RGB")).astype(np.float32) / 255.0
+    cx, cy = out_w / 2.0, out_h / 2.0
+    scale = 1.0 + zoom * disp                    # nearer pixels magnify more
+    sx = cx + (base_x - cx) / scale - (dx * out_w) * disp
+    sy = cy + (base_y - cy) / scale - (dy * out_h) * disp
+    coords = [sy, sx]
+    out = np.empty((out_h, out_w, 3), np.float32)
+    for c in range(3):
+        out[..., c] = ndimage.map_coordinates(src[..., c], coords, order=1, mode="nearest")
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -154,14 +126,14 @@ class FX:
         haze = _smooth_noise(out_h, out_w + self._mist_pad, 100, rng)
         mist = ndimage.gaussian_filter(haze, sigma=max(out_w, out_h) / 48.0)
         self.mist = mist - float(mist.mean())            # shape (h, w + pad)
-        self._rng = rng                                  # drives per-frame film grain
+        self._seed = int(seed)                           # per-frame film-grain seed
         # sparse dust-mote seed field
         self.motes = rng.random((out_h, out_w), dtype=np.float32)
 
     def _has(self, *keys: str) -> bool:
         return any(k in self.tokens for k in keys)
 
-    def apply(self, frame: np.ndarray, t: float) -> np.ndarray:
+    def apply(self, frame: np.ndarray, t: float, fi: int) -> np.ndarray:
         f = frame
         f = f * (1.0 - 0.38 * (self.vig ** 2.2)[..., None])
         if self._has("candle", "flicker", "firelight", "fire"):
@@ -171,19 +143,23 @@ class FX:
             veil = self.mist[:, off:off + self.w] * 0.16
             f = f + veil[..., None] * np.array([0.9, 0.85, 0.72], np.float32)
         if self._has("dust", "mote", "ember", "spark"):
-            roll = int(t * self.h * 0.05)
-            motes = (np.roll(self.motes, roll, axis=0) > 0.9994).astype(np.float32)
-            f = f + motes[..., None] * np.array([0.9, 0.82, 0.55], np.float32)
-        # Film grain, the standard procedural way: fresh monochromatic noise every
-        # frame (grain is temporal), given a grain "size" by a light blur, and made
-        # signal-dependent — strong through the midtones, suppressed toward pure black
-        # so the deep shadows read clean instead of snowy.
+            # Sparse, *soft*, dim specks that only show where light already falls
+            # ("dust in light") — so they read as motes, not snow on the black.
+            roll = int(t * self.h * 0.04)
+            spec = (np.roll(self.motes, roll, axis=0) > 0.9997).astype(np.float32)
+            spec = ndimage.gaussian_filter(spec, 0.8)          # soften to glows
+            spec = spec * np.clip(f.mean(axis=2) * 1.6, 0.0, 1.0)  # gate to lit areas
+            f = f + spec[..., None] * np.array([0.8, 0.72, 0.5], np.float32) * 0.6
+        # Film grain: fresh monochromatic noise, but held "on twos" (updates every
+        # 2nd frame ~= 12 fps) so it doesn't boil, given a grain "size" by a light
+        # blur, signal-dependent (peaks in midtones, clean in the black).
+        grng = np.random.default_rng(self._seed * 9769 + fi // 2)
         n = ndimage.gaussian_filter(
-            self._rng.standard_normal((self.h, self.w), dtype=np.float32), 0.7)
+            grng.standard_normal((self.h, self.w), dtype=np.float32), 0.7)
         n *= 1.0 / (float(n.std()) + 1e-6)               # restore unit std after blur
         lum = f.mean(axis=2)
         mod = np.clip(lum * 2.4, 0.0, 1.0) * (1.0 - 0.35 * np.clip(lum, 0.0, 1.0))
-        f = f + (n * mod)[..., None] * 0.045
+        f = f + (n * mod)[..., None] * 0.022              # ~half the previous opacity
         return np.clip(f, 0.0, 1.0)
 
 
@@ -202,16 +178,21 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
     n_frames = max(1, int(round(duration * fps)))
 
     img = depthmod.load_rgb(src)
-    if shot.motion_type == MotionType.PARALLAX:
-        layers = depthmod.separate_layers(img, depthmod.estimate_depth(img), n_planes=4)
-        bg_img = _prep(layers.background, out_w, out_h)
-        plane_imgs = [(_prep(rgba, out_w, out_h), d) for rgba, d in layers.planes]
-    else:  # STATIC — single held plate, no depth split, FX only
-        layers = None
-        bg_img = _prep(img, out_w, out_h)
-        plane_imgs = []
+    src_rgb = np.asarray(Image.fromarray(img).resize((out_w, out_h), Image.LANCZOS),
+                         dtype=np.float32) / 255.0
+    is_parallax = shot.motion_type == MotionType.PARALLAX
+    if is_parallax:
+        depth = depthmod.estimate_depth(img)
+        depth = np.asarray(Image.fromarray(depth).resize((out_w, out_h), Image.BILINEAR),
+                           dtype=np.float32)
+        depth = ndimage.gaussian_filter(depth, sigma=3.0)   # gentler disparity edges
+        depth = (depth - depth.min()) / (depth.max() - depth.min() + 1e-6)
+        disp = (0.25 + 0.75 * depth).astype(np.float32)     # even far pixels move a little
+        base_y, base_x = (a.astype(np.float32) for a in np.mgrid[0:out_h, 0:out_w])
 
-    fx = FX(shot.fx or [], out_w, out_h, seed=abs(hash(shot.scene_id)) % 9973)
+    # stable per-shot seed (avoids hash randomization across runs)
+    seed = (sum(bytes(shot.scene_id, "utf-8")) * 131) % 100003
+    fx = FX(shot.fx or [], out_w, out_h, seed=seed)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{shot.scene_id}.mp4"
@@ -223,15 +204,11 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
     try:
         for i in range(n_frames):
             t = i / max(1, n_frames - 1)
-            if shot.motion_type == MotionType.PARALLAX:
-                frame = _composite_frame(layers, bg_img, plane_imgs, move, t, out_w, out_h)
+            if is_parallax:
+                frame = _warp_frame(src_rgb, disp, base_y, base_x, move, t, out_w, out_h)
             else:
-                frame = np.asarray(bg_img.convert("RGB")).astype(np.float32) / 255.0
-                # crop overscan to output for the static plate
-                sh, sw = frame.shape[:2]
-                y0, x0 = (sh - out_h) // 2, (sw - out_w) // 2
-                frame = frame[y0:y0 + out_h, x0:x0 + out_w]
-            frame = fx.apply(frame, t)
+                frame = src_rgb.copy()   # static plate; FX only
+            frame = fx.apply(frame, t, i)
             writer.append_data((frame * 255).astype(np.uint8))
     finally:
         writer.close()
