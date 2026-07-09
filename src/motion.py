@@ -3,14 +3,15 @@
 The free-motion workhorse that keeps per-video cost down: it turns an approved
 still into a moving clip without touching a paid video API. Two tiers:
 
-* ``static``   - the still held under a slow camera move-free hold plus procedural
-  FX (grain, vignette breathe, candle flicker, mist).
-* ``parallax`` - depth layers (from ``depth.py``) drift at distance-scaled rates
-  under a slow camera move, gaps hidden by the inpainted background plate.
+* ``static``   - the still held under a slow, move-free hold plus procedural FX
+  (grain, vignette, candle flicker, mist).
+* ``parallax`` - a continuous per-pixel depth warp (depth from ``depth.py``):
+  each pixel is inverse-sampled with a displacement set by its own depth under a
+  slow camera move, so objects stay coherent (nearer moves more).
 
-Frames are composited with Pillow (per-plane affine + alpha) and NumPy (FX), then
-encoded to H.264 via imageio-ffmpeg (system ffmpeg). Silent clips; ``audio.py`` /
-``timeline.py`` own sound and assembly.
+Frames are warped/composited with NumPy + SciPy and encoded to H.264 via
+imageio-ffmpeg (system ffmpeg). Silent clips; ``audio.py`` / ``timeline.py`` own
+sound and assembly.
 
 CLI:
     python -m src.motion                 # render every non-paid approved shot
@@ -109,10 +110,9 @@ def _smooth_noise(h: int, w: int, scale: int, rng: np.random.Generator) -> np.nd
 class FX:
     """Precomputes reusable fields; applies enabled effects per frame.
 
-    Restraint is the house style: a gentle vignette and temporally-static paper
-    grain on every shot, with mist/flicker/motes only where a shot asks for them.
-    Grain is fixed across frames (real paper doesn't shimmer) which also keeps the
-    clip compressible.
+    Restraint is the house style: a gentle vignette and fine film grain on every
+    shot, with mist/flicker/motes only where a shot asks for them. Grain is the
+    procedural film model — animated on twos, signal-dependent (see ``apply``).
     """
 
     def __init__(self, fx: list[str], out_w: int, out_h: int, seed: int = 7):
