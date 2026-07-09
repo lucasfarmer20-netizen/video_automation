@@ -35,6 +35,7 @@ class Camera:
 
     move: str = "push_in"   # push_in | push_out | pan_left | pan_right | static
     duration: float = 6.0   # seconds
+    speed: float = 1.0      # per-shot move-speed multiplier (1.5 = 50% faster)
 
 
 @dataclass
@@ -47,7 +48,8 @@ class Shot:
     chosen_variation: int | None = None        # index into generated drafts
     motion_type: MotionType = MotionType.PARALLAX
     camera: Camera = field(default_factory=Camera)
-    fx: list[str] = field(default_factory=list)  # e.g. ["candle_flicker", "grain"]
+    fx: list[str] = field(default_factory=list)  # visual FX, e.g. ["candle_flicker", "grain"]
+    sfx: str = ""                              # ElevenLabs sound-effects prompt (ambience/foley)
     references: list[str] = field(default_factory=list)  # character refs (Nano Banana), style is implicit
     video_model: str | None = None            # set only when motion_type == AI_VIDEO
     audio_anchor: float | None = None         # librosa beat (s) this cut lands on

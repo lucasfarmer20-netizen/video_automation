@@ -74,10 +74,11 @@ def _camera(move: str, t: float) -> tuple[float, float, float]:
 # gentle local stretches instead. `disp` gives even far pixels a little motion so
 # a push-in reads as the whole frame breathing, nearer faster.
 def _warp_frame(src: np.ndarray, disp: np.ndarray, base_y: np.ndarray,
-                base_x: np.ndarray, move: str, t: float,
+                base_x: np.ndarray, move: str, t: float, speed: float,
                 out_w: int, out_h: int) -> np.ndarray:
     """Inverse-warp the source by the per-pixel depth displacement at time ``t``."""
     zoom, dx, dy = _camera(move, t)
+    zoom, dx, dy = zoom * speed, dx * speed, dy * speed
     cx, cy = out_w / 2.0, out_h / 2.0
     scale = 1.0 + zoom * disp                    # nearer pixels magnify more
     sx = cx + (base_x - cx) / scale - (dx * out_w) * disp
@@ -175,6 +176,7 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
     out_w, out_h = height * 16 // 9, height
     duration = float(shot.camera.duration) if shot.camera else 6.0
     move = shot.camera.move if shot.camera else "static"
+    speed = float(shot.camera.speed) if shot.camera else 1.0
     n_frames = max(1, int(round(duration * fps)))
 
     img = depthmod.load_rgb(src)
@@ -205,7 +207,7 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
         for i in range(n_frames):
             t = i / max(1, n_frames - 1)
             if is_parallax:
-                frame = _warp_frame(src_rgb, disp, base_y, base_x, move, t, out_w, out_h)
+                frame = _warp_frame(src_rgb, disp, base_y, base_x, move, t, speed, out_w, out_h)
             else:
                 frame = src_rgb.copy()   # static plate; FX only
             frame = fx.apply(frame, t, i)

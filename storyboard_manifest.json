@@ -13,12 +13,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "drifting mist",
         "dust motes"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -39,12 +41,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "soft light rays",
         "slow smoke"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -65,12 +69,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_out",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "floating spores",
         "green ember glow"
       ],
+      "sfx": "",
       "references": [
         "leshy"
       ],
@@ -93,12 +99,14 @@
       "motion_type": "ai_video",
       "camera": {
         "move": "static",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "scale-shift shimmer",
         "falling leaves"
       ],
+      "sfx": "",
       "references": [],
       "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,
@@ -119,12 +127,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "harsh noon light",
         "insect haze"
       ],
+      "sfx": "",
       "references": [
         "leshy"
       ],
@@ -147,12 +157,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.5
       },
       "fx": [
         "candle flicker",
         "breath vapor"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -173,12 +185,14 @@
       "motion_type": "static",
       "camera": {
         "move": "static",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "dim light rays",
         "slow drifting mist"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -199,12 +213,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_out",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "slow rotation",
         "fog swirl"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -225,12 +241,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "pan_left",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "ground fog",
         "leaf drift"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -251,12 +269,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "warm backlight",
         "hearth smoke in distance"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -277,12 +297,14 @@
       "motion_type": "static",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "dappled light flicker",
         "dust motes"
       ],
+      "sfx": "",
       "references": [
         "man"
       ],
@@ -305,12 +327,14 @@
       "motion_type": "static",
       "camera": {
         "move": "static",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "dead-still air",
         "faint dust suspended"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -331,12 +355,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "golden haze",
         "gentle leaf fall"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -357,12 +383,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "pan_right",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "candle flicker",
         "dust in light"
       ],
+      "sfx": "",
       "references": [
         "wife"
       ],
@@ -385,12 +413,14 @@
       "motion_type": "ai_video",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "silhouette warp",
         "cold mist"
       ],
+      "sfx": "",
       "references": [],
       "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,
@@ -411,12 +441,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "harsh light",
         "slow grass sway"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -437,12 +469,14 @@
       "motion_type": "ai_video",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "warping perspective",
         "swirling fog"
       ],
+      "sfx": "",
       "references": [],
       "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,
@@ -463,12 +497,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_out",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "slow spin",
         "fog drift"
       ],
+      "sfx": "",
       "references": [
         "man"
       ],
@@ -491,12 +527,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "candle-warm rim light",
         "leaf fall"
       ],
+      "sfx": "",
       "references": [
         "man"
       ],
@@ -519,12 +557,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "static",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "subtle depth shift",
         "mist pull-back"
       ],
+      "sfx": "",
       "references": [
         "man"
       ],
@@ -547,12 +587,14 @@
       "motion_type": "static",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "candle flicker",
         "slow smoke"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -573,12 +615,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_out",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "fading silhouette",
         "cold fog"
       ],
+      "sfx": "",
       "references": [
         "man"
       ],
@@ -601,12 +645,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "warm sunset wash",
         "birds in flight"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -627,12 +673,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "hearth flicker",
         "doorway light bloom"
       ],
+      "sfx": "",
       "references": [
         "man",
         "wife"
@@ -656,12 +704,14 @@
       "motion_type": "static",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "candle flicker",
         "fine dust"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
       "audio_anchor": null,
@@ -682,12 +732,14 @@
       "motion_type": "parallax",
       "camera": {
         "move": "pan_left",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "low mist",
         "fading light"
       ],
+      "sfx": "",
       "references": [
         "man",
         "wife"
@@ -711,12 +763,14 @@
       "motion_type": "ai_video",
       "camera": {
         "move": "push_out",
-        "duration": 6.0
+        "duration": 6.0,
+        "speed": 1.0
       },
       "fx": [
         "green ember eyes",
         "slow mist swallow"
       ],
+      "sfx": "",
       "references": [],
       "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,

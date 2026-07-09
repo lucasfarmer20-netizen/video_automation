@@ -29,6 +29,11 @@ REFERENCES_CONFIG = ROOT / "references.json"  # name -> files/urls registry
 MODELS_DIR = ROOT / "models"             # local ML models (gitignored, large)
 # Depth-Anything V2 (ONNX) for the 2.5D depth stage; overridable via env.
 DEPTH_MODEL = os.environ.get("DEPTH_MODEL") or str(MODELS_DIR / "depth_anything_v2_vits.onnx")
+AUDIO_DIR = ROOT / "audio"               # generated narration + sfx (gitignored)
+
+# ElevenLabs narration voice + model (overridable via env). Default voice: "Adam".
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB")
+ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2")
 
 # --- Secrets (fetched natively; presence validated on demand) ---------------
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
