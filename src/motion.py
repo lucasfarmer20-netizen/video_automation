@@ -55,19 +55,19 @@ def _camera(move: str, t: float) -> tuple[float, float, float]:
     """
     e = _ease(t)
     if move == "push_in":
-        return 0.06 * e, 0.0, 0.0
+        return 0.032 * e, 0.0, 0.0
     if move == "push_out":
-        return 0.06 * (1.0 - e), 0.0, 0.0
+        return 0.032 * (1.0 - e), 0.0, 0.0
     if move == "pan_left":
-        return 0.0, (0.05 * (0.5 - e)), 0.0
+        return 0.0, (0.026 * (0.5 - e)), 0.0
     if move == "pan_right":
-        return 0.0, (0.05 * (e - 0.5)), 0.0
+        return 0.0, (0.026 * (e - 0.5)), 0.0
     return 0.0, 0.0, 0.0  # static
 
 
 def _plane_parallax(depth_center: float) -> float:
-    """Nearer planes (higher depth) move/scale more under the camera."""
-    return 0.35 + 0.65 * depth_center
+    """Nearer planes (higher depth) move/scale a little more under the camera."""
+    return 0.25 + 0.55 * depth_center
 
 
 # --------------------------------------------------------------------------- #
@@ -83,17 +83,22 @@ def _prep(img: np.ndarray, out_w: int, out_h: int) -> Image.Image:
 
 def _transform(plane: Image.Image, zoom: float, dx: float, dy: float,
                out_w: int, out_h: int) -> Image.Image:
-    """Scale a plane about its centre and translate, then centre-crop to output."""
+    """Sub-pixel scale-about-centre + translate, sampled straight to output size.
+
+    Uses a single bilinear affine warp (no integer paste), so slow moves stay
+    smooth instead of stair-stepping frame to frame.
+    """
     W, H = plane.size
-    scale = 1.0 + zoom
-    sw, sh = int(round(W * scale)), int(round(H * scale))
-    scaled = plane.resize((sw, sh), Image.LANCZOS)
-    # centre it on an output-sized canvas, offset by the (fractional) translation
-    cx = (out_w - sw) // 2 + int(round(dx * out_w))
-    cy = (out_h - sh) // 2 + int(round(dy * out_h))
-    canvas = Image.new("RGBA", (out_w, out_h), (0, 0, 0, 0))
-    canvas.alpha_composite(scaled, (cx, cy))
-    return canvas
+    s = 1.0 + zoom
+    cx, cy = out_w / 2.0, out_h / 2.0
+    ox, oy = (W - out_w) / 2.0, (H - out_h) / 2.0   # centre-crop offset (overscan)
+    tx, ty = dx * out_w, dy * out_h
+    # output (xo,yo) -> input (xi,yi): xi = a*xo + b*yo + c ; yi = d*xo + e*yo + f
+    a = e = 1.0 / s
+    c = ox + cx * (1.0 - 1.0 / s) - tx
+    f = oy + cy * (1.0 - 1.0 / s) - ty
+    return plane.transform((out_w, out_h), Image.AFFINE, (a, 0.0, c, 0.0, e, f),
+                           resample=Image.BILINEAR, fillcolor=(0, 0, 0, 0))
 
 
 def _composite_frame(layers: depthmod.ParallaxLayers, bg_img: Image.Image,
@@ -103,7 +108,7 @@ def _composite_frame(layers: depthmod.ParallaxLayers, bg_img: Image.Image,
     zoom, dx, dy = _camera(move, t)
 
     # Background gets the smallest share of the move (far plane).
-    frame = _transform(bg_img, zoom * 0.35, dx * 0.35, dy * 0.35, out_w, out_h)
+    frame = _transform(bg_img, zoom * 0.15, dx * 0.15, dy * 0.15, out_w, out_h)
     # Foreground planes, far -> near, each scaled by its parallax factor.
     for pimg, dcenter in plane_imgs:
         p = _plane_parallax(dcenter)
@@ -149,8 +154,13 @@ class FX:
         haze = _smooth_noise(out_h, out_w + self._mist_pad, 100, rng)
         mist = ndimage.gaussian_filter(haze, sigma=max(out_w, out_h) / 48.0)
         self.mist = mist - float(mist.mean())            # shape (h, w + pad)
-        # temporally-static paper grain
-        self.grain = (rng.random((out_h, out_w), dtype=np.float32) - 0.5)
+        # temporally-static *paper* grain: coarse (clumps like paper tooth), not
+        # per-pixel snow. Generated small then upsampled.
+        g = rng.random((max(2, out_h // 3), max(2, out_w // 3)), dtype=np.float32)
+        self.grain = np.asarray(
+            Image.fromarray((g * 255).astype(np.uint8)).resize((out_w, out_h), Image.BILINEAR),
+            dtype=np.float32,
+        ) / 255.0 - 0.5
         # sparse dust-mote seed field
         self.motes = rng.random((out_h, out_w), dtype=np.float32)
 
@@ -170,7 +180,9 @@ class FX:
             roll = int(t * self.h * 0.05)
             motes = (np.roll(self.motes, roll, axis=0) > 0.9994).astype(np.float32)
             f = f + motes[..., None] * np.array([0.9, 0.82, 0.55], np.float32)
-        f = f + self.grain[..., None] * 0.03
+        # paper grain, modulated by luminance so shadows stay clean (no snow on black)
+        lum = f.mean(axis=2)
+        f = f + (self.grain * (0.3 + 0.7 * np.clip(lum, 0.0, 1.0)))[..., None] * 0.022
         return np.clip(f, 0.0, 1.0)
 
 
@@ -190,7 +202,7 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
 
     img = depthmod.load_rgb(src)
     if shot.motion_type == MotionType.PARALLAX:
-        layers = depthmod.separate_layers(img, depthmod.estimate_depth(img), n_planes=2)
+        layers = depthmod.separate_layers(img, depthmod.estimate_depth(img), n_planes=4)
         bg_img = _prep(layers.background, out_w, out_h)
         plane_imgs = [(_prep(rgba, out_w, out_h), d) for rgba, d in layers.planes]
     else:  # STATIC — single held plate, no depth split, FX only

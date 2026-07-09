@@ -174,30 +174,33 @@ class ParallaxLayers:
     planes: list[tuple[np.ndarray, float]]       # [(RGBA uint8, depth_center)]
 
 
-def separate_layers(img: np.ndarray, depth: np.ndarray, n_planes: int = 2,
-                    near_q: float = 0.55) -> ParallaxLayers:
-    """Split a still into an inpainted background + ``n_planes`` foreground bands."""
-    rgb = img[..., :3]
-    near_thresh = float(np.quantile(depth, near_q))
-    near_mask = depth >= near_thresh
-    background = inpaint_nearest(rgb, near_mask)
+def separate_layers(img: np.ndarray, depth: np.ndarray, n_planes: int = 4) -> ParallaxLayers:
+    """Split a still into an inpainted backdrop + ``n_planes`` non-overlapping depth
+    bands (far -> near).
 
-    # Foreground depth bands within [near_q, 1.0], each with soft alpha.
-    qs = np.quantile(depth, np.linspace(near_q, 1.0, n_planes + 1))
+    The bands tile the frame, so a static composite reproduces the source exactly
+    and object outlines stay intact; a small parallax shift only exposes the
+    backdrop in the narrow disocclusion gaps at depth discontinuities.
+    """
+    rgb = img[..., :3]
+    qs = np.quantile(depth, np.linspace(0.0, 1.0, n_planes + 1))
+    # Backdrop used only to fill disocclusion gaps: keep the farthest band, inpaint the rest.
+    background = inpaint_nearest(rgb, depth >= float(qs[1]))
+
     planes: list[tuple[np.ndarray, float]] = []
     for i in range(n_planes):
-        lo = float(qs[i])
-        hi = float(qs[i + 1])
+        lo, hi = float(qs[i]), float(qs[i + 1])
         center = (lo + hi) / 2.0
-        in_band = depth >= lo
-        alpha = np.where(in_band, 1.0, 0.0).astype(np.float32)
-        alpha = np.clip(ndimage.gaussian_filter(alpha, sigma=2.5), 0.0, 1.0)
-        rgba = np.dstack([rgb, (alpha * 255).astype(np.uint8)])
+        band = (depth >= lo) if i == n_planes - 1 else ((depth >= lo) & (depth < hi))
+        a = band.astype(np.float32)
+        a = ndimage.maximum_filter(a, size=3)                        # dilate: don't thin edges
+        a = np.clip(ndimage.gaussian_filter(a, sigma=0.8), 0.0, 1.0)  # ~1px feather only
+        rgba = np.dstack([rgb, (a * 255).astype(np.uint8)])
         planes.append((rgba, center))
     return ParallaxLayers(background=background, depth=depth, planes=planes)
 
 
-def layers_from_image(path: str | Path, n_planes: int = 2) -> ParallaxLayers:
+def layers_from_image(path: str | Path, n_planes: int = 4) -> ParallaxLayers:
     """Convenience: image path -> depth -> separated parallax layers."""
     img = load_rgb(path)
     return separate_layers(img, estimate_depth(img), n_planes=n_planes)
