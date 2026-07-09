@@ -185,11 +185,7 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
         depth = depthmod.estimate_depth(img)
         depth = np.asarray(Image.fromarray(depth).resize((out_w, out_h), Image.BILINEAR),
                            dtype=np.float32)
-        # Edge-preserving: median keeps object boundaries as sharp steps (so the warp
-        # cuts cleanly instead of rubber-sheeting the background across a ramp); the
-        # tiny gaussian only removes single-pixel aliasing.
-        depth = ndimage.median_filter(depth, size=7)
-        depth = ndimage.gaussian_filter(depth, sigma=0.8)
+        depth = ndimage.gaussian_filter(depth, sigma=3.0)   # gentler disparity edges
         depth = (depth - depth.min()) / (depth.max() - depth.min() + 1e-6)
         disp = (0.25 + 0.75 * depth).astype(np.float32)     # even far pixels move a little
         base_y, base_x = (a.astype(np.float32) for a in np.mgrid[0:out_h, 0:out_w])
