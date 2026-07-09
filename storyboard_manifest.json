@@ -100,7 +100,7 @@
         "falling leaves"
       ],
       "references": [],
-      "video_model": null,
+      "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,
       "draft_variations": [
         "assets/s004/var_0.png",
@@ -392,7 +392,7 @@
         "cold mist"
       ],
       "references": [],
-      "video_model": null,
+      "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,
       "draft_variations": [
         "assets/s015/var_0.png",
@@ -444,7 +444,7 @@
         "swirling fog"
       ],
       "references": [],
-      "video_model": null,
+      "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,
       "draft_variations": [
         "assets/s017/var_0.png",
@@ -718,7 +718,7 @@
         "slow mist swallow"
       ],
       "references": [],
-      "video_model": null,
+      "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,
       "draft_variations": [
         "assets/s027/var_0.png",
