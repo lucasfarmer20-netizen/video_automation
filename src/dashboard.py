@@ -51,6 +51,10 @@ IGNORE_DIRS = {".venv", ".git", "__pycache__", "assets", "audio", "audio_pool",
 # Active project manifest (this is a single-user local tool, so module state is fine).
 _state = {"manifest": config.MANIFEST_PATH}
 
+# Spend guard: cap paid image regenerations per server process. Raise via env.
+REGEN_LIMIT = int(os.environ.get("STUDIO_REGEN_LIMIT", "20"))
+_regen_count = {"n": 0}
+
 
 # --------------------------------------------------------------------------- #
 # state helpers — everything routes through manifest.load / manifest.save
@@ -305,9 +309,12 @@ async function saveRender(){ const body={ guidance_scale:parseFloat(document.get
 async function pick(sid,idx,el){ el.parentNode.querySelectorAll('.var').forEach(v=>v.classList.remove('sel'));
   el.classList.add('sel'); await post('/api/shot/'+sid,{chosen_variation:idx}); toast(sid+' → variation '+(idx+1)); }
 
-async function regen(sid,btn){ btn.disabled=true; btn.textContent='↻ generating…';
-  const {ok}=await post('/api/regenerate/'+sid); btn.disabled=false; btn.textContent='↻ Regenerate';
-  if(ok){ toast(sid+' regenerated'); setTimeout(()=>location.reload(),500);} else { toast('regen failed'); } }
+async function regen(sid,btn){
+  if(!confirm('\\u26A0 PAID: Regenerate calls the fal image API (~$0.04/still \\u00d7 3 \\u2248 $0.12) and counts against this session\\u2019s limit. Continue?')) return;
+  btn.disabled=true; btn.textContent='↻ generating…';
+  const {ok,data}=await post('/api/regenerate/'+sid); btn.disabled=false; btn.textContent='↻ Regenerate';
+  if(ok){ toast(sid+' regenerated ('+data.regen_used+'/'+data.regen_limit+')'); setTimeout(()=>location.reload(),500);}
+  else { toast((data&&data.error)?data.error:'regen failed'); } }
 
 async function approve(){ const {ok,data}=await post('/api/approve');
   if(ok){ toast(data.gate_cleared?'Approved — paid stage unlocked':'Approved'); setTimeout(()=>location.reload(),700); }
@@ -470,19 +477,29 @@ def add_reference(scene_id: str):
 
 @app.post("/api/regenerate/<scene_id>")
 def regenerate(scene_id: str):
-    from . import assets  # lazy: only import the fal path when actually used
-
     sb = _load()
     shot = _find(sb, scene_id)
     if not shot:
         abort(404)
+    # Spend guard: stop runaway paid calls before touching the fal path.
+    if _regen_count["n"] >= REGEN_LIMIT:
+        return jsonify(
+            ok=False,
+            error=f"Regenerate limit reached for this session ({REGEN_LIMIT}). "
+                  f"Restart the server or raise STUDIO_REGEN_LIMIT to continue.",
+        ), 429
+
+    from . import assets  # lazy: only import the fal path when actually used
+
     n = int(request.args.get("n", 3))
     try:
         assets.generate_for_shot(shot, n, backend=assets.DEFAULT_BACKEND, render=sb.render)
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)), 500
+    _regen_count["n"] += 1
     _save(sb)
-    return jsonify(ok=True, variations=shot.draft_variations)
+    return jsonify(ok=True, variations=shot.draft_variations,
+                   regen_used=_regen_count["n"], regen_limit=REGEN_LIMIT)
 
 
 @app.post("/api/script/generate")
