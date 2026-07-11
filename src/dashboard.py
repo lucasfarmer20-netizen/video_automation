@@ -170,9 +170,12 @@ PAGE = """
   .empty { color:var(--dim); font-style:italic; padding:16px 0; }
   .row { display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap; }
   .refs { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
-  .ref { width:64px; height:40px; border:1px solid var(--line); border-radius:5px; overflow:hidden; background:#0d0b08; }
+  .ref { position:relative; width:64px; height:40px; border:1px solid var(--line); border-radius:5px; overflow:hidden; background:#0d0b08; }
   .ref img { width:100%; height:100%; object-fit:cover; }
   .ref .tag { font-size:10px; color:var(--dim); padding:2px 4px; }
+  .refx { position:absolute; top:0; right:0; width:16px; height:16px; line-height:15px; text-align:center;
+    font-size:11px; cursor:pointer; background:rgba(0,0,0,.7); color:var(--amber); border-bottom-left-radius:5px; }
+  .refx:hover { background:#a33; color:#fff; }
   .drop { border:1px dashed var(--line); border-radius:6px; padding:8px 12px; font-size:12px; color:var(--dim); cursor:pointer; }
   .drop.over { border-color:var(--amber); color:var(--amber); }
   .chatlog { max-height:220px; overflow-y:auto; border:1px solid var(--line); border-radius:6px; padding:8px; margin-bottom:8px; background:#14110e; }
@@ -299,6 +302,7 @@ PAGE = """
       {% for r in shot_refs[s.scene_id] %}
         <div class="ref" title="{{ r.name }}">
           {% if r.file %}<img src="/references/{{ r.file }}">{% else %}<div class="tag">{{ r.name }}</div>{% endif %}
+          <span class="refx" title="remove reference" onclick="removeRef('{{ s.scene_id }}','{{ r.name }}')">✕</span>
         </div>
       {% endfor %}
       <div class="drop" id="drop-{{ s.scene_id }}"
@@ -375,6 +379,8 @@ async function uploadRef(sid,file){ if(!file) return; const d=await addFile(sid,
   if(d.ok){ toast('reference added'); setTimeout(()=>location.reload(),400);} else { toast(d.error||'upload failed'); } }
 function dropRef(ev,sid){ ev.preventDefault(); document.getElementById('drop-'+sid).classList.remove('over');
   const f=ev.dataTransfer.files[0]; if(f) uploadRef(sid,f); }
+async function removeRef(sid,name){ const {ok}=await post('/api/shot/'+sid+'/reference/remove',{name:name});
+  if(ok){ toast('reference removed'); setTimeout(()=>location.reload(),300);} else { toast('remove failed'); } }
 
 async function uploadImage(sid,file){ if(!file) return; toast('uploading image\\u2026');
   const fd=new FormData(); fd.append('file',file);
@@ -612,6 +618,22 @@ def add_image(scene_id: str):
     _save(sb)
     return jsonify(ok=True, path=rel, chosen=shot.chosen_variation,
                    variations=len(shot.draft_variations))
+
+
+@app.post("/api/shot/<scene_id>/reference/remove")
+def remove_reference(scene_id: str):
+    """Unlink a reference name from a shot (leaves the file/registry entry intact)."""
+    sb = _load()
+    shot = _find(sb, scene_id)
+    if not shot:
+        abort(404)
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    if name not in shot.references:
+        return jsonify(ok=False, error="reference not on this shot"), 400
+    shot.references.remove(name)
+    _save(sb)
+    return jsonify(ok=True, references=shot.references)
 
 
 @app.post("/api/regenerate/<scene_id>")

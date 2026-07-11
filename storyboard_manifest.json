@@ -6,10 +6,13 @@
   "storyboard_approved": false,
   "music_track": null,
   "render": {
+    "backend": "nano2",
     "guidance_scale": 3.5,
     "nag_scale": 5.0,
     "num_inference_steps": 28,
-    "negative_prompt": ""
+    "negative_prompt": "",
+    "reference_image": "references/global_frame.jpg",
+    "reference_image_url": "https://v3b.fal.media/files/b/0aa1dec4/muBPo4e0CtS9MR1bsJPN6_global_frame.jpg"
   },
   "shots": [
     {
@@ -62,7 +65,7 @@
       "sfx": "",
       "references": [],
       "video_model": null,
-      "flow_hero": true,
+      "flow_hero": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s002/var_0.png",
