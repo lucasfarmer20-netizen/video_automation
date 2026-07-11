@@ -36,6 +36,7 @@ DEFAULT_BACKEND = "nano2"
 STYLE_REF = "style"  # implicit style reference applied to every Nano Banana beat
 
 NANO2_ENDPOINT = "fal-ai/gemini-3-pro-image-preview"  # Nano Banana 2 / Gemini 3 Pro Image
+NANO2_EDIT_ENDPOINT = "fal-ai/gemini-3-pro-image-preview/edit"  # image-conditioned (frame ref)
 NANO2_RESOLUTION = "2K"               # 1K/2K same price ($0.15/img); 4K is 2x
 CFG_ENDPOINT = "fal-ai/flux-general"  # FLUX.1 [dev] w/ NAG negative prompt (cheaper fallback)
 NANO_ENDPOINT = "fal-ai/nano-banana/edit"
@@ -150,29 +151,55 @@ def style_prompt(prompt: str, lora: dict | None) -> str:
     return prompt
 
 
-def _generate_nano2(prompt: str, n: int, negative: str = NEGATIVE_PROMPT) -> list[str]:
-    """Nano Banana 2 (Gemini 3 Pro Image) text-to-image — the default backend.
+def _generate_nano2(prompt: str, n: int, negative: str = NEGATIVE_PROMPT,
+                    frame_url: str | None = None) -> list[str]:
+    """Nano Banana 2 (Gemini 3 Pro Image) generation — the default backend.
 
     A reasoning model, not CFG-diffusion, so there is no ``negative_prompt`` field:
     the medium-leading positive prompt (from ``_compose_prompt``) carries the style,
     and the avoidance list is folded into the prompt text. Strong prompt adherence,
     text rendering, and character consistency. ~$0.15/image (2K, same price as 1K).
+
+    If ``frame_url`` is set (the project's global frame reference), the edit endpoint
+    conditions on it: the model keeps that image's border / page-edges / framing but
+    renders a brand-new interior in the shot's own medium — the fix for shots drifting
+    to wildly different borders.
     """
-    full = (
+    interior = (
         f"{prompt} Render this authentically in the stated historical art medium — "
         f"a real artifact of that tradition, NOT: {negative}."
     )
-    result = fal_client.subscribe(
-        NANO2_ENDPOINT,
-        arguments={
-            "prompt": full,
-            "num_images": n,
-            "aspect_ratio": "16:9",
-            "resolution": NANO2_RESOLUTION,
-            "output_format": "png",
-        },
-        with_logs=False,
-    )
+    if frame_url:
+        full = (
+            "Use the reference image ONLY as the page frame: match its border, margins, "
+            "page edges, and overall framing EXACTLY. Inside that frame, create a NEW "
+            "illustration — do not reuse the reference's subject or interior artwork. "
+            f"The interior illustration: {interior}"
+        )
+        result = fal_client.subscribe(
+            NANO2_EDIT_ENDPOINT,
+            arguments={
+                "prompt": full,
+                "image_urls": [frame_url],
+                "num_images": n,
+                "aspect_ratio": "16:9",
+                "resolution": NANO2_RESOLUTION,
+                "output_format": "png",
+            },
+            with_logs=False,
+        )
+    else:
+        result = fal_client.subscribe(
+            NANO2_ENDPOINT,
+            arguments={
+                "prompt": interior,
+                "num_images": n,
+                "aspect_ratio": "16:9",
+                "resolution": NANO2_RESOLUTION,
+                "output_format": "png",
+            },
+            with_logs=False,
+        )
     return [img["url"] for img in result.get("images", [])]
 
 
@@ -315,9 +342,11 @@ def generate_for_shot(
     flux-cfg defaults; ``None`` uses the module defaults.
     """
     if backend == "nano2":
-        # Default: Nano Banana 2 (Gemini 3 Pro Image), medium-leading prompt + folded negatives.
+        # Default: Nano Banana 2 (Gemini 3 Pro Image), medium-leading prompt + folded negatives,
+        # optionally conditioned on the project's global frame reference.
         negative, _steps, _guidance, _nag = _resolve_render(render)
-        gen_urls = _generate_nano2(_compose_prompt(shot), n, negative)
+        frame_url = (getattr(render, "reference_image_url", "") or "").strip() or None
+        gen_urls = _generate_nano2(_compose_prompt(shot), n, negative, frame_url)
     elif backend == "flux-cfg":
         # medium-leading positive prompt + NAG negative prompt (cheaper fallback).
         negative, steps, guidance, nag = _resolve_render(render)

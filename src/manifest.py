@@ -52,6 +52,8 @@ class RenderConfig:
     nag_scale: float = 5.0          # negative-prompt strength (NAG) on flux-general
     num_inference_steps: int = 28
     negative_prompt: str = ""       # "" => fall back to assets.NEGATIVE_PROMPT
+    reference_image: str = ""       # global frame reference: repo-relative local path
+    reference_image_url: str = ""   # cached fal URL of the frame reference (nano2 edit)
 
 
 @dataclass

@@ -221,6 +221,22 @@ PAGE = """
     </div>
     <div style="margin-top:10px"><label>negative_prompt override (blank = built-in default)</label>
       <textarea id="k_negative" placeholder="{{ default_negative }}">{{ render.negative_prompt }}</textarea></div>
+    <div class="row" style="margin-top:10px">
+      <label style="margin:0">Global frame reference</label>
+      {% if render.reference_image %}
+        <img src="/{{ render.reference_image }}" style="height:40px;border:1px solid var(--line);border-radius:4px">
+        <button onclick="clearFrame()">✕ remove</button>
+      {% else %}
+        <span class="meta">none — shots may drift to different borders</span>
+      {% endif %}
+      <div class="drop" id="framedrop"
+           ondragover="event.preventDefault();this.classList.add('over')"
+           ondragleave="this.classList.remove('over')"
+           ondrop="dropFrame(event)"
+           onclick="document.getElementById('framefile').click()">⬆ set frame (border/page-edge)</div>
+      <input type="file" id="framefile" accept="image/*" style="display:none" onchange="uploadFrame(this.files[0])">
+      <span class="meta">Nano Banana 2 only</span>
+    </div>
     <div class="row"><button onclick="saveRender()">Save knobs</button></div>
   </div>
 
@@ -367,6 +383,13 @@ async function uploadImage(sid,file){ if(!file) return; toast('uploading image\\
 function dropImage(ev,sid){ ev.preventDefault(); document.getElementById('imgdrop-'+sid).classList.remove('over');
   const f=ev.dataTransfer.files[0]; if(f) uploadImage(sid,f); }
 
+async function uploadFrame(file){ if(!file) return; toast('uploading frame\\u2026'); const fd=new FormData(); fd.append('file',file);
+  const r=await fetch('/api/render/reference',{method:'POST',body:fd}); const d=await r.json();
+  if(d.ok){ toast('frame reference set'); setTimeout(()=>location.reload(),400);} else { toast(d.error||'upload failed'); } }
+function dropFrame(ev){ ev.preventDefault(); document.getElementById('framedrop').classList.remove('over');
+  const f=ev.dataTransfer.files[0]; if(f) uploadFrame(f); }
+async function clearFrame(){ const {ok}=await post('/api/render/reference/clear'); if(ok){ toast('frame cleared'); setTimeout(()=>location.reload(),300);} }
+
 let chat=[];
 function logMsg(role,text){ const l=document.getElementById('chatlog');
   const d=document.createElement('div'); d.className='msg '+(role==='user'?'u':'a');
@@ -462,6 +485,38 @@ def update_render():
         r.negative_prompt = str(data["negative_prompt"])
     _save(sb)
     return jsonify(ok=True, render=asdict(r))
+
+
+@app.post("/api/render/reference")
+def set_reference_image():
+    """Upload/replace the project's GLOBAL frame reference (nano2 conditions on it)."""
+    import fal_client
+
+    sb = _load()
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify(ok=False, error="no file uploaded"), 400
+    try:
+        config.REFERENCES_DIR.mkdir(parents=True, exist_ok=True)
+        ext = secure_filename(file.filename).rpartition(".")[2] or "png"
+        dest = config.REFERENCES_DIR / f"global_frame.{ext}"
+        file.save(str(dest))
+        url = fal_client.upload_file(str(dest))  # needs FAL_KEY
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 500
+    sb.render.reference_image = str(dest.relative_to(config.ROOT)).replace("\\", "/")
+    sb.render.reference_image_url = url
+    _save(sb)
+    return jsonify(ok=True, path=sb.render.reference_image)
+
+
+@app.post("/api/render/reference/clear")
+def clear_reference_image():
+    sb = _load()
+    sb.render.reference_image = ""
+    sb.render.reference_image_url = ""
+    _save(sb)
+    return jsonify(ok=True)
 
 
 @app.post("/api/shot/<scene_id>")
