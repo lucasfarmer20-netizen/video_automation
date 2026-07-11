@@ -40,11 +40,13 @@ LORA_ENDPOINT = "fal-ai/flux-lora"
 BASE_ENDPOINT = "fal-ai/flux/dev"
 IMAGE_SIZE = "landscape_16_9"
 
-# Real-CFG knobs for the flux-general backend. use_real_cfg=True is what makes the
-# negative prompt actually apply (plain flux-dev is guidance-distilled and ignores
-# it); it costs ~2x since each step runs a positive AND a negative pass.
+# flux-general knobs. Negative prompts are applied via NAG (Normalized Attention
+# Guidance) on this guidance-distilled model — NOT real CFG. (`use_real_cfg` + a
+# negative prompt currently 422s the endpoint: "Could not load pipeline". NAG needs
+# no second pass, so it's also cheaper.) nag_scale controls how hard the negative
+# bites; higher = more aggressive filtering of the modern-digital-art look.
 CFG_STEPS = 28
-REAL_CFG_SCALE = 4.0
+NAG_SCALE = 5.0
 GUIDANCE_SCALE = 3.5
 
 # Shared negative prompt (CFG backend only): filter the generic modern-digital-art
@@ -147,24 +149,23 @@ def style_prompt(prompt: str, lora: dict | None) -> str:
 
 def _generate_flux_cfg(
     prompt: str, n: int, negative: str = NEGATIVE_PROMPT, steps: int = CFG_STEPS,
-    guidance: float = GUIDANCE_SCALE, real_cfg: float = REAL_CFG_SCALE,
+    guidance: float = GUIDANCE_SCALE, nag: float = NAG_SCALE,
 ) -> list[str]:
-    """FLUX.1 [dev] with real CFG so the negative prompt is actually applied.
+    """FLUX.1 [dev] (flux-general) with a NAG-applied negative prompt.
 
     The positive ``prompt`` is expected to *lead with* the culture-appropriate
-    historical art medium (the script stage composes it); this backend only adds
-    the shared negative prompt that filters the generic modern-digital-art look.
-    ``use_real_cfg`` runs a positive+negative pass per step (~2x base-flux cost).
-    Knobs (``steps``/``guidance``/``real_cfg``/``negative``) are overridable per
-    project via ``Storyboard.render`` (edited in the dashboard).
+    historical art medium (the script stage composes it); this backend adds the
+    shared negative prompt that filters the generic modern-digital-art look via
+    NAG (``nag_scale``), which works on this distilled model without real CFG.
+    Knobs (``steps``/``guidance``/``nag``/``negative``) are overridable per project
+    via ``Storyboard.render`` (edited in the dashboard).
     """
     result = fal_client.subscribe(
         CFG_ENDPOINT,
         arguments={
             "prompt": prompt,
             "negative_prompt": negative,
-            "use_real_cfg": True,
-            "real_cfg_scale": real_cfg,
+            "nag_scale": nag,
             "num_inference_steps": steps,
             "guidance_scale": guidance,
             "image_size": IMAGE_SIZE,
@@ -178,19 +179,19 @@ def _generate_flux_cfg(
 
 
 def _resolve_render(render) -> tuple[str, int, float, float]:
-    """(negative, steps, guidance, real_cfg) from a RenderConfig or module defaults.
+    """(negative, steps, guidance, nag) from a RenderConfig or module defaults.
 
     An empty ``negative_prompt`` on the config falls back to ``NEGATIVE_PROMPT``
     (the config keeps it empty to avoid a manifest <-> assets import cycle).
     """
     if render is None:
-        return NEGATIVE_PROMPT, CFG_STEPS, GUIDANCE_SCALE, REAL_CFG_SCALE
+        return NEGATIVE_PROMPT, CFG_STEPS, GUIDANCE_SCALE, NAG_SCALE
     negative = (getattr(render, "negative_prompt", "") or "").strip() or NEGATIVE_PROMPT
     return (
         negative,
         getattr(render, "num_inference_steps", CFG_STEPS),
         getattr(render, "guidance_scale", GUIDANCE_SCALE),
-        getattr(render, "real_cfg_scale", REAL_CFG_SCALE),
+        getattr(render, "nag_scale", NAG_SCALE),
     )
 
 
@@ -286,8 +287,8 @@ def generate_for_shot(
     """
     if backend == "flux-cfg":
         # Default: medium-leading positive prompt + shared negative prompt (real CFG).
-        negative, steps, guidance, real_cfg = _resolve_render(render)
-        gen_urls = _generate_flux_cfg(_compose_prompt(shot), n, negative, steps, guidance, real_cfg)
+        negative, steps, guidance, nag = _resolve_render(render)
+        gen_urls = _generate_flux_cfg(_compose_prompt(shot), n, negative, steps, guidance, nag)
     elif backend == "nano":
         urls = ref_urls([STYLE_REF, *(shot.references or [])])
         if not urls:

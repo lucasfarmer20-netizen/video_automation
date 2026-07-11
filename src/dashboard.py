@@ -203,7 +203,7 @@ PAGE = """
     <h3>Generation knobs (this project)</h3>
     <div class="knobs">
       <div><label>guidance_scale</label><input type="number" step="0.1" id="k_guidance" value="{{ render.guidance_scale }}"></div>
-      <div><label>real_cfg_scale</label><input type="number" step="0.1" id="k_realcfg" value="{{ render.real_cfg_scale }}"></div>
+      <div><label>nag_scale (neg strength)</label><input type="number" step="0.1" id="k_nag" value="{{ render.nag_scale }}"></div>
       <div><label>num_inference_steps</label><input type="number" step="1" id="k_steps" value="{{ render.num_inference_steps }}"></div>
     </div>
     <div style="margin-top:10px"><label>negative_prompt override (blank = built-in default)</label>
@@ -302,7 +302,7 @@ async function saveField(sid,field,val){ const b={}; b[field]=val; const {data}=
   toast(sid+' saved'); }
 
 async function saveRender(){ const body={ guidance_scale:parseFloat(document.getElementById('k_guidance').value),
-  real_cfg_scale:parseFloat(document.getElementById('k_realcfg').value),
+  nag_scale:parseFloat(document.getElementById('k_nag').value),
   num_inference_steps:parseInt(document.getElementById('k_steps').value),
   negative_prompt:document.getElementById('k_negative').value };
   const {ok}=await post('/api/render',body); toast(ok?'knobs saved':'save failed'); }
@@ -416,8 +416,8 @@ def update_render():
     r = sb.render
     if "guidance_scale" in data:
         r.guidance_scale = float(data["guidance_scale"])
-    if "real_cfg_scale" in data:
-        r.real_cfg_scale = float(data["real_cfg_scale"])
+    if "nag_scale" in data:
+        r.nag_scale = float(data["nag_scale"])
     if "num_inference_steps" in data:
         r.num_inference_steps = int(data["num_inference_steps"])
     if "negative_prompt" in data:

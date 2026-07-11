@@ -48,7 +48,7 @@ class RenderConfig:
     """
 
     guidance_scale: float = 3.5
-    real_cfg_scale: float = 4.0
+    nag_scale: float = 5.0          # negative-prompt strength (NAG) on flux-general
     num_inference_steps: int = 28
     negative_prompt: str = ""       # "" => fall back to assets.NEGATIVE_PROMPT
 
