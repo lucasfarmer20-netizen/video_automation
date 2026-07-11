@@ -42,6 +42,10 @@ DEFAULT_VIDEO_MODEL = "fal-ai/kling-video/v3/image-to-video"
 TIER_LABEL = {"static": "A · still + FX ($0)", "parallax": "B · parallax ($0)",
               "ai_video": "C · AI video (paid)"}
 
+# Image-model backends offered in the UI (label + rough per-image cost).
+BACKENDS = {"nano2": "Nano Banana 2 (~$0.15)", "flux-cfg": "flux-general (~$0.04)"}
+ALLOWED_BACKENDS = {"nano2", "flux-cfg", "nano", "flux", "flux-lora"}
+
 # Root under which we look for sibling projects, and dirs we never descend into.
 WORKSPACE_ROOT = config.ROOT
 IGNORE_DIRS = {".venv", ".git", "__pycache__", "assets", "audio", "audio_pool",
@@ -201,6 +205,15 @@ PAGE = """
 
   <div class="panel">
     <h3>Generation knobs (this project)</h3>
+    <div class="row" style="margin-top:0;margin-bottom:10px">
+      <label style="margin:0">Default image model</label>
+      <select id="k_backend">
+        {% for v,label in backends.items() %}
+        <option value="{{ v }}" {{ 'selected' if render.backend==v else '' }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <span class="meta">nag/steps below apply to flux-general only</span>
+    </div>
     <div class="knobs">
       <div><label>guidance_scale</label><input type="number" step="0.1" id="k_guidance" value="{{ render.guidance_scale }}"></div>
       <div><label>nag_scale (neg strength)</label><input type="number" step="0.1" id="k_nag" value="{{ render.nag_scale }}"></div>
@@ -282,6 +295,11 @@ PAGE = """
     </div>
 
     <div class="row">
+      <select id="be-{{ s.scene_id }}" title="image model for this regenerate">
+        {% for v,label in backends.items() %}
+        <option value="{{ v }}" {{ 'selected' if render.backend==v else '' }}>{{ label }}</option>
+        {% endfor %}
+      </select>
       <button onclick="regen('{{ s.scene_id }}',this)">↻ Regenerate</button>
       <div class="drop" id="imgdrop-{{ s.scene_id }}"
            ondragover="event.preventDefault();this.classList.add('over')"
@@ -308,7 +326,8 @@ async function saveField(sid,field,val){ const b={}; b[field]=val; const {data}=
   if(field==='flow_hero'){ document.getElementById('beat-'+sid).classList.toggle('hero',val); }
   toast(sid+' saved'); }
 
-async function saveRender(){ const body={ guidance_scale:parseFloat(document.getElementById('k_guidance').value),
+async function saveRender(){ const body={ backend:document.getElementById('k_backend').value,
+  guidance_scale:parseFloat(document.getElementById('k_guidance').value),
   nag_scale:parseFloat(document.getElementById('k_nag').value),
   num_inference_steps:parseInt(document.getElementById('k_steps').value),
   negative_prompt:document.getElementById('k_negative').value };
@@ -318,10 +337,13 @@ async function pick(sid,idx,el){ el.parentNode.querySelectorAll('.var').forEach(
   el.classList.add('sel'); await post('/api/shot/'+sid,{chosen_variation:idx}); toast(sid+' → variation '+(idx+1)); }
 
 async function regen(sid,btn){
-  if(!confirm('\\u26A0 PAID: Regenerate calls Nano Banana 2 via fal (~$0.15/still \\u00d7 3 \\u2248 $0.45) and counts against this session\\u2019s limit. Continue?')) return;
+  const be=document.getElementById('be-'+sid).value;
+  const cost = be==='nano2' ? 'Nano Banana 2 (~$0.15/still \\u00d7 3 \\u2248 $0.45)'
+                            : 'flux-general (~$0.04/still \\u00d7 3 \\u2248 $0.12)';
+  if(!confirm('\\u26A0 PAID: Regenerate calls '+cost+' via fal and counts against this session\\u2019s limit. Continue?')) return;
   btn.disabled=true; btn.textContent='↻ generating…';
-  const {ok,data}=await post('/api/regenerate/'+sid); btn.disabled=false; btn.textContent='↻ Regenerate';
-  if(ok){ toast(sid+' regenerated ('+data.regen_used+'/'+data.regen_limit+')'); setTimeout(()=>location.reload(),500);}
+  const {ok,data}=await post('/api/regenerate/'+sid,{backend:be}); btn.disabled=false; btn.textContent='↻ Regenerate';
+  if(ok){ toast(sid+' regenerated ('+data.regen_used+'/'+data.regen_limit+', '+data.backend+')'); setTimeout(()=>location.reload(),500);}
   else { toast((data&&data.error)?data.error:'regen failed'); } }
 
 async function approve(){ const {ok,data}=await post('/api/approve');
@@ -396,7 +418,7 @@ def index():
     return render_template_string(
         PAGE, sb=sb, tiers=TIER_LABEL, paid=_paid_count(sb),
         projects=_scan_projects(), render=sb.render, shot_refs=shot_refs,
-        default_negative=NEGATIVE_PROMPT,
+        default_negative=NEGATIVE_PROMPT, backends=BACKENDS,
     )
 
 
@@ -428,6 +450,8 @@ def update_render():
     sb = _load()
     data = request.get_json(force=True) or {}
     r = sb.render
+    if "backend" in data and str(data["backend"]) in ALLOWED_BACKENDS:
+        r.backend = str(data["backend"])
     if "guidance_scale" in data:
         r.guidance_scale = float(data["guidance_scale"])
     if "nag_scale" in data:
@@ -551,14 +575,19 @@ def regenerate(scene_id: str):
 
     from . import assets  # lazy: only import the fal path when actually used
 
-    n = int(request.args.get("n", 3))
+    data = request.get_json(silent=True) or {}
+    backend = (data.get("backend") or getattr(sb.render, "backend", None)
+               or assets.DEFAULT_BACKEND)
+    if backend not in ALLOWED_BACKENDS:
+        backend = assets.DEFAULT_BACKEND
+    n = int(data.get("n", request.args.get("n", 3)))
     try:
-        assets.generate_for_shot(shot, n, backend=assets.DEFAULT_BACKEND, render=sb.render)
+        assets.generate_for_shot(shot, n, backend=backend, render=sb.render)
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)), 500
     _regen_count["n"] += 1
     _save(sb)
-    return jsonify(ok=True, variations=shot.draft_variations,
+    return jsonify(ok=True, variations=shot.draft_variations, backend=backend,
                    regen_used=_regen_count["n"], regen_limit=REGEN_LIMIT)
 
 

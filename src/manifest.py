@@ -47,6 +47,7 @@ class RenderConfig:
     (kept empty to avoid a manifest <-> assets import cycle).
     """
 
+    backend: str = "nano2"          # default image model: nano2 | flux-cfg
     guidance_scale: float = 3.5
     nag_scale: float = 5.0          # negative-prompt strength (NAG) on flux-general
     num_inference_steps: int = 28
