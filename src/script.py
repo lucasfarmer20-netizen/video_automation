@@ -172,27 +172,14 @@ def _beats_to_storyboard(data: dict) -> Storyboard:
     )
 
 
-def generate_script(
-    topic: str,
-    num_beats: int | None = None,
-    model: str = DEFAULT_MODEL,
-    client: anthropic.Anthropic | None = None,
-) -> Storyboard:
-    """Draft narration + storyboard beats for ``topic`` via Claude."""
-    config.require_for("script")  # fail loudly if ANTHROPIC_API_KEY is unset
-    client = client or anthropic.Anthropic()
-
+def _scope(num_beats: int | None) -> str:
     if num_beats:
-        scope = f"Produce about {num_beats} beats."
-    else:
-        scope = "Produce as many beats as the investigation needs (typically 15-40)."
+        return f"Produce about {num_beats} beats."
+    return "Produce as many beats as the investigation needs (typically 15-40)."
 
-    user_prompt = (
-        "Research and script an Illuminated Bestiary documentary episode, in Vesper's "
-        "voice, starting with the manuscript cold open and following the Illuminated "
-        f"Codex format.\n\nEntity / topic:\n{topic}\n\n{scope}"
-    )
 
+def _request_storyboard(messages: list[dict], model: str, client) -> Storyboard:
+    """Run the structured (json_schema) storyboard request and map the result."""
     response = client.messages.create(
         model=model,
         max_tokens=16000,
@@ -202,14 +189,56 @@ def generate_script(
             "effort": "high",
             "format": {"type": "json_schema", "schema": SCRIPT_SCHEMA},
         },
-        messages=[{"role": "user", "content": user_prompt}],
+        messages=messages,
     )
-
     if response.stop_reason == "refusal":
         raise RuntimeError("Claude declined to draft this script (safety refusal).")
-
     text = next(b.text for b in response.content if b.type == "text")
     return _beats_to_storyboard(json.loads(text))
+
+
+def generate_script(
+    topic: str,
+    num_beats: int | None = None,
+    model: str = DEFAULT_MODEL,
+    client: anthropic.Anthropic | None = None,
+) -> Storyboard:
+    """Draft narration + storyboard beats for ``topic`` via Claude."""
+    config.require_for("script")  # fail loudly if ANTHROPIC_API_KEY is unset
+    client = client or anthropic.Anthropic()
+    user_prompt = (
+        "Research and script an Illuminated Bestiary documentary episode, in Vesper's "
+        "voice, starting with the manuscript cold open and following the Illuminated "
+        f"Codex format.\n\nEntity / topic:\n{topic}\n\n{_scope(num_beats)}"
+    )
+    return _request_storyboard([{"role": "user", "content": user_prompt}], model, client)
+
+
+def generate_script_from_messages(
+    messages: list[dict],
+    num_beats: int | None = None,
+    model: str = DEFAULT_MODEL,
+    client: anthropic.Anthropic | None = None,
+) -> Storyboard:
+    """Turn a Vesper develop-chat conversation into a finished structured storyboard.
+
+    The whole conversation becomes the brief; a final instruction asks Claude to
+    commit it to the Illuminated Codex format as schema-valid JSON.
+    """
+    config.require_for("script")
+    client = client or anthropic.Anthropic()
+    if not messages:
+        raise ValueError("Cannot script from an empty conversation.")
+    convo = list(messages) + [{
+        "role": "user",
+        "content": (
+            "Now turn everything we discussed into the finished piece. Write the full "
+            "Illuminated Bestiary documentary storyboard in Vesper's voice, starting "
+            f"with the manuscript cold open and following the Illuminated Codex format. "
+            f"{_scope(num_beats)}"
+        ),
+    }]
+    return _request_storyboard(convo, model, client)
 
 
 def lock_script(storyboard: Storyboard) -> Storyboard:

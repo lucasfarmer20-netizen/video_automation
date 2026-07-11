@@ -218,6 +218,7 @@ PAGE = """
       <input type="text" id="chatinput" placeholder="Ask Vesper to develop the entity / angle…" style="flex:1"
         onkeydown="if(event.key==='Enter')chatSend()">
       <button onclick="chatSend()">Send</button>
+      <button class="approve" onclick="scriptFromChat()">Use chat → script</button>
     </div>
     <div class="row">
       <input type="text" id="gen_topic" placeholder="Entity / topic to draft a full storyboard…" style="flex:1">
@@ -339,6 +340,15 @@ async function chatSend(){ const inp=document.getElementById('chatinput'); const
   const {ok,data}=await post('/chat/develop',{messages:chat});
   if(ok){ logMsg('assistant',data.reply); chat.push({role:'assistant',content:data.reply}); }
   else { logMsg('assistant','[error] '+(data.error||'failed')); } }
+
+async function scriptFromChat(){
+  if(!chat.length){ toast('chat with Vesper first'); return; }
+  if(!confirm('\\u26A0 DESTRUCTIVE: turn this conversation into a NEW storyboard, OVERWRITING the active project (all shot text, knobs, chosen drafts, uploaded reference links). Continue?')) return;
+  const beats=document.getElementById('gen_beats').value;
+  toast('writing script from chat\\u2026');
+  const {ok,data}=await post('/api/script/from_chat',{messages:chat,beats:beats||null});
+  if(ok){ toast('scripted '+data.shots+' beats from chat'); setTimeout(()=>location.reload(),600); }
+  else { alert('Failed:\\n'+(data.error||'')); } }
 
 async function genStoryboard(){ const topic=document.getElementById('gen_topic').value.trim(); if(!topic){ toast('enter a topic'); return; }
   if(!confirm('\\u26A0 DESTRUCTIVE: Draft Storyboard will OVERWRITE the active project.\\n\\n'
@@ -514,6 +524,25 @@ def script_generate():
     beats = data.get("beats")
     try:
         sb = script.generate_script(topic, num_beats=int(beats) if beats else None)
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 500
+    _save(sb)
+    return jsonify(ok=True, shots=len(sb.shots), title=sb.title,
+                   cultural_origin=sb.cultural_origin)
+
+
+@app.post("/api/script/from_chat")
+def script_from_chat():
+    """Turn the Vesper develop-chat conversation into a full structured storyboard."""
+    from . import script
+
+    data = request.get_json(force=True) or {}
+    messages = data.get("messages") or []
+    if not messages:
+        return jsonify(ok=False, error="no conversation yet — chat with Vesper first"), 400
+    beats = data.get("beats")
+    try:
+        sb = script.generate_script_from_messages(messages, num_beats=int(beats) if beats else None)
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)), 500
     _save(sb)
