@@ -283,6 +283,13 @@ PAGE = """
 
     <div class="row">
       <button onclick="regen('{{ s.scene_id }}',this)">↻ Regenerate</button>
+      <div class="drop" id="imgdrop-{{ s.scene_id }}"
+           ondragover="event.preventDefault();this.classList.add('over')"
+           ondragleave="this.classList.remove('over')"
+           ondrop="dropImage(event,'{{ s.scene_id }}')"
+           onclick="document.getElementById('imgfile-{{ s.scene_id }}').click()">⬆ Upload finished image (use as draft)</div>
+      <input type="file" id="imgfile-{{ s.scene_id }}" accept="image/*" style="display:none"
+             onchange="uploadImage('{{ s.scene_id }}',this.files[0])">
     </div>
   </div>
 {% endfor %}
@@ -330,6 +337,13 @@ async function uploadRef(sid,file){ if(!file) return; const d=await addFile(sid,
   if(d.ok){ toast('reference added'); setTimeout(()=>location.reload(),400);} else { toast(d.error||'upload failed'); } }
 function dropRef(ev,sid){ ev.preventDefault(); document.getElementById('drop-'+sid).classList.remove('over');
   const f=ev.dataTransfer.files[0]; if(f) uploadRef(sid,f); }
+
+async function uploadImage(sid,file){ if(!file) return; toast('uploading image\\u2026');
+  const fd=new FormData(); fd.append('file',file);
+  const r=await fetch('/api/shot/'+sid+'/image',{method:'POST',body:fd}); const d=await r.json();
+  if(d.ok){ toast('image uploaded & selected'); setTimeout(()=>location.reload(),400);} else { toast(d.error||'upload failed'); } }
+function dropImage(ev,sid){ ev.preventDefault(); document.getElementById('imgdrop-'+sid).classList.remove('over');
+  const f=ev.dataTransfer.files[0]; if(f) uploadImage(sid,f); }
 
 let chat=[];
 function logMsg(role,text){ const l=document.getElementById('chatlog');
@@ -483,6 +497,42 @@ def add_reference(scene_id: str):
         shot.references.append(name)
     _save(sb)
     return jsonify(ok=True, name=name, file=fname, references=shot.references)
+
+
+@app.post("/api/shot/<scene_id>/image")
+def add_image(scene_id: str):
+    """Upload a finished image made outside the pipeline as a draft for this shot.
+
+    Saves it beside any generated variations, appends it to ``draft_variations``,
+    and auto-selects it (``chosen_variation`` + ``draft_image``) since it was made
+    on purpose. No fal call — free, and works even if the shot has no drafts yet.
+    """
+    sb = _load()
+    shot = _find(sb, scene_id)
+    if not shot:
+        abort(404)
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify(ok=False, error="no file uploaded"), 400
+
+    dest_dir = config.ASSETS / scene_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    base = secure_filename(file.filename) or "image.png"
+    stem, _, ext = base.rpartition(".")
+    stem, ext = (stem or base), (ext or "png")
+    n = 0
+    while (dest_dir / f"upload_{n}_{stem}.{ext}").exists():
+        n += 1
+    dest = dest_dir / f"upload_{n}_{stem}.{ext}"
+    file.save(str(dest))
+
+    rel = str(dest.relative_to(config.ROOT)).replace("\\", "/")
+    shot.draft_variations.append(rel)
+    shot.chosen_variation = len(shot.draft_variations) - 1
+    shot.draft_image = rel
+    _save(sb)
+    return jsonify(ok=True, path=rel, chosen=shot.chosen_variation,
+                   variations=len(shot.draft_variations))
 
 
 @app.post("/api/regenerate/<scene_id>")
