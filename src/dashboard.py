@@ -318,7 +318,7 @@ async function pick(sid,idx,el){ el.parentNode.querySelectorAll('.var').forEach(
   el.classList.add('sel'); await post('/api/shot/'+sid,{chosen_variation:idx}); toast(sid+' → variation '+(idx+1)); }
 
 async function regen(sid,btn){
-  if(!confirm('\\u26A0 PAID: Regenerate calls the fal image API (~$0.04/still \\u00d7 3 \\u2248 $0.12) and counts against this session\\u2019s limit. Continue?')) return;
+  if(!confirm('\\u26A0 PAID: Regenerate calls Nano Banana 2 via fal (~$0.15/still \\u00d7 3 \\u2248 $0.45) and counts against this session\\u2019s limit. Continue?')) return;
   btn.disabled=true; btn.textContent='↻ generating…';
   const {ok,data}=await post('/api/regenerate/'+sid); btn.disabled=false; btn.textContent='↻ Regenerate';
   if(ok){ toast(sid+' regenerated ('+data.regen_used+'/'+data.regen_limit+')'); setTimeout(()=>location.reload(),500);}

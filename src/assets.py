@@ -1,21 +1,22 @@
 """Assets stage: draft-image generation.
 
-Default backend is **``fal-ai/flux-general``** (FLUX.1 [dev] with *real* CFG):
-each beat's positive prompt leads with a historical art medium authentic to the
-entity's culture (the script stage composes it), and a shared ``NEGATIVE_PROMPT``
-filters the generic modern-digital-art look. Real CFG (``use_real_cfg``) is what
-makes the negative prompt actually bite — it runs a positive+negative pass per
-step (~2x base-flux cost), the deliberate trade for cultural authenticity.
+Default backend is **``nano2``** — Nano Banana 2 / Gemini 3 Pro Image
+(``fal-ai/gemini-3-pro-image-preview``): a reasoning image model with strong
+prompt adherence, text rendering, and character consistency. Each beat's prompt
+leads with the culture-authentic historical art medium (composed by the script
+stage), plus the per-shot character anchors, with the avoidance list folded into
+the prompt text (the model has no ``negative_prompt`` field). ~$0.15/image.
 
-Legacy backends (retained, off by default):
-- ``--backend nano``      Nano Banana style-transfer from ``references.json``.
-- ``--backend flux-lora`` trained "DEEPROOTLORE" ink LoRA.
-- ``--backend flux``      base flux/dev + STYLE_BLOCK (no negative prompt).
+Other backends:
+- ``--backend flux-cfg``  FLUX.1 [dev] (flux-general) + NAG negative prompt (~$0.04, cheaper).
+- ``--backend nano``      original Nano Banana style-transfer from ``references.json``.
+- ``--backend flux-lora`` trained "DEEPROOTLORE" ink LoRA (legacy).
+- ``--backend flux``      base flux/dev + STYLE_BLOCK (legacy).
 
 CLI:
-    python -m src.assets                       # all beats, flux-general (real CFG)
+    python -m src.assets                       # all beats, Nano Banana 2
     python -m src.assets --scene s004          # one beat
-    python -m src.assets --backend nano        # legacy style-transfer
+    python -m src.assets --backend flux-cfg    # cheaper flux fallback
 """
 
 from __future__ import annotations
@@ -31,10 +32,12 @@ from . import config
 from .manifest import Shot, Storyboard, load, save
 
 DEFAULT_VARIATIONS = 3
-DEFAULT_BACKEND = "flux-cfg"
+DEFAULT_BACKEND = "nano2"
 STYLE_REF = "style"  # implicit style reference applied to every Nano Banana beat
 
-CFG_ENDPOINT = "fal-ai/flux-general"  # FLUX.1 [dev] w/ real CFG -> honours negative_prompt
+NANO2_ENDPOINT = "fal-ai/gemini-3-pro-image-preview"  # Nano Banana 2 / Gemini 3 Pro Image
+NANO2_RESOLUTION = "2K"               # 1K/2K same price ($0.15/img); 4K is 2x
+CFG_ENDPOINT = "fal-ai/flux-general"  # FLUX.1 [dev] w/ NAG negative prompt (cheaper fallback)
 NANO_ENDPOINT = "fal-ai/nano-banana/edit"
 LORA_ENDPOINT = "fal-ai/flux-lora"
 BASE_ENDPOINT = "fal-ai/flux/dev"
@@ -145,6 +148,32 @@ def style_prompt(prompt: str, lora: dict | None) -> str:
     if trigger and trigger.lower() not in prompt.lower():
         return f"{trigger} {prompt}"
     return prompt
+
+
+def _generate_nano2(prompt: str, n: int, negative: str = NEGATIVE_PROMPT) -> list[str]:
+    """Nano Banana 2 (Gemini 3 Pro Image) text-to-image — the default backend.
+
+    A reasoning model, not CFG-diffusion, so there is no ``negative_prompt`` field:
+    the medium-leading positive prompt (from ``_compose_prompt``) carries the style,
+    and the avoidance list is folded into the prompt text. Strong prompt adherence,
+    text rendering, and character consistency. ~$0.15/image (2K, same price as 1K).
+    """
+    full = (
+        f"{prompt} Render this authentically in the stated historical art medium — "
+        f"a real artifact of that tradition, NOT: {negative}."
+    )
+    result = fal_client.subscribe(
+        NANO2_ENDPOINT,
+        arguments={
+            "prompt": full,
+            "num_images": n,
+            "aspect_ratio": "16:9",
+            "resolution": NANO2_RESOLUTION,
+            "output_format": "png",
+        },
+        with_logs=False,
+    )
+    return [img["url"] for img in result.get("images", [])]
 
 
 def _generate_flux_cfg(
@@ -285,8 +314,12 @@ def generate_for_shot(
     ``render`` is a ``Storyboard.render`` (RenderConfig) whose knobs override the
     flux-cfg defaults; ``None`` uses the module defaults.
     """
-    if backend == "flux-cfg":
-        # Default: medium-leading positive prompt + shared negative prompt (real CFG).
+    if backend == "nano2":
+        # Default: Nano Banana 2 (Gemini 3 Pro Image), medium-leading prompt + folded negatives.
+        negative, _steps, _guidance, _nag = _resolve_render(render)
+        gen_urls = _generate_nano2(_compose_prompt(shot), n, negative)
+    elif backend == "flux-cfg":
+        # medium-leading positive prompt + NAG negative prompt (cheaper fallback).
         negative, steps, guidance, nag = _resolve_render(render)
         gen_urls = _generate_flux_cfg(_compose_prompt(shot), n, negative, steps, guidance, nag)
     elif backend == "nano":
@@ -359,7 +392,7 @@ def _main() -> None:
     parser.add_argument("--scene", nargs="*", help="scene id(s) to generate (default: all).")
     parser.add_argument("--variations", type=int, default=DEFAULT_VARIATIONS)
     parser.add_argument("--limit", type=int, default=None, help="cap number of beats.")
-    parser.add_argument("--backend", default=DEFAULT_BACKEND, choices=["flux-cfg", "nano", "flux", "flux-lora"])
+    parser.add_argument("--backend", default=DEFAULT_BACKEND, choices=["nano2", "flux-cfg", "nano", "flux", "flux-lora"])
     parser.add_argument("--force", action="store_true", help="regenerate beats that already have drafts.")
     args = parser.parse_args()
 
