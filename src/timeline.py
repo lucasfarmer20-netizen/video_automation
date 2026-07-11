@@ -92,7 +92,7 @@ def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
     narr_dir = config.AUDIO_DIR / "narration"
     sfx_dir = config.AUDIO_DIR / "sfx"
 
-    tl = otio.schema.Timeline(name=sb.title or "Deep Root Lore")
+    tl = otio.schema.Timeline(name=sb.title or "The Illuminated Bestiary")
     V = otio.schema.Track(name="V1", kind=otio.schema.TrackKind.Video)
     A_narr = otio.schema.Track(name="Narration", kind=otio.schema.TrackKind.Audio)
     A_sfx = otio.schema.Track(name="SFX", kind=otio.schema.TrackKind.Audio)
@@ -242,7 +242,7 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
 
 
 def _main() -> None:
-    parser = argparse.ArgumentParser(description="Deep Root Lore timeline assembly.")
+    parser = argparse.ArgumentParser(description="The Illuminated Bestiary timeline assembly.")
     parser.add_argument("--preview", action="store_true",
                         help="also render a watchable review-proxy mp4 (not the master).")
     args = parser.parse_args()

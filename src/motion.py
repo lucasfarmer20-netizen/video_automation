@@ -248,7 +248,7 @@ def render_all(only: set[str] | None = None, fps: int = DEFAULT_FPS,
 
 
 def _main() -> None:
-    parser = argparse.ArgumentParser(description="Deep Root Lore local motion engine.")
+    parser = argparse.ArgumentParser(description="The Illuminated Bestiary local motion engine.")
     parser.add_argument("--scene", nargs="*", help="scene id(s) to render (default: all approved local).")
     parser.add_argument("--fps", type=int, default=DEFAULT_FPS)
     parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT)

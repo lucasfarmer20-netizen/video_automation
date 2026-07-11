@@ -1,5 +1,11 @@
 """One-time setup tool: train the "Deep Root Lore" style LoRA on fal.
 
+DEPRECATED (The Illuminated Bestiary pivot): the single-locked-style LoRA approach
+is superseded by per-culture historical mediums (`Storyboard.cultural_origin` ->
+`Shot.style_medium`) rendered via `fal-ai/flux-general` with real CFG. This trainer
+and the `lora_config.json` it writes are kept only for the legacy `--backend
+flux-lora` fallback in `src/assets.py`. Do not use for new work.
+
 Zips the curated frames in lora_training/, uploads them, runs
 fal-ai/flux-lora-fast-training in style mode, and writes the resulting
 LoRA pointer to lora_config.json for src/assets.py to use.

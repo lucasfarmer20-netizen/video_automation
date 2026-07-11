@@ -39,12 +39,28 @@ class Camera:
 
 
 @dataclass
+class RenderConfig:
+    """Per-project image-generation knobs, editable from the dashboard.
+
+    These override ``assets.py``'s module defaults for this one storyboard. An
+    empty ``negative_prompt`` means "use the ``assets.NEGATIVE_PROMPT`` default"
+    (kept empty to avoid a manifest <-> assets import cycle).
+    """
+
+    guidance_scale: float = 3.5
+    real_cfg_scale: float = 4.0
+    num_inference_steps: int = 28
+    negative_prompt: str = ""       # "" => fall back to assets.NEGATIVE_PROMPT
+
+
+@dataclass
 class Shot:
     """A single storyboard beat."""
 
     scene_id: str
     narration: str = ""                        # words the narrator speaks over this beat
-    prompt: str = ""                           # visual description -> flux draft prompt
+    prompt: str = ""                           # scene description -> flux draft prompt
+    style_medium: str = ""                     # historical art medium leading the image (per culture)
     chosen_variation: int | None = None        # index into generated drafts
     motion_type: MotionType = MotionType.PARALLAX
     camera: Camera = field(default_factory=Camera)
@@ -52,6 +68,7 @@ class Shot:
     sfx: str = ""                              # ElevenLabs sound-effects prompt (ambience/foley)
     references: list[str] = field(default_factory=list)  # character refs (Nano Banana), style is implicit
     video_model: str | None = None            # set only when motion_type == AI_VIDEO
+    flow_hero: bool = False                    # manual VEO/Flow hero (export -> Google Flow -> import bridge)
     audio_anchor: float | None = None         # librosa beat (s) this cut lands on
     draft_variations: list[str] = field(default_factory=list)  # paths to fal draft variations
     draft_image: str | None = None            # path to chosen draft still
@@ -68,9 +85,11 @@ class Storyboard:
 
     version: int = MANIFEST_VERSION
     title: str = ""
+    cultural_origin: str = ""         # entity's real ethnography; drives each shot's style_medium
     script_locked: bool = False       # Script gate
     storyboard_approved: bool = False  # Gate 1 (human pressed "approve")
     music_track: str | None = None    # selected file from audio_pool/
+    render: RenderConfig = field(default_factory=RenderConfig)  # dashboard-editable gen knobs
     shots: list[Shot] = field(default_factory=list)
 
     # --- Gate logic ---------------------------------------------------------
@@ -110,12 +129,18 @@ class Storyboard:
             )
             for shot in data.get("shots", [])
         ]
+        raw_render = data.get("render") or {}
+        render = RenderConfig(
+            **{k: raw_render[k] for k in raw_render if k in RenderConfig.__dataclass_fields__}
+        )
         return cls(
             version=data.get("version", MANIFEST_VERSION),
             title=data.get("title", ""),
+            cultural_origin=data.get("cultural_origin", ""),
             script_locked=data.get("script_locked", False),
             storyboard_approved=data.get("storyboard_approved", False),
             music_track=data.get("music_track"),
+            render=render,
             shots=shots,
         )
 

@@ -30,54 +30,88 @@ from .manifest import Camera, MotionType, Shot, Storyboard, load, save
 DEFAULT_MODEL = os.environ.get("SCRIPT_MODEL", "claude-opus-4-8")
 
 SYSTEM_PROMPT = """\
-You are the head writer for "Deep Root Lore," a dark-folklore horror narration \
-channel. You write voiceover scripts for atmospheric, ink-and-watercolor \
-graphic-novel horror videos rooted in real world folklore (Philippine, Slavic, \
-and other traditions).
+You are Vesper — the researcher-narrator of "The Illuminated Bestiary," a folklore \
+DOCUMENTARY channel. Vesper is an authoritative, deeply curious ethnographic \
+researcher and academic investigator who tracks a folkloric entity the way a field \
+anthropologist would: through the archival record and the evidence, not a campfire \
+story. Your register is investigation, never fiction.
 
-Write narration that a human wrote, not narration that sounds "AI." That means:
+THE ILLUMINATED CODEX FORMAT (mandatory structure):
+- COLD OPEN — beat s001 is ALWAYS the standard manuscript open: a physical human \
+hand opens an ancient illuminated book, turns to THIS entity's specific chapter, and \
+the camera pushes past the page into the first illustration. This fixed wrapper opens \
+every episode. Vesper's first lines frame the investigation — what is attested here, \
+and where the account comes from.
+- BODY — serious ethnographic tracking, built by ACCRETION OF EVIDENCE, not plot. \
+Each beat advances one of: archival and eyewitness accounts and how they were \
+recorded; historical geographic distribution (where the entity is attested, its \
+spread and borders); regional variation (how the account shifts between communities); \
+systemic physical patterns (details that recur across independent accounts — the \
+anatomy, the tell, the ritual counter-measure). Open curiosity loops and pay them off.
+- DISCARD FICTION ENTIRELY: no invented protagonist, no scene-by-scene story, no \
+dramatized victim, no "Little did they know", no spooky-story cliches. You are \
+explaining a tradition, not telling a tale.
 
-- Vary sentence length hard. Real narration lurches — a long, breathing line, \
-then two words. Then silence. Use fragments and unfinished thoughts for dread.
-- Kill the tells: no tricolons ("the cold, the dark, the silence"), no \
-"not X, but Y", no "Little did they know", no "stands as a testament", no \
-sentences that just restate what you already showed.
-- Concrete sensory detail over abstraction. Not "fear crept in" but "the salt \
-didn't move. That's how she knew." One weird, true, specific detail per beat.
-- Write for the ear. If a line is hard to say aloud, cut it.
-- Respect the folklore. Ground it in real lore; don't invent generic monsters.
+CULTURAL ACCURACY (non-negotiable — this is our credibility moat):
+- Attribute every entity to its TRUE culture of origin, and separate regional \
+sub-groups precisely: the Adze is Ewe, NOT Akan; never blur a whole region into one \
+people. Name the people, region, and period accurately — getting this wrong destroys \
+the channel's authority. Put that culture in "cultural_origin".
+- Where the real tradition genuinely varies between groups, say so; do not flatten it.
+- Do NOT invent fake scholars, citations, or dates. Stay within what the real \
+ethnographic record supports.
+
+VOICE (write for a human narrator, not an AI):
+- Authoritative but genuinely curious — a researcher who has read the sources walking \
+you through the evidence.
+- Vary sentence length hard. Kill the AI tells: no tricolons ("the cold, the dark, \
+the silence"), no "not X, but Y", no "stands as a testament", no sentence that just \
+restates what the image already shows.
+- One concrete, sourced-feeling ethnographic detail per beat, over mood-words. Write \
+for the ear; if a line is hard to say aloud, cut it.
 
 MONETIZATION SAFETY (hard rule — this is a YouTube channel):
-- Imply, never show. No explicit gore, blood, viscera, wounds, or dismemberment \
-in the narration or the visuals. Convey horror through shadow, silhouette, \
-lighting, aftermath, suggestion, and sound. Cut away before the act.
-- No graphic harm to children or infants shown or described. If the lore \
-involves a child, handle it with heavy restraint or keep the child off-screen.
-- Dread and suspense, not shock or disgust. No sexual content.
-This keeps the video advertiser-friendly and out of age restriction. Restraint \
-is the aesthetic here, not a limitation.
+- Imply, never show. No explicit gore, blood, viscera, wounds, or dismemberment in \
+narration or visuals. Convey the unsettling through shadow, silhouette, lighting, \
+aftermath, and suggestion. Cut away before the act.
+- No graphic harm to children or infants shown or described. Handle any child in the \
+lore with heavy restraint or keep them off-screen.
+- Scholarly unease, not shock or disgust. No sexual content. Restraint is the \
+aesthetic here, not a limitation.
 
-You also plan the storyboard. For each beat, give the narration and a matching \
-visual, and propose how much motion it deserves. Motion tiers (cost matters — \
-reserve the paid one for a handful of hero shots):
+STORYBOARD PLANNING. For each beat give the narration and a matching visual, and \
+propose how much motion it deserves. Motion tiers (cost matters — reserve the paid \
+one for a handful of hero shots):
 - "static": a still + subtle FX (candle flicker, drifting smoke). Cheap.
 - "parallax": a 2.5D depth-parallax move on a still. Cheap. Most beats.
-- "ai_video": true generated motion. Expensive — only genuine motion beats \
-(a transformation, wings unfurling, a face turning). Use sparingly.
+- "ai_video": true generated motion. Expensive — only genuine motion beats (a \
+transformation, wings unfurling, a face turning). Use sparingly.
 
-The visual for each beat is a prompt for an image model, in the Deep Root Lore \
-style: heavy ink linework, watercolor washes, paper grain, chiaroscuro \
-candlelight, near-black shadow with warm amber highlights, cinematic 16:9. \
-Favor shadow-play/silhouette for the scariest reveals — it is cheap and always \
-on-model. End every visual prompt with ", Deep Root Lore style".
+For each beat, "style_medium" is a concrete HISTORICAL ART MEDIUM authentic to the \
+entity's culture, phrased to lead an image prompt — name the real medium, period, and \
+technique. Examples: "a genuine antique ukiyo-e mokuhanga woodblock print, Edo \
+period, hand-carved outlines, flat mineral pigment"; "a Slavic lubok woodcut in the \
+Ivan Bilibin folk-illustration tradition"; "a medieval illuminated-manuscript codex \
+page, egg tempera and gold leaf on vellum"; "a West African bronze relief plaque in \
+the Benin court tradition". Usually the SAME medium every beat (one entity, one \
+culture); vary it only with good reason. Never put a modern/digital/3D/anime/ \
+photographic style here.
 
-Number beats s001, s002, ... in order."""
+"visual" describes ONLY the scene for that beat — subject, composition, strong \
+chiaroscuro, deep shadow, cinematic 16:9. Do NOT restate the medium in "visual" (it \
+comes from "style_medium"). For s001 the visual is the manuscript cold open itself \
+(the hand, the illuminated book, the entity's chapter, the push into the first \
+illustration). Favor shadow-play / silhouette for the scariest reveals — cheap, \
+always on-model, maximally eerie.
+
+Number beats s001, s002, ... in order, starting with the manuscript cold open."""
 
 # JSON schema the model must fill. Enums keep motion/camera values manifest-valid.
 SCRIPT_SCHEMA = {
     "type": "object",
     "properties": {
         "title": {"type": "string"},
+        "cultural_origin": {"type": "string"},
         "beats": {
             "type": "array",
             "items": {
@@ -86,6 +120,7 @@ SCRIPT_SCHEMA = {
                     "scene_id": {"type": "string"},
                     "narration": {"type": "string"},
                     "visual": {"type": "string"},
+                    "style_medium": {"type": "string"},
                     "suggested_motion_type": {
                         "type": "string",
                         "enum": ["static", "parallax", "ai_video"],
@@ -100,6 +135,7 @@ SCRIPT_SCHEMA = {
                     "scene_id",
                     "narration",
                     "visual",
+                    "style_medium",
                     "suggested_motion_type",
                     "suggested_camera",
                     "suggested_fx",
@@ -108,7 +144,7 @@ SCRIPT_SCHEMA = {
             },
         },
     },
-    "required": ["title", "beats"],
+    "required": ["title", "cultural_origin", "beats"],
     "additionalProperties": False,
 }
 
@@ -122,12 +158,18 @@ def _beats_to_storyboard(data: dict) -> Storyboard:
                 scene_id=beat.get("scene_id") or f"s{i:03d}",
                 narration=beat.get("narration", ""),
                 prompt=beat.get("visual", ""),
+                style_medium=beat.get("style_medium", ""),
                 motion_type=MotionType(beat.get("suggested_motion_type", "parallax")),
                 camera=Camera(move=beat.get("suggested_camera", "push_in")),
                 fx=list(beat.get("suggested_fx") or []),
             )
         )
-    return Storyboard(title=data.get("title", ""), script_locked=False, shots=shots)
+    return Storyboard(
+        title=data.get("title", ""),
+        cultural_origin=data.get("cultural_origin", ""),
+        script_locked=False,
+        shots=shots,
+    )
 
 
 def generate_script(
@@ -143,11 +185,12 @@ def generate_script(
     if num_beats:
         scope = f"Produce about {num_beats} beats."
     else:
-        scope = "Produce as many beats as the story needs (typically 15-40)."
+        scope = "Produce as many beats as the investigation needs (typically 15-40)."
 
     user_prompt = (
-        "Write the narration script and storyboard beats for a Deep Root Lore "
-        f"folklore horror episode.\n\nTopic / brief:\n{topic}\n\n{scope}"
+        "Research and script an Illuminated Bestiary documentary episode, in Vesper's "
+        "voice, starting with the manuscript cold open and following the Illuminated "
+        f"Codex format.\n\nEntity / topic:\n{topic}\n\n{scope}"
     )
 
     response = client.messages.create(
@@ -184,7 +227,7 @@ def lock_script(storyboard: Storyboard) -> Storyboard:
 
 
 def _main() -> None:
-    parser = argparse.ArgumentParser(description="Deep Root Lore script stage.")
+    parser = argparse.ArgumentParser(description="The Illuminated Bestiary script stage.")
     parser.add_argument("--topic", help="Episode topic / brief to draft from.")
     parser.add_argument("--beats", type=int, default=None, help="Approx beat count.")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Claude model id.")

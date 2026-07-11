@@ -98,12 +98,12 @@ def synthesize_narration(storyboard: Storyboard | None = None,
 # --------------------------------------------------------------------------- #
 # music analysis (librosa, local/free)
 # --------------------------------------------------------------------------- #
-def analyze_music(path: str | Path | None = None, top_db: int = 30,
-                  min_gap: float = 0.35) -> dict:
-    """Analyse the selected music track: tempo, beats, onsets, silent gaps."""
-    import librosa
-    import numpy as np
+def _resolve_track(path: str | Path | None) -> Path:
+    """Resolve a music path (or the manifest's ``music_track``) to a real file.
 
+    A bare filename is looked up inside ``audio_pool/``; an absolute path is used
+    as-is. Raises if nothing is selected or the file is missing.
+    """
     track = path or load().music_track
     if not track:
         raise RuntimeError(
@@ -115,7 +115,40 @@ def analyze_music(path: str | Path | None = None, top_db: int = 30,
         p = config.AUDIO_POOL / p
     if not p.exists():
         raise FileNotFoundError(p)
+    return p
 
+
+def detect_transients(path: str | Path | None = None, hop_length: int = 512,
+                      delta: float = 0.06, wait: int = 3) -> list[float]:
+    """Percussive transients of the music track as a clean list of timestamps.
+
+    Complements :func:`analyze_music`'s beat/onset read: builds the onset-strength
+    envelope and runs ``peak_pick`` to isolate sharp energy spikes — the hard hits
+    a cut can snap to. Returns sorted seconds. Local and free.
+
+    ``delta`` is the peak-pick threshold above the local mean (raise it to keep
+    only the strongest hits); ``wait`` is the minimum frame gap between peaks.
+    """
+    import librosa
+
+    p = _resolve_track(path)
+    y, sr = librosa.load(str(p), mono=True)
+    envelope = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
+    peaks = librosa.util.peak_pick(
+        envelope, pre_max=3, post_max=3, pre_avg=3, post_avg=5,
+        delta=delta, wait=wait,
+    )
+    times = librosa.frames_to_time(peaks, sr=sr, hop_length=hop_length)
+    return [round(float(t), 3) for t in times]
+
+
+def analyze_music(path: str | Path | None = None, top_db: int = 30,
+                  min_gap: float = 0.35) -> dict:
+    """Analyse the selected music track: tempo, beats, onsets, silent gaps."""
+    import librosa
+    import numpy as np
+
+    p = _resolve_track(path)
     y, sr = librosa.load(str(p), mono=True)
     duration = float(librosa.get_duration(y=y, sr=sr))
     tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
@@ -184,8 +217,9 @@ def generate_shot_sfx(storyboard: Storyboard | None = None,
 # CLI
 # --------------------------------------------------------------------------- #
 def _main() -> None:
-    parser = argparse.ArgumentParser(description="Deep Root Lore audio stage.")
+    parser = argparse.ArgumentParser(description="The Illuminated Bestiary audio stage.")
     parser.add_argument("--music", action="store_true", help="analyse the selected music track.")
+    parser.add_argument("--transients", action="store_true", help="list percussive transient timestamps (peak_pick).")
     parser.add_argument("--narration", action="store_true", help="TTS locked-script narration.")
     parser.add_argument("--sfx", action="store_true", help="generate per-beat sound effects.")
     parser.add_argument("--sfx-test", metavar="PROMPT", help="generate one probe SFX and exit.")
@@ -198,13 +232,15 @@ def _main() -> None:
         print(f"Wrote {dest}")
     if args.music:
         print(json.dumps(analyze_music(), indent=2))
+    if args.transients:
+        print(json.dumps(detect_transients(), indent=2))
     if args.narration:
         outs = synthesize_narration(only=only)
         print(f"Narration: {len(outs)} clip(s) in {NARRATION_DIR}")
     if args.sfx:
         outs = generate_shot_sfx(only=only)
         print(f"SFX: {len(outs)} clip(s) in {SFX_DIR}")
-    if not any((args.sfx_test, args.music, args.narration, args.sfx)):
+    if not any((args.sfx_test, args.music, args.transients, args.narration, args.sfx)):
         parser.print_help()
 
 
