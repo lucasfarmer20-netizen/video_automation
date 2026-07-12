@@ -73,6 +73,7 @@ class Shot:
     references: list[str] = field(default_factory=list)  # character refs (Nano Banana), style is implicit
     video_model: str | None = None            # set only when motion_type == AI_VIDEO
     flow_hero: bool = False                    # manual VEO/Flow hero (export -> Google Flow -> import bridge)
+    hero_clip: bool = False                    # a finished Veo/Flow clip was imported -> don't re-render over it
     audio_anchor: float | None = None         # librosa beat (s) this cut lands on
     draft_variations: list[str] = field(default_factory=list)  # paths to fal draft variations
     draft_image: str | None = None            # path to chosen draft still

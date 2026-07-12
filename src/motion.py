@@ -234,6 +234,9 @@ def render_all(only: set[str] | None = None, fps: int = DEFAULT_FPS,
     for shot in sb.shots:
         if only and shot.scene_id not in only:
             continue
+        if getattr(shot, "hero_clip", False):
+            print(f"{shot.scene_id}: imported hero clip — keeping it, not re-rendering.")
+            continue
         is_ai = shot.motion_type == MotionType.AI_VIDEO
         if is_ai and not placeholders:
             continue  # Tier-C handled by the paid video stage, not here

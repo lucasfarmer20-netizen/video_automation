@@ -348,7 +348,14 @@ PAGE = """
         <textarea id="mp-{{ s.scene_id }}" onchange="saveField('{{ s.scene_id }}','motion_prompt',this.value)">{{ s.motion_prompt or motion_suggest[s.scene_id] }}</textarea>
         <div class="row" style="margin-top:4px">
           <button onclick="copyText('mp-{{ s.scene_id }}')">Copy prompt</button>
-          <span class="meta">start frame = the chosen still below · target {{ '%.0f'|format(s.camera.duration) }}s</span>
+          <div class="drop" id="clipdrop-{{ s.scene_id }}"
+               ondragover="event.preventDefault();this.classList.add('over')"
+               ondragleave="this.classList.remove('over')"
+               ondrop="dropClip(event,'{{ s.scene_id }}')"
+               onclick="document.getElementById('clipfile-{{ s.scene_id }}').click()">⬆ import hero clip (Veo/Flow)</div>
+          <input type="file" id="clipfile-{{ s.scene_id }}" accept="video/*" style="display:none"
+                 onchange="uploadClip('{{ s.scene_id }}',this.files[0])">
+          <span class="meta">{% if s.hero_clip %}✓ hero clip imported{% else %}target ~{{ '%.0f'|format(s.camera.duration) }}s{% endif %}</span>
         </div>
         {% endif %}
       </div>
@@ -384,7 +391,7 @@ PAGE = """
              {% if s.draft_image %}poster="/{{ s.draft_image }}"{% endif %}
              style="width:100%;max-height:240px;background:#000;border-radius:8px"
              src="{{ shot_clips[s.scene_id] }}?v={{ range(100000)|random }}"></video>
-      <div class="visual">▶ rendered {{ s.motion_type.value }} clip</div>
+      <div class="visual">▶ {% if s.hero_clip %}imported hero clip (Veo/Flow){% else %}rendered {{ s.motion_type.value }} clip{% endif %}</div>
     </div>
     {% endif %}
 
@@ -481,6 +488,12 @@ async function uploadImage(sid,file){ if(!file) return; toast('uploading image\\
   if(d.ok){ toast('image uploaded & selected'); setTimeout(()=>location.reload(),400);} else { toast(d.error||'upload failed'); } }
 function dropImage(ev,sid){ ev.preventDefault(); document.getElementById('imgdrop-'+sid).classList.remove('over');
   const f=ev.dataTransfer.files[0]; if(f) uploadImage(sid,f); }
+
+async function uploadClip(sid,file){ if(!file) return; toast('importing clip (normalizing\\u2026)'); const fd=new FormData(); fd.append('file',file);
+  const r=await fetch('/api/shot/'+sid+'/clip',{method:'POST',body:fd}); const d=await r.json();
+  if(d.ok){ toast('hero clip imported ('+d.duration+'s)'); setTimeout(()=>location.reload(),500);} else { toast(d.error||'import failed'); } }
+function dropClip(ev,sid){ ev.preventDefault(); document.getElementById('clipdrop-'+sid).classList.remove('over');
+  const f=ev.dataTransfer.files[0]; if(f) uploadClip(sid,f); }
 
 async function uploadFrame(file){ if(!file) return; toast('uploading frame\\u2026'); const fd=new FormData(); fd.append('file',file);
   const r=await fetch('/api/render/reference',{method:'POST',body:fd}); const d=await r.json();
@@ -771,6 +784,57 @@ def remove_reference(scene_id: str):
     shot.references.remove(name)
     _save(sb)
     return jsonify(ok=True, references=shot.references)
+
+
+@app.post("/api/shot/<scene_id>/clip")
+def add_clip(scene_id: str):
+    """Import a finished hero video (Veo/Flow) as this shot's render clip.
+
+    Normalizes to the local render format (1280x720, 24fps, silent H.264) so it
+    drops straight into the preview concat and the DaVinci timeline, fits the shot
+    duration to the clip, and marks the shot so a future render won't overwrite it.
+    """
+    import subprocess
+    import tempfile
+
+    sb = _load()
+    shot = _find(sb, scene_id)
+    if not shot:
+        abort(404)
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify(ok=False, error="no file uploaded"), 400
+
+    ep = config.episode_paths(sb.title)
+    ep["render"].mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.gettempdir()) / secure_filename(f"heroin_{scene_id}_{file.filename}")
+    file.save(str(tmp))
+    dest = ep["render"] / f"{scene_id}.mp4"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", str(tmp),
+             "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,"
+                    "pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+             "-r", "24", "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p",
+             "-an", str(dest)],
+            check=True,
+        )
+    except Exception as exc:
+        return jsonify(ok=False, error=f"could not normalize clip: {exc}"), 500
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+    from . import timeline
+    dur = timeline._probe_seconds(dest)
+    if shot.camera and dur > 0:
+        shot.camera.duration = round(dur, 2)
+    shot.hero_clip = True
+    _save(sb)
+    return jsonify(ok=True, duration=round(dur, 2),
+                   path=str(dest.relative_to(config.ROOT)).replace("\\", "/"))
 
 
 @app.post("/api/regenerate/<scene_id>")
