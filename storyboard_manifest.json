@@ -24,7 +24,7 @@
       "motion_type": "static",
       "camera": {
         "move": "push_in",
-        "duration": 6.0,
+        "duration": 17.66,
         "speed": 1.0
       },
       "fx": [
@@ -56,7 +56,7 @@
       "motion_type": "parallax",
       "camera": {
         "move": "pan_right",
-        "duration": 6.0,
+        "duration": 18.45,
         "speed": 1.0
       },
       "fx": [
@@ -87,7 +87,7 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0,
+        "duration": 23.42,
         "speed": 1.0
       },
       "fx": [
@@ -118,7 +118,7 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0,
+        "duration": 24.21,
         "speed": 1.0
       },
       "fx": [
@@ -148,7 +148,7 @@
       "motion_type": "static",
       "camera": {
         "move": "static",
-        "duration": 6.0,
+        "duration": 23.42,
         "speed": 1.0
       },
       "fx": [
@@ -178,7 +178,7 @@
       "motion_type": "ai_video",
       "camera": {
         "move": "pan_left",
-        "duration": 6.0,
+        "duration": 24.48,
         "speed": 1.0
       },
       "fx": [
@@ -210,7 +210,7 @@
       "motion_type": "static",
       "camera": {
         "move": "static",
-        "duration": 6.0,
+        "duration": 21.74,
         "speed": 1.0
       },
       "fx": [
@@ -241,7 +241,7 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0,
+        "duration": 20.07,
         "speed": 1.0
       },
       "fx": [
@@ -271,7 +271,7 @@
       "motion_type": "parallax",
       "camera": {
         "move": "pan_left",
-        "duration": 6.0,
+        "duration": 19.1,
         "speed": 1.0
       },
       "fx": [
@@ -301,7 +301,7 @@
       "motion_type": "static",
       "camera": {
         "move": "static",
-        "duration": 6.0,
+        "duration": 22.91,
         "speed": 1.0
       },
       "fx": [
@@ -332,7 +332,7 @@
       "motion_type": "parallax",
       "camera": {
         "move": "pan_right",
-        "duration": 6.0,
+        "duration": 25.04,
         "speed": 1.0
       },
       "fx": [
@@ -364,7 +364,7 @@
       "motion_type": "static",
       "camera": {
         "move": "static",
-        "duration": 6.0,
+        "duration": 22.3,
         "speed": 1.0
       },
       "fx": [
@@ -395,7 +395,7 @@
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0,
+        "duration": 22.58,
         "speed": 1.0
       },
       "fx": [
@@ -425,7 +425,7 @@
       "motion_type": "ai_video",
       "camera": {
         "move": "pan_left",
-        "duration": 6.0,
+        "duration": 24.3,
         "speed": 1.0
       },
       "fx": [
@@ -455,7 +455,7 @@
       "motion_type": "ai_video",
       "camera": {
         "move": "push_out",
-        "duration": 6.0,
+        "duration": 21.09,
         "speed": 1.0
       },
       "fx": [

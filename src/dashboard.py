@@ -890,7 +890,13 @@ def assemble(stage: str):
         if not sb.script_locked:
             return jsonify(ok=False, error="Lock the script first."), 400
         from . import audio
-        fn = lambda: audio.synthesize_narration(sb)  # noqa: E731
+
+        def fn():
+            audio.synthesize_narration(sb)
+            changed = audio.sync_durations(sb)   # narration-led pacing (no VO overlap)
+            _save(sb)
+            print(f"Narration done; fitted {changed} shot duration(s) to the voiceover.")
+            print("Re-run Render clips + Build preview so video matches the new lengths.")
     elif stage == "render":
         if not sb.storyboard_approved:
             return jsonify(ok=False, error="Approve the storyboard first."), 400

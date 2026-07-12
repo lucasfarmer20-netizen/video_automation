@@ -27,7 +27,7 @@ import json
 from pathlib import Path
 
 from . import config
-from .manifest import Storyboard, load
+from .manifest import Storyboard, load, save
 
 NARRATION_DIR = config.AUDIO_DIR / "narration"
 SFX_DIR = config.AUDIO_DIR / "sfx"
@@ -94,6 +94,33 @@ def synthesize_narration(storyboard: Storyboard | None = None,
         )
         out.append(_write_stream(stream, dest))
     return out
+
+
+def sync_durations(storyboard: Storyboard | None = None, pad: float = 0.8,
+                   min_dur: float = 3.0) -> int:
+    """Fit each shot's ``camera.duration`` to its narration clip (VO length + pad).
+
+    Narration-led pacing: a beat must hold at least as long as its voiceover, or
+    the VOs overlap the following shots (the default 6s slot is far shorter than a
+    typical 15-25s documentary beat). Mutates the storyboard in place and returns
+    the number of shots changed; the caller persists it (so the active manifest
+    path is respected).
+    """
+    import librosa
+
+    sb = storyboard or load()
+    narr_dir = config.episode_paths(sb.title)["narration"]
+    changed = 0
+    for shot in sb.shots:
+        f = narr_dir / f"{shot.scene_id}.mp3"
+        if not f.exists() or shot.camera is None:
+            continue
+        vo = float(librosa.get_duration(path=str(f)))
+        new = round(max(min_dur, vo + pad), 2)
+        if abs(shot.camera.duration - new) > 0.05:
+            shot.camera.duration = new
+            changed += 1
+    return changed
 
 
 # --------------------------------------------------------------------------- #
