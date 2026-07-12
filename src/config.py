@@ -88,6 +88,21 @@ def ensure_dirs() -> None:
 
 RENDER_DIR = ROOT / "render"
 
+# --- Channel bookends: fixed book-open intro + book-close outro (same every ep) ---
+INTRO_DIR = ROOT / "intro"
+INTRO_CLIP = INTRO_DIR / "intro_v1.mp4"       # book opening (already made)
+OUTRO_CLIP = INTRO_DIR / "outro_v1.mp4"       # book closing (make in Veo/Flow -> drop here)
+INTRO_VO = INTRO_DIR / "intro_vo.mp3"         # fixed Vesper VO (TTS'd once)
+OUTRO_VO = INTRO_DIR / "outro_vo.mp3"
+INTRO_MUSIC = INTRO_DIR / "intro_music.mp3"   # optional fixed channel music sting
+OUTRO_MUSIC = INTRO_DIR / "outro_music.mp3"
+INTRO_FINAL = INTRO_DIR / "intro_final.mp4"   # composited segment, reused every episode
+OUTRO_FINAL = INTRO_DIR / "outro_final.mp4"
+INTRO_VO_TEXT = ("Every creature in this book was drawn by the people who feared it. "
+                 "Open the page, and meet one.")
+OUTRO_VO_TEXT = ("The account closes here. But what it describes was never only a story. "
+                 "Turn the page again soon.")
+
 
 def slug(text: str) -> str:
     """Filesystem-safe episode slug derived from a title."""
