@@ -8,6 +8,7 @@ absolute path is ever baked into the codebase.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -83,3 +84,23 @@ def ensure_dirs() -> None:
     """Create the local working directories if they do not yet exist."""
     for path in (ASSETS, AUDIO_POOL, LORA_TRAINING):
         path.mkdir(parents=True, exist_ok=True)
+
+
+RENDER_DIR = ROOT / "render"
+
+
+def slug(text: str) -> str:
+    """Filesystem-safe episode slug derived from a title."""
+    return re.sub(r"[^a-z0-9]+", "_", (text or "").lower()).strip("_") or "episode"
+
+
+def episode_paths(title: str) -> dict:
+    """Per-episode output dirs, namespaced by the title slug, so two episodes
+    never clobber each other's narration / sfx / render clips."""
+    s = slug(title)
+    return {
+        "slug": s,
+        "narration": AUDIO_DIR / s / "narration",
+        "sfx": AUDIO_DIR / s / "sfx",
+        "render": RENDER_DIR / s,
+    }

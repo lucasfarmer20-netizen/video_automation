@@ -223,10 +223,13 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
 
 
 def render_all(only: set[str] | None = None, fps: int = DEFAULT_FPS,
-               height: int = DEFAULT_HEIGHT, placeholders: bool = False) -> list[Path]:
-    """Render approved local-tier shots. With ``placeholders``, also render the
-    paid ai_video shots from their stills as stand-ins."""
-    sb = load()
+               height: int = DEFAULT_HEIGHT, placeholders: bool = False,
+               storyboard=None) -> list[Path]:
+    """Render approved local-tier shots into this episode's render dir. With
+    ``placeholders``, also render the paid ai_video shots from their stills as
+    stand-ins."""
+    sb = storyboard or load()
+    out_dir = config.episode_paths(sb.title)["render"]
     outs: list[Path] = []
     for shot in sb.shots:
         if only and shot.scene_id not in only:
@@ -239,7 +242,7 @@ def render_all(only: set[str] | None = None, fps: int = DEFAULT_FPS,
         tag = "placeholder" if is_ai else shot.motion_type.value
         print(f"Rendering {shot.scene_id} ({tag}, {shot.camera.move}) ...")
         try:
-            p = render_shot(shot, fps=fps, height=height, placeholder=is_ai)
+            p = render_shot(shot, fps=fps, height=height, out_dir=out_dir, placeholder=is_ai)
             print(f"  -> {p.relative_to(config.ROOT)}")
             outs.append(p)
         except Exception as exc:  # noqa: BLE001 — resilient batch
@@ -257,7 +260,7 @@ def _main() -> None:
     args = parser.parse_args()
     outs = render_all(only=set(args.scene) if args.scene else None,
                       fps=args.fps, height=args.height, placeholders=args.placeholders)
-    print(f"\nRendered {len(outs)} clip(s) into {RENDER_DIR.relative_to(config.ROOT)}/")
+    print(f"\nRendered {len(outs)} clip(s) into {config.episode_paths(load().title)['render'].relative_to(config.ROOT)}/")
 
 
 if __name__ == "__main__":

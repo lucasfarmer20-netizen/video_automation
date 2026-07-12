@@ -88,9 +88,10 @@ def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
           out_stem: str | None = None) -> tuple[Path, Path | None, float]:
     """Assemble the timeline and write .otio (+ .fcpxml). Returns (otio, fcpxml, runtime)."""
     sb = storyboard or load()
-    render_dir = Path(render_dir) if render_dir else (config.ROOT / "render")
-    narr_dir = config.AUDIO_DIR / "narration"
-    sfx_dir = config.AUDIO_DIR / "sfx"
+    ep = config.episode_paths(sb.title)
+    render_dir = Path(render_dir) if render_dir else ep["render"]
+    narr_dir = ep["narration"]
+    sfx_dir = ep["sfx"]
 
     tl = otio.schema.Timeline(name=sb.title or "The Illuminated Bestiary")
     V = otio.schema.Track(name="V1", kind=otio.schema.TrackKind.Video)
@@ -174,8 +175,9 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
     from scipy.io import wavfile
 
     sb = storyboard or load()
-    render_dir = Path(render_dir) if render_dir else (config.ROOT / "render")
-    narr_dir, sfx_dir = config.AUDIO_DIR / "narration", config.AUDIO_DIR / "sfx"
+    ep = config.episode_paths(sb.title)
+    render_dir = Path(render_dir) if render_dir else ep["render"]
+    narr_dir, sfx_dir = ep["narration"], ep["sfx"]
     sr = 44100
 
     durs = [float(s.camera.duration) if s.camera else 6.0 for s in sb.shots]

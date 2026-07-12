@@ -24,8 +24,13 @@ Run:
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
+import threading
+import time
+import traceback
 from dataclasses import asdict
 from pathlib import Path
 
@@ -58,6 +63,33 @@ _state = {"manifest": config.MANIFEST_PATH}
 # Spend guard: cap paid image regenerations per server process. Raise via env.
 REGEN_LIMIT = int(os.environ.get("STUDIO_REGEN_LIMIT", "20"))
 _regen_count = {"n": 0}
+
+# Background jobs for the long back-half stages (narration / render / timeline).
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+
+
+def _start_job(stage: str, fn) -> bool:
+    """Run ``fn`` in a daemon thread, capturing stdout + status. False if busy."""
+    with _jobs_lock:
+        if _jobs.get(stage, {}).get("status") == "running":
+            return False
+        _jobs[stage] = {"status": "running", "log": "", "started": time.time()}
+
+    def worker():
+        buf = io.StringIO()
+        status = "done"
+        try:
+            with contextlib.redirect_stdout(buf):
+                fn()
+        except Exception:
+            buf.write("\n" + traceback.format_exc())
+            status = "error"
+        with _jobs_lock:
+            _jobs[stage].update(status=status, log=buf.getvalue()[-4000:], ended=time.time())
+
+    threading.Thread(target=worker, daemon=True).start()
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -260,6 +292,20 @@ PAGE = """
     </div>
   </div>
 
+  {% if sb.storyboard_approved %}
+  <div class="panel">
+    <h3>Assemble — storyboard approved ✓</h3>
+    <div class="row"><button id="btn-narration" onclick="assemble('narration',this)">1 · Generate narration</button>
+      <span id="st-narration" class="meta"></span></div>
+    <div class="row"><button id="btn-render" onclick="assemble('render',this)">2 · Render clips (local, slow)</button>
+      <span id="st-render" class="meta"></span></div>
+    <div class="row"><button id="btn-timeline" onclick="assemble('timeline',this)">3 · Build DaVinci timeline (OTIO + FCPXML)</button>
+      <span id="st-timeline" class="meta"></span></div>
+    {% if paid %}<div class="meta">Your {{ paid }} ai_video (Tier-C) shot(s) render as parallax placeholders — real motion is the manual VEO/Flow step.</div>{% endif %}
+    <div class="meta">Runs on the server; outputs are namespaced to this episode. Watch status here or the terminal.</div>
+  </div>
+  {% endif %}
+
 {% for s in sb.shots %}
   <div class="beat {{ 'approved' if s.approved else '' }} {{ 'hero' if s.flow_hero else '' }} {{ 'tierC' if s.motion_type.value=='ai_video' else '' }}" id="beat-{{ s.scene_id }}">
     <div class="beat-top">
@@ -428,6 +474,21 @@ async function genStoryboard(){ const topic=document.getElementById('gen_topic')
 
 async function lockScript(){ const {ok,data}=await post('/api/script/lock');
   if(ok){ toast('script locked'); setTimeout(()=>location.reload(),500); } else { alert('Cannot lock:\\n'+(data.error||'')); } }
+
+async function assemble(stage,btn){ btn.disabled=true;
+  const {ok,data}=await post('/api/assemble/'+stage,{});
+  if(!ok){ toast(data.error||'could not start'); btn.disabled=false; return; }
+  toast(stage+' started'); pollAssemble(); }
+async function pollAssemble(){ let r; try{ r=await fetch('/api/assemble/status'); }catch(e){ return; }
+  const d=await r.json(); let running=false;
+  for(const [k,v] of Object.entries(d.jobs||{})){
+    const el=document.getElementById('st-'+k), b=document.getElementById('btn-'+k);
+    if(el){ el.textContent=v.status+(v.status==='error'?' \\u2014 check terminal':'');
+      el.style.color = v.status==='error'?'#c66':(v.status==='done'?'#7a3':'var(--amber)'); }
+    if(b){ b.disabled=(v.status==='running'); }
+    if(v.status==='running') running=true; }
+  if(running) setTimeout(pollAssemble,2500); }
+if(document.getElementById('btn-narration')) pollAssemble();
 </script></body></html>
 """
 
@@ -769,6 +830,39 @@ def approve():
     _save(sb)
     return jsonify(ok=True, gate_cleared=sb.gate_cleared(),
                    paid=[s.scene_id for s in sb.paid_shots()])
+
+
+@app.post("/api/assemble/<stage>")
+def assemble(stage: str):
+    """Kick off a back-half stage in the background for the active project."""
+    sb = _load()
+    if stage == "narration":
+        if not sb.script_locked:
+            return jsonify(ok=False, error="Lock the script first."), 400
+        from . import audio
+        fn = lambda: audio.synthesize_narration(sb)  # noqa: E731
+    elif stage == "render":
+        if not sb.storyboard_approved:
+            return jsonify(ok=False, error="Approve the storyboard first."), 400
+        from . import motion
+        fn = lambda: motion.render_all(storyboard=sb, placeholders=True)  # noqa: E731
+    elif stage == "timeline":
+        from . import timeline
+        fn = lambda: timeline.build(sb)  # noqa: E731
+    else:
+        abort(404)
+    if _start_job(stage, fn):
+        return jsonify(ok=True, stage=stage)
+    return jsonify(ok=False, error=f"{stage} already running"), 409
+
+
+@app.get("/api/assemble/status")
+def assemble_status():
+    with _jobs_lock:
+        return jsonify(jobs={
+            k: {"status": v["status"], "log": (v.get("log") or "")[-1500:]}
+            for k, v in _jobs.items()
+        })
 
 
 def run(host: str = "127.0.0.1", port: int = 5000, debug: bool = False) -> None:

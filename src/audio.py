@@ -73,7 +73,8 @@ def synthesize_narration(storyboard: Storyboard | None = None,
             "(set script_locked=true once the narration is approved)."
         )
     client = _client()
-    voice = voice_id or config.ELEVENLABS_VOICE_ID
+    voice = voice_id or config.VESPER_VOICE_ID or config.ELEVENLABS_VOICE_ID
+    narr_dir = config.episode_paths(sb.title)["narration"]
     out: list[Path] = []
     for shot in sb.shots:
         if only and shot.scene_id not in only:
@@ -81,7 +82,7 @@ def synthesize_narration(storyboard: Storyboard | None = None,
         text = (shot.narration or "").strip()
         if not text:
             continue
-        dest = NARRATION_DIR / f"{shot.scene_id}.mp3"
+        dest = narr_dir / f"{shot.scene_id}.mp3"
         if dest.exists():
             print(f"{shot.scene_id}: narration exists — skipping.")
             out.append(dest)
@@ -195,6 +196,7 @@ def generate_shot_sfx(storyboard: Storyboard | None = None,
                       only: set[str] | None = None) -> list[Path]:
     """Generate a sound effect for every beat that carries an ``sfx`` prompt."""
     sb = storyboard or load()
+    sfx_dir = config.episode_paths(sb.title)["sfx"]
     out: list[Path] = []
     for shot in sb.shots:
         if only and shot.scene_id not in only:
@@ -202,7 +204,7 @@ def generate_shot_sfx(storyboard: Storyboard | None = None,
         prompt = (shot.sfx or "").strip()
         if not prompt:
             continue
-        dest = SFX_DIR / f"{shot.scene_id}.mp3"
+        dest = sfx_dir / f"{shot.scene_id}.mp3"
         if dest.exists():
             print(f"{shot.scene_id}: sfx exists — skipping.")
             out.append(dest)
