@@ -64,6 +64,7 @@ class Shot:
     narration: str = ""                        # words the narrator speaks over this beat
     prompt: str = ""                           # scene description -> flux draft prompt
     style_medium: str = ""                     # historical art medium leading the image (per culture)
+    motion_prompt: str = ""                    # image-to-video prompt for Tier-C / Veo-Flow hero shots
     chosen_variation: int | None = None        # index into generated drafts
     motion_type: MotionType = MotionType.PARALLAX
     camera: Camera = field(default_factory=Camera)

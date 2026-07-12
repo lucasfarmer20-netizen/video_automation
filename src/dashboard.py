@@ -147,6 +147,17 @@ def _ref_file(name: str, reg: dict) -> str | None:
     return files[0] if files else None
 
 
+def _suggest_motion_prompt(shot) -> str:
+    """A copy-ready image-to-video prompt for a video/hero shot (start frame = the still)."""
+    base = ". ".join(p.strip() for p in (shot.style_medium, shot.prompt) if p and p.strip())
+    dur = shot.camera.duration if shot.camera else 6.0
+    return (
+        f"{base}. Animate this still as the start frame with subtle, restrained in-world "
+        f"motion — slow drift, mist/smoke, faint flicker, a gradual reveal; hold the "
+        f"composition, no camera cuts. Target length ~{dur:.0f}s."
+    ).strip(". ").strip()
+
+
 # --------------------------------------------------------------------------- #
 # template
 # --------------------------------------------------------------------------- #
@@ -323,14 +334,23 @@ PAGE = """
 {% for s in sb.shots %}
   <div class="beat {{ 'approved' if s.approved else '' }} {{ 'hero' if s.flow_hero else '' }} {{ 'tierC' if s.motion_type.value=='ai_video' else '' }}" id="beat-{{ s.scene_id }}">
     <div class="beat-top">
-      <div class="sid">{{ s.scene_id }}</div>
+      <div class="sid">{{ s.scene_id }}
+        <div style="color:var(--amber);font-size:12px;font-weight:400;margin-top:4px">⏱ {{ '%.1f'|format(s.camera.duration) }}s</div></div>
       <div style="flex:1">
-        <label>narration</label>
+        <label>narration · {{ '%.1f'|format(s.camera.duration) }}s slot</label>
         <textarea onchange="saveField('{{ s.scene_id }}','narration',this.value)">{{ s.narration }}</textarea>
         <label style="margin-top:8px">scene (visual)</label>
         <textarea onchange="saveField('{{ s.scene_id }}','prompt',this.value)">{{ s.prompt }}</textarea>
         <label style="margin-top:8px">style_medium</label>
         <input type="text" value="{{ s.style_medium }}" onchange="saveField('{{ s.scene_id }}','style_medium',this.value)">
+        {% if s.motion_type.value=='ai_video' or s.flow_hero %}
+        <label style="margin-top:8px">🎬 video-gen prompt (Veo/Flow/Seedance) · animate to ~{{ '%.0f'|format(s.camera.duration) }}s</label>
+        <textarea id="mp-{{ s.scene_id }}" onchange="saveField('{{ s.scene_id }}','motion_prompt',this.value)">{{ s.motion_prompt or motion_suggest[s.scene_id] }}</textarea>
+        <div class="row" style="margin-top:4px">
+          <button onclick="copyText('mp-{{ s.scene_id }}')">Copy prompt</button>
+          <span class="meta">start frame = the chosen still below · target {{ '%.0f'|format(s.camera.duration) }}s</span>
+        </div>
+        {% endif %}
       </div>
       <div class="ctrls">
         <select onchange="saveField('{{ s.scene_id }}','motion_type',this.value)">
@@ -409,6 +429,9 @@ function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.
   setTimeout(()=>t.classList.remove('show'),1800); }
 async function post(url,body){ const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(body||{})}); return {ok:r.ok, data:await r.json()}; }
+
+function copyText(id){ const el=document.getElementById(id); if(!el) return;
+  navigator.clipboard.writeText(el.value).then(()=>toast('prompt copied')).catch(()=>{ el.select(); document.execCommand('copy'); toast('prompt copied'); }); }
 
 async function saveField(sid,field,val){ const b={}; b[field]=val; const {data}=await post('/api/shot/'+sid,b);
   if(field==='motion_type'){ document.getElementById('paidCount').textContent=data.paid_count;
@@ -554,6 +577,7 @@ def index():
         heroes=sum(1 for s in sb.shots if getattr(s, "flow_hero", False)),
         shot_clips=shot_clips, preview_url=preview_url,
         fcpxml_ready=fcpxml_ready, ep_slug=ep["slug"],
+        motion_suggest={s.scene_id: _suggest_motion_prompt(s) for s in sb.shots},
     )
 
 
@@ -662,6 +686,8 @@ def update_shot(scene_id: str):
         shot.prompt = data["prompt"]
     if "style_medium" in data:
         shot.style_medium = data["style_medium"]
+    if "motion_prompt" in data:
+        shot.motion_prompt = data["motion_prompt"]
     if "flow_hero" in data:
         shot.flow_hero = bool(data["flow_hero"])
 
