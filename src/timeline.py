@@ -84,6 +84,35 @@ def _fill(track: otio.schema.Track, clip_seconds: float, shot_seconds: float,
 # --------------------------------------------------------------------------- #
 # build
 # --------------------------------------------------------------------------- #
+def _make_resolve_compatible(path: Path, width: int, height: int, event_name: str) -> None:
+    """Patch the OTIO fcpx adapter's output so DaVinci Resolve accepts it.
+
+    The adapter emits a flat ``<project>`` directly under ``<fcpxml>`` with a
+    dimensionless ``<format>`` — Resolve rejects that ("Unable to find inherited
+    value for key 'library'"). We add width/height to the format and wrap the
+    project in the required ``<library><event>`` hierarchy.
+    """
+    import xml.etree.ElementTree as ET
+
+    root = ET.parse(path).getroot()
+    for fmt in root.iter("format"):
+        fmt.set("width", str(width))
+        fmt.set("height", str(height))
+        if not fmt.get("name"):
+            fmt.set("name", f"FFVideoFormat{height}p")
+    proj = root.find("project")
+    if proj is not None and root.find("library") is None:
+        root.remove(proj)
+        event = ET.SubElement(ET.SubElement(root, "library"), "event")
+        event.set("name", event_name or "The Illuminated Bestiary")
+        event.append(proj)
+    body = ET.tostring(root, encoding="unicode")
+    path.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n\n' + body + "\n",
+        encoding="utf-8",
+    )
+
+
 def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
           out_stem: str | None = None) -> tuple[Path, Path | None, float]:
     """Assemble the timeline and write .otio (+ .fcpxml). Returns (otio, fcpxml, runtime)."""
@@ -150,6 +179,7 @@ def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
     otio.adapters.write_to_file(tl, str(otio_path))
     try:
         otio.adapters.write_to_file(tl, str(fcpxml_path), adapter_name="fcpx_xml")
+        _make_resolve_compatible(fcpxml_path, 1280, 720, sb.title)
     except Exception as exc:  # noqa: BLE001
         print(f"  !! FCPXML export failed ({exc}); .otio is still valid.")
         fcpxml_path = None
