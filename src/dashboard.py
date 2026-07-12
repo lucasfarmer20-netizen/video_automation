@@ -301,7 +301,8 @@ PAGE = """
       <span id="st-render" class="meta"></span></div>
     <div class="row"><button id="btn-timeline" onclick="assemble('timeline',this)">3 · Build DaVinci timeline (OTIO + FCPXML)</button>
       <span id="st-timeline" class="meta"></span></div>
-    {% if paid %}<div class="meta">Your {{ paid }} ai_video (Tier-C) shot(s) render as parallax placeholders — real motion is the manual VEO/Flow step.</div>{% endif %}
+    {% if paid %}<div class="meta">{{ paid }} Tier-C (ai_video) shot(s) render as placeholders until the paid fal video stage (Seedance/Kling) is wired.</div>{% endif %}
+    {% if heroes %}<div class="meta">{{ heroes }} shot(s) flagged VEO/Flow hero — hand-animate those in Flow and import the clips.</div>{% endif %}
     <div class="meta">Runs on the server; outputs are namespaced to this episode. Watch status here or the terminal.</div>
   </div>
   {% endif %}
@@ -509,6 +510,7 @@ def index():
         PAGE, sb=sb, tiers=TIER_LABEL, paid=_paid_count(sb),
         projects=_scan_projects(), render=sb.render, shot_refs=shot_refs,
         default_negative=NEGATIVE_PROMPT, backends=BACKENDS,
+        heroes=sum(1 for s in sb.shots if getattr(s, "flow_hero", False)),
     )
 
 
