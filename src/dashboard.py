@@ -299,10 +299,23 @@ PAGE = """
       <span id="st-narration" class="meta"></span></div>
     <div class="row"><button id="btn-render" onclick="assemble('render',this)">2 · Render clips (local, slow)</button>
       <span id="st-render" class="meta"></span></div>
-    <div class="row"><button id="btn-timeline" onclick="assemble('timeline',this)">3 · Build DaVinci timeline (OTIO + FCPXML)</button>
+    <div class="row"><button id="btn-preview" onclick="assemble('preview',this)">3 · Build preview (watch the cut)</button>
+      <span id="st-preview" class="meta"></span></div>
+    <div class="row"><button id="btn-timeline" onclick="assemble('timeline',this)">4 · Build DaVinci timeline (OTIO + FCPXML)</button>
       <span id="st-timeline" class="meta"></span></div>
     {% if paid %}<div class="meta">{{ paid }} Tier-C (ai_video) shot(s) render as placeholders until the paid fal video stage (Seedance/Kling) is wired.</div>{% endif %}
     {% if heroes %}<div class="meta">{{ heroes }} shot(s) flagged VEO/Flow hero — hand-animate those in Flow and import the clips.</div>{% endif %}
+    {% if preview_url %}
+    <div style="margin-top:12px">
+      <video controls playsinline style="width:100%;max-height:440px;background:#000;border:1px solid var(--line);border-radius:8px"
+             src="{{ preview_url }}?v={{ range(100000)|random }}"></video>
+      <div class="meta">Assembled preview — narration + music + all clips. This is the review proxy, not the master.</div>
+    </div>
+    {% endif %}
+    {% if fcpxml_ready %}
+    <div class="meta" style="margin-top:8px;color:var(--amber)">▶ Next step: open <b>{{ ep_slug }}.fcpxml</b> in DaVinci Resolve
+      (File → Import → Timeline) to finish the master cut.</div>
+    {% endif %}
     <div class="meta">Runs on the server; outputs are namespaced to this episode. Watch status here or the terminal.</div>
   </div>
   {% endif %}
@@ -343,6 +356,16 @@ PAGE = """
     </div>
     {% else %}
     <div class="empty">No drafts yet.</div>
+    {% endif %}
+
+    {% if shot_clips[s.scene_id] %}
+    <div style="margin-top:10px">
+      <video controls playsinline preload="none"
+             {% if s.draft_image %}poster="/{{ s.draft_image }}"{% endif %}
+             style="width:100%;max-height:240px;background:#000;border-radius:8px"
+             src="{{ shot_clips[s.scene_id] }}?v={{ range(100000)|random }}"></video>
+      <div class="visual">▶ rendered {{ s.motion_type.value }} clip</div>
+    </div>
     {% endif %}
 
     <div class="refs">
@@ -480,15 +503,19 @@ async function assemble(stage,btn){ btn.disabled=true;
   const {ok,data}=await post('/api/assemble/'+stage,{});
   if(!ok){ toast(data.error||'could not start'); btn.disabled=false; return; }
   toast(stage+' started'); pollAssemble(); }
+let _lastStatus={};
 async function pollAssemble(){ let r; try{ r=await fetch('/api/assemble/status'); }catch(e){ return; }
-  const d=await r.json(); let running=false;
+  const d=await r.json(); let running=false, justFinished=false;
   for(const [k,v] of Object.entries(d.jobs||{})){
     const el=document.getElementById('st-'+k), b=document.getElementById('btn-'+k);
     if(el){ el.textContent=v.status+(v.status==='error'?' \\u2014 check terminal':'');
       el.style.color = v.status==='error'?'#c66':(v.status==='done'?'#7a3':'var(--amber)'); }
     if(b){ b.disabled=(v.status==='running'); }
-    if(v.status==='running') running=true; }
-  if(running) setTimeout(pollAssemble,2500); }
+    if(v.status==='running') running=true;
+    if(_lastStatus[k]==='running' && v.status!=='running') justFinished=true;
+    _lastStatus[k]=v.status; }
+  if(running) setTimeout(pollAssemble,2500);
+  else if(justFinished) setTimeout(()=>location.reload(),800); }  // show new clips/preview
 if(document.getElementById('btn-narration')) pollAssemble();
 </script></body></html>
 """
@@ -505,12 +532,28 @@ def index():
         s.scene_id: [{"name": n, "file": _ref_file(n, reg)} for n in s.references]
         for s in sb.shots
     }
+    # finished outputs to show: per-shot rendered clips + the assembled preview
+    ep = config.episode_paths(sb.title)
+
+    def _render_url(p):
+        return "/render/" + str(p.relative_to(config.RENDER_DIR)).replace("\\", "/")
+
+    shot_clips = {}
+    for s in sb.shots:
+        clip = ep["render"] / f"{s.scene_id}.mp4"
+        shot_clips[s.scene_id] = _render_url(clip) if clip.exists() else None
+    preview = ep["render"] / "_preview.mp4"
+    preview_url = _render_url(preview) if preview.exists() else None
+    fcpxml_ready = (config.ROOT / f"{ep['slug']}.fcpxml").exists()
+
     from .assets import NEGATIVE_PROMPT
     return render_template_string(
         PAGE, sb=sb, tiers=TIER_LABEL, paid=_paid_count(sb),
         projects=_scan_projects(), render=sb.render, shot_refs=shot_refs,
         default_negative=NEGATIVE_PROMPT, backends=BACKENDS,
         heroes=sum(1 for s in sb.shots if getattr(s, "flow_hero", False)),
+        shot_clips=shot_clips, preview_url=preview_url,
+        fcpxml_ready=fcpxml_ready, ep_slug=ep["slug"],
     )
 
 
@@ -522,6 +565,11 @@ def asset(scene: str, filename: str):
 @app.get("/references/<path:filename>")
 def reference_file(filename: str):
     return send_from_directory(str(config.REFERENCES_DIR), filename)
+
+
+@app.get("/render/<path:filename>")
+def render_file(filename: str):
+    return send_from_directory(str(config.RENDER_DIR), filename)
 
 
 @app.post("/api/project/select")
@@ -848,6 +896,9 @@ def assemble(stage: str):
             return jsonify(ok=False, error="Approve the storyboard first."), 400
         from . import motion
         fn = lambda: motion.render_all(storyboard=sb, placeholders=True)  # noqa: E731
+    elif stage == "preview":
+        from . import timeline
+        fn = lambda: timeline.build_preview(sb)  # noqa: E731
     elif stage == "timeline":
         from . import timeline
         fn = lambda: timeline.build(sb)  # noqa: E731
