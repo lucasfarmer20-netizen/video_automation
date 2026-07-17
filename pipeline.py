@@ -20,12 +20,25 @@ from __future__ import annotations
 
 import argparse
 
+import os
+
 from src import config
 from src.manifest import Shot, Storyboard, load, save
 
 CHANNEL_TITLE = "The Illuminated Bestiary"
 DRAFTS_PER_SHOT = 3
 DEFAULT_SHOT_SECONDS = 6.0  # fallback when a shot carries no camera duration
+
+# --------------------------------------------------------------------------- #
+# Cloud-Native Path Setup & Directory Assurance
+# --------------------------------------------------------------------------- #
+# Use Cloud Storage FUSE path when running in Cloud Run, otherwise fall back to local file
+MANIFEST_PATH = os.environ.get("MANIFEST_PATH", "./storyboard_manifest.json")
+ASSETS_DIR = os.environ.get("ASSETS_DIR", "./static/assets")
+
+# Ensure the cloud directories exist dynamically on boot so Python doesn't crash
+os.makedirs(os.path.dirname(MANIFEST_PATH), exist_ok=True)
+os.makedirs(ASSETS_DIR, exist_ok=True)
 
 
 # --------------------------------------------------------------------------- #
