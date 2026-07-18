@@ -1,7 +1,7 @@
-# Codebase Rules — Deep Root Lore Pipeline
+# Codebase Rules — The Illuminated Bestiary Pipeline
 
 Binding rules for all code in this repository. This is a **generative dark-folklore
-video production pipeline** ("Deep Root Lore"): a zero-stock, modular Python
+video production pipeline** ("The Illuminated Bestiary"): a zero-stock, modular Python
 post-production engine that cuts human work from ~10 hours to a 30–60 minute
 review/finesse loop per video.
 
@@ -10,10 +10,13 @@ review/finesse loop per video.
 video model). Quality comes from a trained style LoRA + 2.5D parallax, *not* from
 paying to render everything.
 
-**Visual identity:** ink-and-watercolor graphic-novel horror — heavy cross-hatch
-linework, painterly washes, paper grain, vignette borders; tight chiaroscuro
-palette (near-black shadow, warm amber candlelight, desaturated cool exteriors);
-cinematic 16:9.
+**Visual identity:** documentary folklore horror — each entity is illustrated in a
+**historical art medium authentic to its culture of origin** (e.g. Ukiyo-e
+woodblock for Japanese yōkai, lubok / Bilibin for Slavic, illuminated-manuscript
+codex for medieval European, Adinkra / Benin-bronze aesthetic for West African).
+The medium *leads* the image prompt (style = prompt-medium-leading). Unifying
+grammar across cultures: strong chiaroscuro, deep shadow, shadow-play silhouette
+for reveals, cinematic 16:9 — never a modern digital / 3D / anime / photographic look.
 
 ## Runtime
 
@@ -39,7 +42,7 @@ cinematic 16:9.
 | `config.py` | Env/secret loading (`os.environ.get`) + derived path constants |
 | `script.py` | Claude API script draft (anti-AI-tell system prompt); the **script gate** |
 | `audio.py` | ElevenLabs narration (TTS) + **librosa analysis of the background MUSIC track** (transients, rhythm shifts, silent gaps) to anchor cuts |
-| `assets.py` | fal.ai media: Tier-1 flux draft variations (LoRA) + Tier-2 gated video |
+| `assets.py` | fal.ai draft images: default `nano2` (Gemini 3 Pro Image); fallback `flux-general` (NAG); legacy nano / flux-lora |
 | `depth.py` | Depth map → layer separation → gap inpaint (local, free) |
 | `motion.py` | 2.5D parallax + procedural-FX render engine (moviepy/ffmpeg, local, free) |
 | `dashboard.py` | Flask/HTML local UI = the storyboard/budget gate |
@@ -79,11 +82,27 @@ Every shot carries a `motion_type`. Reserve the paid tier for ~8–12 hero shots
 
 ## Style consistency
 
-- Images are generated through a **trained flux LoRA** ("Deep Root Lore") with a
-  locked trigger word + fixed per-character seed to prevent drift.
-- Training frames live in `lora_training/` (gitignored).
-- **Shadow-play silhouette** (e.g. the manananggal on the bamboo wall) is a
-  first-class, recurring shot type: cheapest tier, always on-model, maximally eerie.
+- **Consistency comes from the WRAPPER, not a single house style.** Every episode
+  shares a universal **manuscript / codex frame** (the book-turning intro, archival
+  page + title system) and **Vesper's narration voice** — that constant is the
+  channel's throughline. *Inside* that frame, each entity's interior shots transform
+  into the **historical art medium authentic to its culture** (`Storyboard.cultural_origin`
+  → per-beat `Shot.style_medium`), so variety across cultures never reads as
+  inconsistency.
+- Draft images default to **`nano2` — Nano Banana 2 / Gemini 3 Pro Image**
+  (`fal-ai/gemini-3-pro-image-preview`): a reasoning model with strong prompt
+  adherence + character consistency. `style_medium` leads the positive prompt (plus
+  the per-shot character anchors); it has no `negative_prompt` field, so the avoidance
+  list is folded into the prompt. ~$0.15/image (2K).
+- Cheaper fallback: **`flux-cfg` — `fal-ai/flux-general` (FLUX.1 [dev])**, where the
+  negative prompt is applied via **NAG** (`nag_scale`), ~$0.04/image. (`use_real_cfg`
+  + a negative prompt 422s that endpoint, so NAG — not real CFG — is used.)
+- **DEPRECATED — do not use for new work:** the trained ink LoRA `lora_config.json`
+  (`DEEPROOTLORE`) and its trainer `scripts/train_lora.py`, plus the Nano-Banana
+  style-transfer path. Retained only as `--backend flux-lora` / `nano` fallbacks; the
+  single-locked-style approach is superseded by the per-culture-medium model above.
+- **Shadow-play silhouette** remains a first-class shot type: reads as on-model in
+  any culture's medium, cheapest tier, maximally eerie.
 
 ## Audio
 
@@ -93,5 +112,8 @@ Every shot carries a `motion_type`. Reserve the paid tier for ~8–12 hero shots
 
 ## fal.ai model IDs
 
-- Draft (Tier 1): `fal-ai/flux-lora` (with trained LoRA) — fallback `fal-ai/flux/schnell`
+- Draft (Tier 1, default): `fal-ai/gemini-3-pro-image-preview` — Nano Banana 2 / Gemini
+  3 Pro Image (~$0.15/img). Cheaper fallback: `fal-ai/flux-general` (FLUX.1 [dev], NAG
+  negative via `nag_scale`). Legacy: `fal-ai/flux-lora` (trained LoRA),
+  `fal-ai/nano-banana/edit` (style-transfer), `fal-ai/flux/dev`
 - Video (Tier 2): `fal-ai/kling-video/v3/image-to-video` or `fal-ai/bytedance/seedance-2.0`

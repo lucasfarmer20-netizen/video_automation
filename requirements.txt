@@ -4,5 +4,16 @@ librosa==0.10.2.post1
 fal-client==0.5.6
 flask==3.1.0
 opentimelineio==0.17.0
+otio-fcpx-xml-adapter==1.0.0
 moviepy==2.1.2
 python-dotenv==1.0.1
+
+# Local motion engine (depth + parallax/FX render)
+numpy==2.4.6
+scipy==1.18.0
+pillow==10.4.0
+imageio==2.37.3
+imageio-ffmpeg==0.6.0
+# Depth-Anything V2 depth stage. onnxruntime-directml is the Windows/AMD (DirectML)
+# build; on other platforms substitute plain `onnxruntime`.
+onnxruntime-directml==1.24.4

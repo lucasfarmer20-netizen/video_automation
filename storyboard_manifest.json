@@ -1,101 +1,142 @@
 {
   "version": 1,
-  "title": "The Leshy: The Voice That Wears Your Mother's Mouth",
-  "script_locked": false,
-  "storyboard_approved": false,
+  "title": "The Illuminated Bestiary — The Manananggal: An Account from the Visayan Record",
+  "cultural_origin": "Visayan (Western Visayas — Iloilo, Antique, Capiz, and Aklan provinces, island of Panay), Philippines; lowland Christianized Visayan folk tradition with pre-Hispanic Austronesian roots, part of the wider aswang complex",
+  "script_locked": true,
+  "storyboard_approved": true,
   "music_track": null,
+  "render": {
+    "backend": "nano2",
+    "guidance_scale": 3.5,
+    "nag_scale": 5.0,
+    "num_inference_steps": 28,
+    "negative_prompt": "",
+    "reference_image": "references/global_frame.png",
+    "reference_image_url": "https://v3b.fal.media/files/b/0aa1e289/G-SW3KA6OefkKVoml4qzp_global_frame.png"
+  },
   "shots": [
     {
       "scene_id": "s001",
-      "narration": "If you hear your name in the woods, don't answer. Not the first time. Not the third.",
-      "prompt": "A vast birch forest at dusk, endless pale trunks receding into near-black shadow, a single warm amber shaft of light between them, heavy ink linework, watercolor washes, paper grain, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "parallax",
+      "narration": "\"In the central islands of the Philippines, the historical field reports don't vary. Witnesses who have never met use the exact same Visayan word: 'tanggal.' It translates to detach. To take a body completely apart.\"",
+      "prompt": "Top-down birds-eye view of weathered, sun-darkened Filipino hands reaching into the frame and firmly closing the massive, ancient leather-bound bestiary on the dark wooden table. The morning light from a window illuminates the scene, replacing the warm candle glow from the start. Photorealistic style, focusing on the texture of the worn leather and the hands. Match the environment and book from the first image. 16:9 aspect ratio.",
+      "style_medium": "Medium: Digital artwork mimicking high-resolution macro-photography. Style: Chiaroscuro aesthetic, characterized by a heavy contrast between harsh directional light and deep, ink-black shadows to build mystery. Texture: Highly tactile and 'gritty.' It emphasizes the physical decay of the weathered skin, cracked leather, and pitted iron clasps. Lighting: Low-key, dramatic lighting that picks up the fine surface relief of the wood grain and parchment",
+      "motion_prompt": "",
+      "chosen_variation": 3,
+      "motion_type": "ai_video",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 17.66,
+        "speed": 1.0
       },
       "fx": [
-        "drifting mist",
-        "dust motes"
+        "candle_flicker",
+        "drifting_smoke",
+        "dust_motes"
       ],
+      "sfx": "",
       "references": [],
-      "video_model": null,
+      "video_model": "fal-ai/kling-video/v3/image-to-video",
+      "flow_hero": true,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s001/var_0.png",
         "assets/s001/var_1.png",
-        "assets/s001/var_2.png"
+        "assets/s001/var_2.png",
+        "assets/s001/upload_0_Scene_30_-_Book_Closed_202607110136.jpeg"
       ],
-      "draft_image": "assets/s001/var_0.png",
-      "approved": false
+      "draft_image": "assets/s001/upload_0_Scene_30_-_Book_Closed_202607110136.jpeg",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s002",
-      "narration": "The old ones in the villages had a rule for the forest. Keep the sun on the same shoulder the whole way through. If it moves to the other one, and you never turned — you're already his.",
-      "prompt": "A lone hooded traveler seen from behind, faceless in deep shadow, small against towering pines, one shoulder rimmed in warm amber light, no visible face, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 1,
+      "narration": "Most of these accounts cluster in the Western Visayas, and above all in the province of Capiz. For generations, saying you came from Capiz anywhere else in the archipelago earned a particular silence. The reputation was heavy enough to shadow marriages and travel.",
+      "prompt": "Top-down engraved map of Panay Island. Coastlines and provincial borders as heavy dark ink lines; Capiz outlined in bold charcoal-black. A stylized compass rose with native symbols in one corner, faint sea-wave hatching filling the water, deep shadow at the frame edges, cinematic 16:9.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
+      "chosen_variation": 3,
       "motion_type": "parallax",
       "camera": {
-        "move": "push_in",
-        "duration": 6.0
+        "move": "pan_right",
+        "duration": 18.45,
+        "speed": 1.0
       },
       "fx": [
-        "soft light rays",
-        "slow smoke"
+        "ink_bleed",
+        "paper_grain"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s002/var_0.png",
         "assets/s002/var_1.png",
-        "assets/s002/var_2.png"
+        "assets/s002/var_2.png",
+        "assets/s002/upload_0_9e81046a-421c-41b5-b775-07dce083d719.jpg"
       ],
-      "draft_image": "assets/s002/var_1.png",
-      "approved": false
+      "draft_image": "assets/s002/upload_0_9e81046a-421c-41b5-b775-07dce083d719.jpg",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s003",
-      "narration": "His. The Leshy's. Lord of the woods, in the old Slavic tongue. The forest doesn't belong to the tsar or the church out here. It belongs to him.",
-      "prompt": "A colossal humanoid silhouette formed from bark, moss and antler-like branches, eyes two faint green embers deep in the canopy, backlit, mostly shadow, ink linework, watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 1,
+      "narration": "The records make a distinction outsiders usually flatten. This is not simply an aswang. In Visayan speech, aswang is an umbrella — a whole category of night-feeders and shape-changers. The manananggal is one branch of it, defined by a single act: the severing of the self at the waist.",
+      "prompt": "An abstract conceptual manuscript diagram and lineage chart, engraved into wood. Minimalist composition. A single heavy vertical black ink line splits into geometric, branching horizontal and vertical sub-lines. No leaves, no roots, no botanical elements. At the end of the main highlighted branch, the word 'Manananggal' is lettered in clean, historic script with a faint metallic gold ink wash. The other branching lines end in simple black ink silhouettes of folklore creatures that fade into heavy charcoal stipple shading at the margins.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
+      "chosen_variation": 3,
       "motion_type": "parallax",
       "camera": {
-        "move": "push_out",
-        "duration": 6.0
+        "move": "push_in",
+        "duration": 23.42,
+        "speed": 1.0
       },
       "fx": [
-        "floating spores",
-        "green ember glow"
+        "gold_shimmer",
+        "paper_grain"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s003/var_0.png",
         "assets/s003/var_1.png",
-        "assets/s003/var_2.png"
+        "assets/s003/var_2.png",
+        "assets/s003/upload_0_Gemini_Generated_Image_222lwb222lwb222l_1.png"
       ],
-      "draft_image": "assets/s003/var_1.png",
-      "approved": false
+      "draft_image": "assets/s003/upload_0_Gemini_Generated_Image_222lwb222lwb222l_1.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s004",
-      "narration": "They say he can stand tall as the oldest oak, his hair the crown of the canopy. Then, in a breath, shrink small enough to hide under a mushroom cap. Same creature. Whatever size the moment needs.",
-      "prompt": "A colossal antlered forest humanoid taller than the pines, body of bark, moss and shadow, looming over the treetops against a pale amber sky, NOT winged, no wings, ink and watercolor, warm amber accents, cinematic 16:9, Deep Root Lore style",
+      "narration": "By daylight, the accounts describe an ordinary neighbor — often a midwife, a weaver, a woman who sold at the market. Someone known by name and face. In small barangays, where everyone tracked everyone else's comings and goings, that detail did something dangerous: suspicion always had an exact house to walk to.",
+      "prompt": "Eye-level medium portrait of a 17th-century Visayan woman in a plain camisa, standing motionless in the dark doorway of a hut with woven sawali walls. Split chiaroscuro — one half of her face clean line-work, the other dissolving into black cross-hatching. Deep shadow interior, cinematic 16:9.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
       "chosen_variation": 1,
-      "motion_type": "ai_video",
+      "motion_type": "parallax",
       "camera": {
-        "move": "static",
-        "duration": 6.0
+        "move": "push_in",
+        "duration": 24.21,
+        "speed": 1.0
       },
       "fx": [
-        "scale-shift shimmer",
-        "falling leaves"
+        "shadow_drift",
+        "dust_motes"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s004/var_0.png",
@@ -103,249 +144,326 @@
         "assets/s004/var_2.png"
       ],
       "draft_image": "assets/s004/var_1.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s005",
-      "narration": "There's one way to be sure it's him. Look at the ground beside him at noon. The trees throw shadows. The stones throw shadows. He throws nothing.",
-      "prompt": "A tall antlered forest figure of bark and shadow standing in a bright midday clearing, every tree casting a long dark shadow but the figure casting NONE, unsettling bare lit ground where its shadow should be, no wings, ink and watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "parallax",
+      "narration": "The separation, the logs insist, happens only after dark. The upper body detaches at the waist and lifts away — and the lower half stays behind, upright, standing in a corner of the room. What unsettles the record isn't what she becomes. It's the half she leaves standing there.",
+      "prompt": "Wide interior of a nipa hut with sawali walls and a bamboo-slat floor. A woman's lower half stands upright and alone in a corner, wrapped in a traditional skirt, the waist-seam kept entirely in deep shadow — no anatomy shown. A glass kerosene lamp on the floor throws stark hatched shadows; carved wooden ancestor figures watch from the dark. High-contrast chiaroscuro, cinematic 16:9.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
+      "chosen_variation": 2,
+      "motion_type": "static",
       "camera": {
-        "move": "push_in",
-        "duration": 6.0
+        "move": "static",
+        "duration": 23.42,
+        "speed": 1.0
       },
       "fx": [
-        "harsh noon light",
-        "insect haze"
+        "lamp_flicker",
+        "shadow_drift"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s005/var_0.png",
         "assets/s005/var_1.png",
         "assets/s005/var_2.png"
       ],
-      "draft_image": "assets/s005/var_0.png",
-      "approved": false
+      "draft_image": "assets/s005/var_2.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s006",
-      "narration": "And the voice. This is the part they lower their own voices to tell. He listens. He learns you. Then he calls with the mouth of someone you'd run toward.",
-      "prompt": "Close on a woman's ear in warm candlelight, a faint mouth-shaped hollow in the tree bark just behind her, lips parted, near-black background, ink linework, watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "parallax",
+      "narration": "The freed torso travels low, just above the rooftops. The Panay records are consistent on the anatomy — large, membranous, bat-like wings unfurling from between the shoulder blades. Never feathers. That leathery silhouette became the fixed signature of the creature across three centuries of accounts.",
+      "prompt": "Wide night landscape. Deep indigo-inked sky, a thin charcoal crescent moon. Below, a huddle of thatched nipa huts. Above them, a vast leathery winged shape rendered as solid black ink against the paler sepia sky, wings half-spread mid-beat, read purely by silhouette. Cinematic 16:9.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
+      "chosen_variation": 4,
+      "motion_type": "ai_video",
       "camera": {
-        "move": "push_in",
-        "duration": 6.0
+        "move": "pan_left",
+        "duration": 24.48,
+        "speed": 1.0
       },
       "fx": [
-        "candle flicker",
-        "breath vapor"
+        "cloud_drift",
+        "moon_glow"
       ],
+      "sfx": "",
       "references": [],
-      "video_model": null,
+      "video_model": "fal-ai/kling-video/v3/image-to-video",
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s006/var_0.png",
         "assets/s006/var_1.png",
-        "assets/s006/var_2.png"
+        "assets/s006/var_2.png",
+        "assets/s006/upload_0_Gemini_Generated_Image_pfwrc7pfwrc7pfwr.png",
+        "assets/s006/upload_0_openart-image_1783835199066_e5e12784_1783835199167_98f283fb.png"
       ],
-      "draft_image": "assets/s006/var_0.png",
-      "approved": false
+      "draft_image": "assets/s006/upload_0_openart-image_1783835199066_e5e12784_1783835199167_98f283fb.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s007",
-      "narration": "Your mother's voice. Your child's. A friend who died three winters back, calling like nothing happened.",
-      "prompt": "A single gnarled hand reaching out from behind a dark tree trunk into a shaft of warm amber light, only the hand and forearm visible, the rest lost in black shadow, an eerie beckoning lure, no face and no figure, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 2,
+      "narration": "The target, again and again, is the household at its most defenseless — a woman in late pregnancy or early labor. The silhouette settles onto the thatch at midnight and goes still. The sources dwell entirely on that stalking pattern, and they leave the attack itself firmly off the page.",
+      "prompt": "Interior of a darkened nipa hut, camera angled up at the ceiling — a dense weave of layered bamboo and thatch. Through the gaps, a sharp cross-hatched shadow of a massive clawed, winged figure falls across the slats, cast by implied moonlight. Threat conveyed entirely by shadow, cinematic 16:9.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
+      "chosen_variation": 3,
       "motion_type": "static",
       "camera": {
         "move": "static",
-        "duration": 6.0
+        "duration": 21.74,
+        "speed": 1.0
       },
       "fx": [
-        "dim light rays",
-        "slow drifting mist"
+        "shadow_drift",
+        "moon_glow"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s007/var_0.png",
         "assets/s007/var_1.png",
-        "assets/s007/var_2.png"
+        "assets/s007/var_2.png",
+        "assets/s007/upload_0_Gemini_Generated_Image_o2lltoo2lltoo2ll.png"
       ],
-      "draft_image": "assets/s007/var_2.png",
-      "approved": false
+      "draft_image": "assets/s007/upload_0_Gemini_Generated_Image_o2lltoo2lltoo2ll.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s008",
-      "narration": "He doesn't chase. He never chases. He just moves the forest around you.",
-      "prompt": "High aerial view looking straight down on a lone hooded traveler on a winding forest path, the surrounding trees subtly rearranging into a spiral, faint looping footprints, deep forest not a village, warm amber path glow, ink and watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 2,
+      "narration": "One detail stays identical across three hundred years of accounts: a long, thread-thin tongue, narrow enough to slip between the gaps in a bamboo-slat floor. Because of it, the local defense never focused on locking the door. It focused on sealing the seams of the house.",
+      "prompt": "Tight low-angle macro study. The join of raised bamboo floorboards with a sawali wall behind. Fine cross-hatched light filters up through the narrow irregular gaps between slats. A single dark, thread-thin form slips through one seam, isolated in the frame. Warm sepia glow against deep black, cinematic 16:9.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
+      "chosen_variation": 0,
       "motion_type": "parallax",
       "camera": {
-        "move": "push_out",
-        "duration": 6.0
+        "move": "push_in",
+        "duration": 20.07,
+        "speed": 1.0
       },
       "fx": [
-        "slow rotation",
-        "fog swirl"
+        "light_shaft",
+        "dust_motes"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s008/var_0.png",
         "assets/s008/var_1.png",
         "assets/s008/var_2.png"
       ],
-      "draft_image": "assets/s008/var_2.png",
-      "approved": false
+      "draft_image": "assets/s008/var_0.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s009",
-      "narration": "You pass a fallen birch with a hollow in it. You keep walking. An hour later — the same birch. Same hollow. Your own boot-prints going the wrong way.",
-      "prompt": "A distinctive fallen birch with a dark knot-hole, fresh boot prints in the mud leading past it and returning, low warm light, deep shadow, ink linework, watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
+      "narration": "The exact nature of the threat shifted from town to town. In some Panay communities the accounts claim she took only the unborn. In others she was seen near sickbeds and the dying. The details adjusted to whatever a given village was most afraid of losing.",
+      "prompt": "A triptych composite panel, each band divided by traditional native geometric borders, all in dark charcoal washes. Band 1: an empty hanging woven cradle. Band 2: a simple sickbed with a woven mat. Band 3: a tightly shuttered window with a faint cross-hatched light leak. Deep shadow throughout, cinematic 16:9.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
+      "chosen_variation": 2,
       "motion_type": "parallax",
       "camera": {
         "move": "pan_left",
-        "duration": 6.0
+        "duration": 19.1,
+        "speed": 1.0
       },
       "fx": [
-        "ground fog",
-        "leaf drift"
+        "paper_grain",
+        "shadow_drift"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s009/var_0.png",
         "assets/s009/var_1.png",
         "assets/s009/var_2.png"
       ],
-      "draft_image": "assets/s009/var_0.png",
-      "approved": false
+      "draft_image": "assets/s009/var_2.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s010",
-      "narration": "There was a man from a village near the Pripyat marshes. Went out for firewood. This is how they told it after.",
-      "prompt": "A bearded peasant man in a rough coat with an axe over his shoulder, stepping into a dense treeline at golden hour, home a small warm smudge behind him, ink and watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 2,
-      "motion_type": "parallax",
+      "narration": "To destroy it, you have to find what was left behind. Come upon the standing legs in the dark, and the counter-measure the records give is exact: pack the open waist with salt, grey ash, and garlic. It ruins the seam. Without a clean connection, the two halves can never rejoin.",
+      "prompt": "Low-angle medium shot of a dark nipa-hut corner. The stationary lower half of a woman, legs wrapped in a traditional skirt, stands in deep black cross-hatched shadow, the waist-seam obscured. Lit by a small oil lamp, a simple wooden bowl in the foreground holds coarse white salt, grey ash, and stylized garlic cloves. High-contrast chiaroscuro, cinematic 16:9.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
+      "chosen_variation": 3,
+      "motion_type": "static",
       "camera": {
-        "move": "push_in",
-        "duration": 6.0
+        "move": "static",
+        "duration": 22.91,
+        "speed": 1.0
       },
       "fx": [
-        "warm backlight",
-        "hearth smoke in distance"
+        "lamp_flicker",
+        "shadow_drift"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s010/var_0.png",
         "assets/s010/var_1.png",
-        "assets/s010/var_2.png"
+        "assets/s010/var_2.png",
+        "assets/s010/upload_0_Gemini_Generated_Image_xa2cbgxa2cbgxa2c.png"
       ],
-      "draft_image": "assets/s010/var_2.png",
-      "approved": false
+      "draft_image": "assets/s010/upload_0_Gemini_Generated_Image_xa2cbgxa2cbgxa2c.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s011",
-      "narration": "Good axe. Knew the woods since he was a boy. He'd walked that path more times than he had years.",
-      "prompt": "A bearded peasant man walking away down a forest path at golden hour, a worn axe resting over one shoulder, seen from behind and slightly to the side, weathered coat, hands relaxed at his sides and not the focus, tall trees, heavy ink linework, watercolor washes, paper grain, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "static",
+      "narration": "If the two halves fail to fuse before first light, the sun finishes the upper body. The whole defense, then, was a race against the sunrise — villagers searching the huts for the stationary lower half while the hunter was still airborne and unaware. Her vulnerability was structural. She lived on a countdown.",
+      "prompt": "Wide exterior pre-dawn landscape. A pale sepia band brightening at the horizon; huts and palm trees stand as heavy black silhouettes. A foreground path is lit by a small cross-hatched pool of light from a dim oil lamp carried by an unseen hand. Tense, atmospheric charcoal shading, cinematic 16:9.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
+      "chosen_variation": 3,
+      "motion_type": "parallax",
       "camera": {
-        "move": "push_in",
-        "duration": 6.0
+        "move": "pan_right",
+        "duration": 25.04,
+        "speed": 1.0
       },
       "fx": [
-        "dappled light flicker",
-        "dust motes"
+        "dawn_glow",
+        "lamp_flicker",
+        "mist"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s011/var_0.png",
         "assets/s011/var_1.png",
-        "assets/s011/var_2.png"
+        "assets/s011/var_2.png",
+        "assets/s011/upload_0_Gemini_Generated_Image_j3thcwj3thcwj3th.png"
       ],
-      "draft_image": "assets/s011/var_0.png",
-      "approved": false
+      "draft_image": "assets/s011/upload_0_Gemini_Generated_Image_j3thcwj3thcwj3th.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s012",
-      "narration": "Halfway in, the birds stopped. Not flew off. Stopped. Like someone had shut a door on the sound.",
-      "prompt": "A hushed forest interior, a single startled bird frozen mid-flight, everything unnaturally still, muted washes, deep shadow between trunks, ink linework, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
+      "narration": "Household records list everyday deterrents at every threshold: braided garlic, dishes of native coconut vinegar, salt lines along the sills. Coastal villages hung the dried tail of a stingray by the door. Not sacred relics — ordinary domestic supplies, repurposed into physical blockades.",
+      "prompt": "Tight still-life. A rough weathered wooden windowsill; a small unglazed earthen dish of cloudy coconut vinegar catches faint cross-hatched light; braided garlic and a salt line rest along the sill. On the wall behind hangs a detailed barbed stingray tail casting a sharp shadow. Deep shadow surrounds, cinematic 16:9.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
+      "chosen_variation": 3,
       "motion_type": "static",
       "camera": {
         "move": "static",
-        "duration": 6.0
+        "duration": 22.3,
+        "speed": 1.0
       },
       "fx": [
-        "dead-still air",
-        "faint dust suspended"
+        "candle_flicker",
+        "dust_motes"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s012/var_0.png",
         "assets/s012/var_1.png",
-        "assets/s012/var_2.png"
+        "assets/s012/var_2.png",
+        "assets/s012/upload_0_Gemini_Generated_Image_ywtffrywtffrywtf.png"
       ],
-      "draft_image": "assets/s012/var_0.png",
-      "approved": false
+      "draft_image": "assets/s012/upload_0_Gemini_Generated_Image_ywtffrywtffrywtf.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s013",
-      "narration": "Then a voice from up the path. His wife. Calling his name, easy, like she'd come to fetch him for supper.",
-      "prompt": "A woman's warm silhouette standing far up a sunlit forest path, apron and headscarf, one hand raised, her face unreadable in shadow, ink and watercolor, amber glow, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
+      "narration": "In an era of high infant and maternal mortality, the tradition supplied an explanation for sudden, unpreventable loss. The tragedy inside the archive is that the accused was almost always a real person — the eccentric neighbor, the outsider, or the midwife who happened to be present when a delivery failed.",
+      "prompt": "Wide, somber interior of a traditional bamboo birthing hut, empty. An empty hanging woven cradle is the central focus, rendered in fine line-work. Against a dark shuttered window, the faint ambiguous shadow of a woman's silhouette is cast, still and unreadable. Cross-hatched gloom, cinematic 16:9.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
+      "chosen_variation": 2,
       "motion_type": "parallax",
       "camera": {
         "move": "push_in",
-        "duration": 6.0
+        "duration": 22.58,
+        "speed": 1.0
       },
       "fx": [
-        "golden haze",
-        "gentle leaf fall"
+        "shadow_drift",
+        "dust_motes"
       ],
+      "sfx": "",
       "references": [],
       "video_model": null,
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s013/var_0.png",
         "assets/s013/var_1.png",
         "assets/s013/var_2.png"
       ],
-      "draft_image": "assets/s013/var_0.png",
-      "approved": false
+      "draft_image": "assets/s013/var_2.png",
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s014",
-      "narration": "He almost answered. Then he remembered. He'd left her at the loom that morning, three miles back. She had no reason to be in these trees.",
-      "prompt": "Split memory image: the same woman seated at a wooden loom in a warm cottage window, threads half-woven, contrasted with the dark forest edge, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
+      "narration": "The record didn't close with the colonial era. The image moved into mid-century print, into radio drama, into the local news. Across Panay it remains a default framework — a shape reached for when a sudden death or a late-night disturbance won't sit quietly inside any other explanation.",
+      "prompt": "Wide night landscape composite. Thatched nipa huts and tin-roofed modern homes share one mixed indigo sky under a low charcoal crescent moon. The winged upper-torso female silhouette, pure black against the sky, glides silently over the mixed-era rooftops. Read entirely by silhouette, cinematic 16:9.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
       "chosen_variation": 0,
-      "motion_type": "parallax",
+      "motion_type": "ai_video",
       "camera": {
-        "move": "pan_right",
-        "duration": 6.0
+        "move": "pan_left",
+        "duration": 24.3,
+        "speed": 1.0
       },
       "fx": [
-        "candle flicker",
-        "dust in light"
+        "cloud_drift",
+        "moon_glow"
       ],
+      "sfx": "",
       "references": [],
-      "video_model": null,
+      "video_model": "fal-ai/kling-video/v3/image-to-video",
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s014/var_0.png",
@@ -353,332 +471,42 @@
         "assets/s014/var_2.png"
       ],
       "draft_image": "assets/s014/var_0.png",
-      "approved": false
+      "approved": true,
+      "notes": ""
     },
     {
       "scene_id": "s015",
-      "narration": "The voice called again. Sweeter. Closer. And it got her name for him just slightly wrong — the pet name only she used. Almost right. Almost.",
-      "prompt": "The woman's silhouette now much nearer on the path, her outline subtly wrong — too tall, fingers too long, edges bleeding into bark, ink linework, watercolor, near-black, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
+      "narration": "Read the whole Visayan record together and the fear underneath it comes clear. Not the wings. Not the flight. The panic sits in the house itself — the thin seams of the floor, the shuttered window, and the terrible closeness of everyone you already know.",
+      "prompt": "Cinematic pull-back. The detailed leather codex cover and parchment page from the opening fill the frame. A weathered ink-drawn hand re-enters and rests gently on the dark cross-hatched text; the ink patterns fade into deep black charcoal as the hand slowly closes the chronicle cover. Candle-lit chiaroscuro, cinematic 16:9.",
+      "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
+      "motion_prompt": "",
+      "chosen_variation": 3,
       "motion_type": "ai_video",
       "camera": {
-        "move": "push_in",
-        "duration": 6.0
+        "move": "push_out",
+        "duration": 21.09,
+        "speed": 1.0
       },
       "fx": [
-        "silhouette warp",
-        "cold mist"
+        "candle_flicker",
+        "drifting_smoke",
+        "page_settle"
       ],
+      "sfx": "",
       "references": [],
-      "video_model": null,
+      "video_model": "fal-ai/kling-video/v3/image-to-video",
+      "flow_hero": false,
+      "hero_clip": false,
       "audio_anchor": null,
       "draft_variations": [
         "assets/s015/var_0.png",
         "assets/s015/var_1.png",
-        "assets/s015/var_2.png"
+        "assets/s015/var_2.png",
+        "assets/s015/upload_0_Scene_30_-_Book_Closed_202607110136.jpeg"
       ],
-      "draft_image": "assets/s015/var_0.png",
-      "approved": false
-    },
-    {
-      "scene_id": "s016",
-      "narration": "He looked down. Bright sun overhead, his own shadow long on the moss. Hers — nothing. Grass, lit clean, right where a shadow ought to lie.",
-      "prompt": "Low forest-floor angle: a bearded man's long dark shadow stretching across sunlit moss, and right beside it a tall figure's bare feet casting no shadow at all on the glowing grass, ink and watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "parallax",
-      "camera": {
-        "move": "push_in",
-        "duration": 6.0
-      },
-      "fx": [
-        "harsh light",
-        "slow grass sway"
-      ],
-      "references": [],
-      "video_model": null,
-      "audio_anchor": null,
-      "draft_variations": [
-        "assets/s016/var_0.png",
-        "assets/s016/var_1.png",
-        "assets/s016/var_2.png"
-      ],
-      "draft_image": "assets/s016/var_0.png",
-      "approved": false
-    },
-    {
-      "scene_id": "s017",
-      "narration": "That's when the path stopped agreeing to be a path.",
-      "prompt": "A forest trail dissolving and folding in on itself, trees leaning inward like a closing throat, warm amber light narrowing to a pinpoint, ink and watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "ai_video",
-      "camera": {
-        "move": "push_in",
-        "duration": 6.0
-      },
-      "fx": [
-        "warping perspective",
-        "swirling fog"
-      ],
-      "references": [],
-      "video_model": null,
-      "audio_anchor": null,
-      "draft_variations": [
-        "assets/s017/var_0.png",
-        "assets/s017/var_1.png",
-        "assets/s017/var_2.png"
-      ],
-      "draft_image": "assets/s017/var_0.png",
-      "approved": false
-    },
-    {
-      "scene_id": "s018",
-      "narration": "Every direction was the same tree. He walked an hour and crossed his own tracks. Walked another and crossed them again. The forest had folded him inside its own pocket.",
-      "prompt": "A disoriented man turning in circles in an identical-looking clearing, faint spiral of overlapping footprints beneath him, repeating trunks in every direction, ink and watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "parallax",
-      "camera": {
-        "move": "push_out",
-        "duration": 6.0
-      },
-      "fx": [
-        "slow spin",
-        "fog drift"
-      ],
-      "references": [],
-      "video_model": null,
-      "audio_anchor": null,
-      "draft_variations": [
-        "assets/s018/var_0.png",
-        "assets/s018/var_1.png",
-        "assets/s018/var_2.png"
-      ],
-      "draft_image": "assets/s018/var_0.png",
-      "approved": false
-    },
-    {
-      "scene_id": "s019",
-      "narration": "Now. Here's what his grandmother taught him, and what saved him. When the woods turn on you, you turn on the woods. Everything you're wearing — off, and back on, inside-out.",
-      "prompt": "A bearded peasant man crouched low among forest trees and ferns in a dim beam of light, pulling his coat off with the rough seams turned outward, focused and afraid, outdoors in the woods not indoors, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "parallax",
-      "camera": {
-        "move": "push_in",
-        "duration": 6.0
-      },
-      "fx": [
-        "candle-warm rim light",
-        "leaf fall"
-      ],
-      "references": [],
-      "video_model": null,
-      "audio_anchor": null,
-      "draft_variations": [
-        "assets/s019/var_0.png",
-        "assets/s019/var_1.png",
-        "assets/s019/var_2.png"
-      ],
-      "draft_image": "assets/s019/var_0.png",
-      "approved": false
-    },
-    {
-      "scene_id": "s020",
-      "narration": "Boots on the wrong feet. Coat seams to the sky. You make yourself into a thing his trick can't hold. A wrong shape in a spell built for right ones.",
-      "prompt": "The man standing again, clothes visibly inside-out and boots swapped, awkward and deliberate, the folding forest recoiling slightly around him, ink linework, watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "parallax",
-      "camera": {
-        "move": "static",
-        "duration": 6.0
-      },
-      "fx": [
-        "subtle depth shift",
-        "mist pull-back"
-      ],
-      "references": [],
-      "video_model": null,
-      "audio_anchor": null,
-      "draft_variations": [
-        "assets/s020/var_0.png",
-        "assets/s020/var_1.png",
-        "assets/s020/var_2.png"
-      ],
-      "draft_image": "assets/s020/var_0.png",
-      "approved": false
-    },
-    {
-      "scene_id": "s021",
-      "narration": "And you don't leave empty-handed. You leave something for him. Bread and salt on a stump, at a crossroads, wherever two ways meet. Payment for passage. A guest's manners in another lord's hall.",
-      "prompt": "A tree stump at a forest crossroads with a torn hunk of dark bread and a small mound of white salt on a cloth, warm candle-like glow, reverent stillness, ink and watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "static",
-      "camera": {
-        "move": "push_in",
-        "duration": 6.0
-      },
-      "fx": [
-        "candle flicker",
-        "slow smoke"
-      ],
-      "references": [],
-      "video_model": null,
-      "audio_anchor": null,
-      "draft_variations": [
-        "assets/s021/var_0.png",
-        "assets/s021/var_1.png",
-        "assets/s021/var_2.png"
-      ],
-      "draft_image": "assets/s021/var_0.png",
-      "approved": false
-    },
-    {
-      "scene_id": "s022",
-      "narration": "He left the bread. Turned his coat. And he did the last thing — the hardest one. He stopped listening for her voice.",
-      "prompt": "The man walking away with hands over his ears, the sweet familiar silhouette behind him fading back into the trees, unanswered, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "parallax",
-      "camera": {
-        "move": "push_out",
-        "duration": 6.0
-      },
-      "fx": [
-        "fading silhouette",
-        "cold fog"
-      ],
-      "references": [],
-      "video_model": null,
-      "audio_anchor": null,
-      "draft_variations": [
-        "assets/s022/var_0.png",
-        "assets/s022/var_1.png",
-        "assets/s022/var_2.png"
-      ],
-      "draft_image": "assets/s022/var_0.png",
-      "approved": false
-    },
-    {
-      "scene_id": "s023",
-      "narration": "The birds came back first. Then the light thinned into evening, honest evening, the kind that moves. And the treeline opened onto his own field.",
-      "prompt": "The forest edge parting to reveal a rye field at dusk, a small cottage with one warm lit window in the distance, birds scattering into an open sky, ink and watercolor, amber glow, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "parallax",
-      "camera": {
-        "move": "push_in",
-        "duration": 6.0
-      },
-      "fx": [
-        "warm sunset wash",
-        "birds in flight"
-      ],
-      "references": [],
-      "video_model": null,
-      "audio_anchor": null,
-      "draft_variations": [
-        "assets/s023/var_0.png",
-        "assets/s023/var_1.png",
-        "assets/s023/var_2.png"
-      ],
-      "draft_image": "assets/s023/var_0.png",
-      "approved": false
-    },
-    {
-      "scene_id": "s024",
-      "narration": "His wife met him at the door. She said she'd never once called for him. She'd been at the loom the whole day. Of course she had.",
-      "prompt": "A woman opening the heavy wooden door of a Slavic log-cabin izba at night, snow-dusted pines outside, warm firelight spilling from within, a bearded man's dark exhausted silhouette standing on the threshold seen from behind, a wooden loom inside, European folk cottage, NOT a bamboo hut, no palm trees, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 1,
-      "motion_type": "parallax",
-      "camera": {
-        "move": "push_in",
-        "duration": 6.0
-      },
-      "fx": [
-        "hearth flicker",
-        "doorway light bloom"
-      ],
-      "references": [],
-      "video_model": null,
-      "audio_anchor": null,
-      "draft_variations": [
-        "assets/s024/var_0.png",
-        "assets/s024/var_1.png",
-        "assets/s024/var_2.png"
-      ],
-      "draft_image": "assets/s024/var_1.png",
-      "approved": false
-    },
-    {
-      "scene_id": "s025",
-      "narration": "He was gone one afternoon. When he came out, the axe he'd carried in was rusted through, like it had waited on a stump for forty years.",
-      "prompt": "Close on the axe resting against the doorframe, its head bloomed with deep orange rust, cobwebbed, though the handle is fresh, warm candlelight, ink and watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "static",
-      "camera": {
-        "move": "push_in",
-        "duration": 6.0
-      },
-      "fx": [
-        "candle flicker",
-        "fine dust"
-      ],
-      "references": [],
-      "video_model": null,
-      "audio_anchor": null,
-      "draft_variations": [
-        "assets/s025/var_0.png",
-        "assets/s025/var_1.png",
-        "assets/s025/var_2.png"
-      ],
-      "draft_image": "assets/s025/var_0.png",
-      "approved": false
-    },
-    {
-      "scene_id": "s026",
-      "narration": "So. If you walk where the old forest still stands, keep the sun on one shoulder. Turn your coat before you set out, not after. Leave your bread at the crossing.",
-      "prompt": "A wide dusk view of a dark ancient forest wall meeting an open road, a small figure pausing at the treeline turning their coat inside-out, offering stump nearby, ink and watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "parallax",
-      "camera": {
-        "move": "pan_left",
-        "duration": 6.0
-      },
-      "fx": [
-        "low mist",
-        "fading light"
-      ],
-      "references": [],
-      "video_model": null,
-      "audio_anchor": null,
-      "draft_variations": [
-        "assets/s026/var_0.png",
-        "assets/s026/var_1.png",
-        "assets/s026/var_2.png"
-      ],
-      "draft_image": "assets/s026/var_0.png",
-      "approved": false
-    },
-    {
-      "scene_id": "s027",
-      "narration": "And if something up the path calls you by a name only love should know — look at the ground. If nothing dark lies where it's standing, then whatever loves you is not there. Keep walking. Don't answer.",
-      "prompt": "Final shot: deep in the trees a familiar human silhouette waits in a shaft of pale light, casting NO shadow at all on the bright grass beneath it, near-black forest closing around, eerie and still, ink and watercolor, cinematic 16:9, Deep Root Lore style",
-      "chosen_variation": 0,
-      "motion_type": "ai_video",
-      "camera": {
-        "move": "push_out",
-        "duration": 6.0
-      },
-      "fx": [
-        "green ember eyes",
-        "slow mist swallow"
-      ],
-      "references": [],
-      "video_model": null,
-      "audio_anchor": null,
-      "draft_variations": [
-        "assets/s027/var_0.png",
-        "assets/s027/var_1.png",
-        "assets/s027/var_2.png"
-      ],
-      "draft_image": "assets/s027/var_0.png",
-      "approved": false
+      "draft_image": "assets/s015/upload_0_Scene_30_-_Book_Closed_202607110136.jpeg",
+      "approved": true,
+      "notes": ""
     }
   ]
 }

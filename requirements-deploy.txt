@@ -1,0 +1,15 @@
+# Lean, Linux-safe dependency set for running the Studio dashboard in a hosted
+# environment (GitHub Codespaces, Render, etc.). This is enough for the whole
+# dashboard: workspace, generation knobs, Vesper chat (/chat/develop), storyboard
+# drafting + locking (Anthropic), reference upload, and paid image regeneration (fal).
+#
+# It deliberately EXCLUDES the heavy local-render stack (librosa, moviepy,
+# opentimelineio, pillow, scipy, imageio) and the depth model. Note that the main
+# requirements.txt pins `onnxruntime-directml`, which is a Windows/AMD-only wheel and
+# will NOT install on Linux — if you later need the depth/motion/audio pipeline in
+# the cloud, install those separately and swap `onnxruntime-directml` -> `onnxruntime`.
+flask==3.1.0
+python-dotenv==1.0.1
+anthropic==0.116.0
+fal-client==0.5.6
+requests>=2.31,<3

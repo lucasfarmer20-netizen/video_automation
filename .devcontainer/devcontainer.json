@@ -1,0 +1,17 @@
+{
+  "name": "Illuminated Bestiary Studio",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "postCreateCommand": "pip install --upgrade pip && pip install -r requirements-deploy.txt",
+  "forwardPorts": [5000],
+  "portsAttributes": {
+    "5000": { "label": "Studio", "onAutoForward": "openPreview" }
+  },
+  "remoteEnv": {
+    "PYTHONUNBUFFERED": "1"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"]
+    }
+  }
+}

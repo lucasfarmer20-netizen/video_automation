@@ -35,6 +35,25 @@ class Camera:
 
     move: str = "push_in"   # push_in | push_out | pan_left | pan_right | static
     duration: float = 6.0   # seconds
+    speed: float = 1.0      # per-shot move-speed multiplier (1.5 = 50% faster)
+
+
+@dataclass
+class RenderConfig:
+    """Per-project image-generation knobs, editable from the dashboard.
+
+    These override ``assets.py``'s module defaults for this one storyboard. An
+    empty ``negative_prompt`` means "use the ``assets.NEGATIVE_PROMPT`` default"
+    (kept empty to avoid a manifest <-> assets import cycle).
+    """
+
+    backend: str = "nano2"          # default image model: nano2 | flux-cfg
+    guidance_scale: float = 3.5
+    nag_scale: float = 5.0          # negative-prompt strength (NAG) on flux-general
+    num_inference_steps: int = 28
+    negative_prompt: str = ""       # "" => fall back to assets.NEGATIVE_PROMPT
+    reference_image: str = ""       # global frame reference: repo-relative local path
+    reference_image_url: str = ""   # cached fal URL of the frame reference (nano2 edit)
 
 
 @dataclass
@@ -43,17 +62,23 @@ class Shot:
 
     scene_id: str
     narration: str = ""                        # words the narrator speaks over this beat
-    prompt: str = ""                           # visual description -> flux draft prompt
+    prompt: str = ""                           # scene description -> flux draft prompt
+    style_medium: str = ""                     # historical art medium leading the image (per culture)
+    motion_prompt: str = ""                    # image-to-video prompt for Tier-C / Veo-Flow hero shots
     chosen_variation: int | None = None        # index into generated drafts
     motion_type: MotionType = MotionType.PARALLAX
     camera: Camera = field(default_factory=Camera)
-    fx: list[str] = field(default_factory=list)  # e.g. ["candle_flicker", "grain"]
+    fx: list[str] = field(default_factory=list)  # visual FX, e.g. ["candle_flicker", "grain"]
+    sfx: str = ""                              # ElevenLabs sound-effects prompt (ambience/foley)
     references: list[str] = field(default_factory=list)  # character refs (Nano Banana), style is implicit
     video_model: str | None = None            # set only when motion_type == AI_VIDEO
+    flow_hero: bool = False                    # manual VEO/Flow hero (export -> Google Flow -> import bridge)
+    hero_clip: bool = False                    # a finished Veo/Flow clip was imported -> don't re-render over it
     audio_anchor: float | None = None         # librosa beat (s) this cut lands on
     draft_variations: list[str] = field(default_factory=list)  # paths to fal draft variations
     draft_image: str | None = None            # path to chosen draft still
     approved: bool = False                    # human sign-off (Gate 1)
+    notes: str = ""                           # human continuity/review notes (Gate 1)
 
     def needs_paid_video(self) -> bool:
         return self.motion_type == MotionType.AI_VIDEO
@@ -65,9 +90,11 @@ class Storyboard:
 
     version: int = MANIFEST_VERSION
     title: str = ""
+    cultural_origin: str = ""         # entity's real ethnography; drives each shot's style_medium
     script_locked: bool = False       # Script gate
     storyboard_approved: bool = False  # Gate 1 (human pressed "approve")
     music_track: str | None = None    # selected file from audio_pool/
+    render: RenderConfig = field(default_factory=RenderConfig)  # dashboard-editable gen knobs
     shots: list[Shot] = field(default_factory=list)
 
     # --- Gate logic ---------------------------------------------------------
@@ -107,12 +134,18 @@ class Storyboard:
             )
             for shot in data.get("shots", [])
         ]
+        raw_render = data.get("render") or {}
+        render = RenderConfig(
+            **{k: raw_render[k] for k in raw_render if k in RenderConfig.__dataclass_fields__}
+        )
         return cls(
             version=data.get("version", MANIFEST_VERSION),
             title=data.get("title", ""),
+            cultural_origin=data.get("cultural_origin", ""),
             script_locked=data.get("script_locked", False),
             storyboard_approved=data.get("storyboard_approved", False),
             music_track=data.get("music_track"),
+            render=render,
             shots=shots,
         )
 
