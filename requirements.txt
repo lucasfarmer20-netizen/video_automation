@@ -14,6 +14,7 @@ scipy==1.18.0
 pillow==10.4.0
 imageio==2.37.3
 imageio-ffmpeg==0.6.0
-# Depth-Anything V2 depth stage. onnxruntime-directml is the Windows/AMD (DirectML)
-# build; on other platforms substitute plain `onnxruntime`.
-onnxruntime-directml==1.24.4
+
+# Depth-Anything V2 depth stage.
+# Swapped from Windows directml to the platform-agnostic CPU runtime for Linux cloud instances
+onnxruntime==1.20.1
