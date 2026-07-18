@@ -1,0 +1,35 @@
+steps:
+  # 1. Build the container image using the Dockerfile and tag it with the specific commit SHA
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/youtube-pipeline:$COMMIT_SHA', '.']
+  
+  # 2. Push the newly compiled image to your private Google Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/youtube-pipeline:$COMMIT_SHA']
+  
+  # 3. Deploy the container to Cloud Run with the correct environment paths, cloud storage, and keys
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'youtube-video-pipeline'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/youtube-pipeline:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--allow-unauthenticated'
+      - '--min-instances'
+      - '0'
+      - '--max-instances'
+      - '1'
+      - '--port'
+      - '8080'
+      - '--add-volume=name=media-storage,type=cloud-storage,bucket=my-storyboard-vault'
+      - '--add-volume-mount=volume=media-storage,mount-path=/gcs'
+      - '--update-secrets=CLAUDE_API_KEY=CLAUDE_API_KEY:latest'
+      - '--set-env-vars'
+      - 'MANIFEST_PATH=/gcs/storyboard_manifest.json,ASSETS_DIR=/gcs/assets'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
