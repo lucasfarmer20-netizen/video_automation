@@ -19,7 +19,6 @@ CLI:
 from __future__ import annotations
 
 import argparse
-
 import os
 
 from src import config
@@ -28,6 +27,7 @@ from src.manifest import Shot, Storyboard, load, save
 CHANNEL_TITLE = "The Illuminated Bestiary"
 DRAFTS_PER_SHOT = 3
 DEFAULT_SHOT_SECONDS = 6.0  # fallback when a shot carries no camera duration
+
 
 # --------------------------------------------------------------------------- #
 # Cloud-Native Path Setup & Directory Assurance
@@ -55,7 +55,7 @@ def _init_storyboard() -> Storyboard:
     if not sb.shots and not sb.title:
         sb.title = CHANNEL_TITLE
         save(sb)
-        print(f'Initialized new manifest for "{CHANNEL_TITLE}" -> {config.MANIFEST_PATH}')
+        print(f'Initialized new manifest for "{CHANNEL_TITLE}" -> {MANIFEST_PATH}')
     return sb
 
 
@@ -84,7 +84,7 @@ def stage_script(sb: Storyboard, topic: str | None, num_beats: int | None) -> No
         draft.title = CHANNEL_TITLE
         sb = draft
         save(sb)
-        print(f"Drafted {len(sb.shots)} beats -> {config.MANIFEST_PATH}")
+        print(f"Drafted {len(sb.shots)} beats -> {MANIFEST_PATH}")
 
     print("\n== SCRIPT GATE ==")
     print("Refine the narration/visuals in the manifest, then lock the script:")
@@ -256,7 +256,11 @@ def _main() -> None:
     parser.add_argument("--host", default="127.0.0.1", help="Dashboard host.")
     parser.add_argument("--port", type=int, default=5000, help="Dashboard port.")
     args = parser.parse_args()
-    run_pipeline(topic=args.topic, num_beats=args.beats, host=args.host, port=args.port)
+    
+    # Check if we are running in a Cloud Run environment to bind to the correct host address
+    target_host = "0.0.0.0" if os.environ.get("K_SERVICE") else args.host
+    
+    run_pipeline(topic=args.topic, num_beats=args.beats, host=target_host, port=args.port)
 
 
 if __name__ == "__main__":
