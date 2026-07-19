@@ -1,7 +1,7 @@
 steps:
   # 1. Build the container image using the Dockerfile and tag it with the specific commit SHA
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/youtube-pipeline:$COMMIT_SHA', '.']
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/youtube-pipeline:latest', '.']
   
   # 2. Push the newly compiled image to your private Google Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
@@ -15,7 +15,7 @@ steps:
       - 'deploy'
       - 'youtube-video-pipeline'
       - '--image'
-      - 'gcr.io/$PROJECT_ID/youtube-pipeline:$COMMIT_SHA'
+      - 'gcr.io/$PROJECT_ID/youtube-pipeline:latest'
       - '--region'
       - 'us-central1'
       - '--allow-unauthenticated'
