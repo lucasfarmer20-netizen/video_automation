@@ -12,8 +12,8 @@ each invocation advances as far as it can, then **pauses at the next human gate*
 and exits. Re-run to continue once the human has acted.
 
 CLI:
-    python pipeline.py --topic "The manananggal of Barrio Consuelo"
-    python pipeline.py                 # resume from the current manifest state
+    python pipeline.py --channel bestiary --project lore-01 --topic "The manananggal of Barrio Consuelo"
+    python pipeline.py --channel bestiary --project lore-01  # resume from the current manifest state
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ import os
 from src import config
 from src.manifest import Shot, Storyboard, load, save
 
-CHANNEL_TITLE = "The Illuminated Bestiary"
 DRAFTS_PER_SHOT = 3
 DEFAULT_SHOT_SECONDS = 6.0  # fallback when a shot carries no camera duration
 
@@ -32,25 +31,17 @@ DEFAULT_SHOT_SECONDS = 6.0  # fallback when a shot carries no camera duration
 # --------------------------------------------------------------------------- #
 # Cloud-Native Path Setup & Directory Assurance
 # --------------------------------------------------------------------------- #
-# Use Cloud Storage FUSE path when running in Cloud Run, otherwise fall back to local file
-MANIFEST_PATH = os.environ.get("MANIFEST_PATH", "./storyboard_manifest.json")
-ASSETS_DIR = os.environ.get("ASSETS_DIR", "./static/assets")
-
-# Ensure the cloud directories exist dynamically on boot so Python doesn't crash
-os.makedirs(os.path.dirname(MANIFEST_PATH), exist_ok=True)
-os.makedirs(ASSETS_DIR, exist_ok=True)
+# These will be set dynamically inside _main() based on your CLI flags
+CHANNEL_TITLE = "The Illuminated Bestiary"
+MANIFEST_PATH = "./storyboard_manifest.json"
+ASSETS_DIR = "./static/assets"
 
 
 # --------------------------------------------------------------------------- #
 # init
 # --------------------------------------------------------------------------- #
 def _init_storyboard() -> Storyboard:
-    """Load the manifest, or start a fresh Storyboard for the channel.
-
-    ``load`` yields a blank ``Storyboard`` when no manifest exists; we stamp the
-    channel title onto that blank state and persist it so the file exists from
-    the first run.
-    """
+    """Load the manifest, or start a fresh Storyboard for the channel."""
     sb = load()
     if not sb.shots and not sb.title:
         sb.title = CHANNEL_TITLE
@@ -63,11 +54,7 @@ def _init_storyboard() -> Storyboard:
 # stage 1 — script (drafts, then pauses at the script gate)
 # --------------------------------------------------------------------------- #
 def stage_script(sb: Storyboard, topic: str | None, num_beats: int | None) -> None:
-    """Draft the narration/beats if needed, then pause for the human to lock.
-
-    Never auto-locks: CLAUDE.md's script gate requires a human to refine and
-    approve the narration before anything downstream may consume it.
-    """
+    """Draft the narration/beats if needed, then pause for the human to lock."""
     from src import script
 
     if not sb.shots:
@@ -105,13 +92,7 @@ def _landmarks(track: str) -> list[float]:
 
 
 def _map_anchors(shots: list[Shot], landmarks: list[float]) -> int:
-    """Snap each shot's running start time to the nearest unused landmark.
-
-    Heuristic, monotonic, non-repeating: we walk the cumulative per-shot camera
-    duration as the *intended* start of each beat and snap it to the closest
-    remaining beat/transient, so cuts land on the music without two beats sharing
-    an anchor. Returns the count of shots anchored.
-    """
+    """Snap each shot's running start time to the nearest unused landmark."""
     if not landmarks:
         return 0
     t = 0.0
@@ -180,12 +161,7 @@ def stage_drafts(sb: Storyboard) -> Storyboard:
 # stage 4 — human-approval gate (Gate 1)
 # --------------------------------------------------------------------------- #
 def stage_gate(sb: Storyboard, host: str, port: int) -> Storyboard | None:
-    """Launch the storyboard/budget dashboard and block until the gate clears.
-
-    Returns the approved storyboard once ``gate_cleared()`` is true, or ``None``
-    if the human has not finished approving — in which case the caller must not
-    proceed to any paid render stage.
-    """
+    """Launch the storyboard/budget dashboard and block until the gate clears."""
     from src import dashboard
 
     if sb.gate_cleared():
@@ -245,20 +221,51 @@ def run_pipeline(
         return
 
     # Stages 5+ (paid video render, parallax render, timeline/FCPXML — Gate 2)
-    # are intentionally out of scope for this task and not yet implemented.
     print("\nGate cleared. Next: render + timeline stages (Gate 2) — not yet implemented.")
 
 
 def _main() -> None:
-    parser = argparse.ArgumentParser(description="The Illuminated Bestiary master orchestrator.")
+    global CHANNEL_TITLE, MANIFEST_PATH, ASSETS_DIR
+
+    parser = argparse.ArgumentParser(description="Multi-Channel Master Orchestrator.")
     parser.add_argument("--topic", help="Episode topic/brief (only needed to draft a new script).")
     parser.add_argument("--beats", type=int, default=None, help="Approx beat count when drafting.")
     parser.add_argument("--host", default="127.0.0.1", help="Dashboard host.")
     parser.add_argument("--port", type=int, default=5000, help="Dashboard port.")
+    
+    # Dynamic routing flags for your channels and unique project names
+    parser.add_argument("--channel", default="bestiary", choices=["bestiary", "calluses"], 
+                        help="Choose channel: 'bestiary' or 'calluses'")
+    parser.add_argument("--project", default="new-episode", 
+                        help="Unique name for this project folder (e.g. 'manananggal-v1')")
     args = parser.parse_args()
+    
+    # 1. Map the channel identity
+    if args.channel == "calluses":
+        CHANNEL_TITLE = "By the Calluses"
+    else:
+        CHANNEL_TITLE = "The Illuminated Bestiary"
+        
+    # 2. Determine base directory (Use Cloud Storage FUSE path if on Cloud Run)
+    base_dir = "/gcs" if os.environ.get("K_SERVICE") else "."
+    
+    # 3. isolate paths so projects never overwrite each other
+    MANIFEST_PATH = f"{base_dir}/projects/{args.channel}/{args.project}/storyboard_manifest.json"
+    ASSETS_DIR = f"{base_dir}/projects/{args.channel}/{args.project}/assets"
+    
+    # Ensure directories exist before pipeline execution
+    os.makedirs(os.path.dirname(MANIFEST_PATH), exist_ok=True)
+    os.makedirs(ASSETS_DIR, exist_ok=True)
+    
+    # Set environment variables so internal modules (src/) read the isolated paths
+    os.environ["MANIFEST_PATH"] = MANIFEST_PATH
+    os.environ["ASSETS_DIR"] = ASSETS_DIR
     
     # Check if we are running in a Cloud Run environment to bind to the correct host address
     target_host = "0.0.0.0" if os.environ.get("K_SERVICE") else args.host
+    
+    print(f"\nTarget Workspace: [{CHANNEL_TITLE}] -> Project: {args.project}")
+    print(f"Isolated Manifest: {MANIFEST_PATH}\n")
     
     run_pipeline(topic=args.topic, num_beats=args.beats, host=target_host, port=args.port)
 
