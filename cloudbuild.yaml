@@ -5,7 +5,7 @@ steps:
   
   # 2. Push the newly compiled image to your private Google Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/youtube-pipeline:$COMMIT_SHA']
+    args: ['push', 'gcr.io/$PROJECT_ID/youtube-pipeline:latest']
   
   # 3. Deploy the container to Cloud Run with the correct environment paths, cloud storage, and keys
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
