@@ -35,7 +35,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from flask import (Flask, abort, jsonify, render_template_string, request,
-                   send_from_directory)
+                   send_file)
 from werkzeug.utils import secure_filename
 
 from . import config
@@ -43,13 +43,26 @@ from .manifest import MotionType, load, save
 
 app = Flask(__name__)
 
-DEFAULT_VIDEO_MODEL = "fal-ai/kling-video/v3/image-to-video"
+# fal.ai 2026 Video Routing Roster
+VIDEO_BACKENDS = {
+    "veo-3.1": "Veo 3.1 (Cinematic 4K + Audio)",
+    "seedance-2": "Seedance 2.0 (Multi-shot + Audio)",
+    "wan-2.7": "Wan 2.7 (Budget B-Roll)",
+    "kling-2.5": "Kling 2.5 Turbo Pro (Fast Motion)"
+}
+DEFAULT_VIDEO_MODEL = "veo-3.1"
+
 TIER_LABEL = {"static": "A · still + FX ($0)", "parallax": "B · parallax ($0)",
               "ai_video": "C · AI video (paid)"}
 
-# Image-model backends offered in the UI (label + rough per-image cost).
-BACKENDS = {"nano2": "Nano Banana 2 (~$0.15)", "flux-cfg": "flux-general (~$0.04)"}
-ALLOWED_BACKENDS = {"nano2", "flux-cfg", "nano", "flux", "flux-lora"}
+# fal.ai 2026 Image Routing Roster
+BACKENDS = {
+    "flux-pro": "FLUX.2 [pro] (Cinematic, ~$0.045)",
+    "flux-ultra": "FLUX 1.1 [pro] Ultra (2K Wide, ~$0.06)",
+    "flux-turbo": "FLUX.1 [dev] Turbo (Fast Draft, ~$0.008)",
+    "nano2": "Nano Banana 2 (Legacy, ~$0.15)"
+}
+ALLOWED_BACKENDS = {"flux-pro", "flux-ultra", "flux-turbo", "nano2", "flux-cfg", "nano", "flux", "flux-lora"}
 
 # Root under which we look for sibling projects, and dirs we never descend into.
 WORKSPACE_ROOT = config.ROOT
@@ -61,7 +74,7 @@ IGNORE_DIRS = {".venv", ".git", "__pycache__", "assets", "audio", "audio_pool",
 _state = {"manifest": config.MANIFEST_PATH}
 
 # Spend guard: cap paid image regenerations per server process. Raise via env.
-REGEN_LIMIT = int(os.environ.get("STUDIO_REGEN_LIMIT", "20"))
+REGEN_LIMIT = int(os.environ.get("STUDIO_REGEN_LIMIT", "50"))
 _regen_count = {"n": 0}
 
 # Background jobs for the long back-half stages (narration / render / timeline).
@@ -162,396 +175,446 @@ def _suggest_motion_prompt(shot) -> str:
 # template
 # --------------------------------------------------------------------------- #
 PAGE = """
-<!doctype html><html><head><meta charset="utf-8"><title>{{ sb.title or "Untitled" }} — Studio</title>
-<style>
-  :root { --bg:#14110e; --card:#1e1a15; --line:#3a3128; --amber:#e0a458; --ink:#d8cdbd; --dim:#8a7c68; }
-  * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink);
-    font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; }
-  a { color:var(--amber); text-decoration:none; }
-  header { position:sticky; top:0; z-index:10; background:#100d0a; border-bottom:1px solid var(--line);
-    padding:12px 20px; display:flex; align-items:center; gap:18px; }
-  header h1 { font-size:17px; margin:0; color:var(--amber); font-weight:600; }
-  .meta { color:var(--dim); font-size:13px; }
-  .spacer { flex:1; }
-  button { font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--card);
-    color:var(--ink); padding:7px 12px; border-radius:6px; }
-  button:hover { border-color:var(--amber); }
-  .approve { background:var(--amber); color:#14110e; border-color:var(--amber); font-weight:600; padding:8px 16px; }
-  .wrap { display:flex; align-items:flex-start; }
-  aside { width:240px; flex:none; border-right:1px solid var(--line); min-height:100vh; padding:14px; position:sticky; top:53px; }
-  aside h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:14px 0 8px; }
-  .proj { display:block; padding:7px 9px; border-radius:6px; border:1px solid transparent; cursor:pointer;
-    font-size:13px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .proj:hover { border-color:var(--line); }
-  .proj.active { border-color:var(--amber); color:var(--amber); background:#241f18; }
-  .proj small { color:var(--dim); display:block; font-size:11px; }
-  main { flex:1; max-width:1080px; margin:0 auto; padding:20px; }
-  .panel { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:18px; }
-  .panel h3 { margin:0 0 10px; font-size:14px; color:var(--amber); }
-  label { font-size:12px; color:var(--dim); display:block; margin-bottom:3px; }
-  .knobs { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
-  input[type=number], input[type=text], textarea { width:100%; background:#14110e; color:var(--ink);
-    border:1px solid var(--line); border-radius:6px; padding:7px; font:inherit; }
-  textarea { resize:vertical; min-height:52px; }
-  select { font:inherit; background:#14110e; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:6px; }
-  .tierC select { border-color:var(--amber); color:var(--amber); }
-  .beat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
-  .beat.approved { border-color:#4a7a3a; }
-  .beat.hero { box-shadow:inset 3px 0 0 var(--amber); }
-  .beat-top { display:flex; gap:14px; align-items:flex-start; margin-bottom:10px; }
-  .sid { font-family:ui-monospace,monospace; color:var(--amber); font-size:13px; padding-top:6px; min-width:44px; }
-  .ctrls { display:flex; flex-direction:column; gap:8px; align-items:flex-end; }
-  .hero-tog { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--dim); cursor:pointer; }
-  .vars { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:12px; }
-  .var { position:relative; border:2px solid transparent; border-radius:8px; overflow:hidden; cursor:pointer;
-    background:#0d0b08; aspect-ratio:16/9; }
-  .var img { width:100%; height:100%; object-fit:cover; display:block; }
-  .var.sel { border-color:var(--amber); }
-  .var .tick { position:absolute; top:6px; right:6px; background:var(--amber); color:#14110e;
-    border-radius:50%; width:22px; height:22px; text-align:center; line-height:22px; font-weight:700; display:none; }
-  .var.sel .tick { display:block; }
-  .empty { color:var(--dim); font-style:italic; padding:16px 0; }
-  .row { display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap; }
-  .refs { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
-  .ref { position:relative; width:64px; height:40px; border:1px solid var(--line); border-radius:5px; overflow:hidden; background:#0d0b08; }
-  .ref img { width:100%; height:100%; object-fit:cover; }
-  .ref .tag { font-size:10px; color:var(--dim); padding:2px 4px; }
-  .refx { position:absolute; top:0; right:0; width:16px; height:16px; line-height:15px; text-align:center;
-    font-size:11px; cursor:pointer; background:rgba(0,0,0,.7); color:var(--amber); border-bottom-left-radius:5px; }
-  .refx:hover { background:#a33; color:#fff; }
-  .drop { border:1px dashed var(--line); border-radius:6px; padding:8px 12px; font-size:12px; color:var(--dim); cursor:pointer; }
-  .drop.over { border-color:var(--amber); color:var(--amber); }
-  .chatlog { max-height:220px; overflow-y:auto; border:1px solid var(--line); border-radius:6px; padding:8px; margin-bottom:8px; background:#14110e; }
-  .msg { margin-bottom:8px; font-size:13px; } .msg.u { color:var(--ink); } .msg.a { color:var(--amber); white-space:pre-wrap; }
-  #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#000;
-    border:1px solid var(--amber); color:var(--amber); padding:10px 18px; border-radius:8px;
-    opacity:0; transition:.2s; pointer-events:none; } #toast.show { opacity:1; }
-</style></head><body>
-<header>
-  <h1>{{ sb.title or "Untitled" }}</h1>
-  <span class="meta">{{ sb.shots|length }} beats · <span id="paidCount">{{ paid }}</span> Tier-C
-    · {{ sb.cultural_origin or "no culture set" }}
-    · script {{ "locked" if sb.script_locked else "draft" }}</span>
-  <span class="spacer"></span>
-  <span class="meta">{{ "APPROVED ✓" if sb.storyboard_approved else "not approved" }}</span>
-  <button class="approve" onclick="approve()">Approve storyboard →</button>
-</header>
-<div class="wrap">
-<aside>
-  <h2>Projects</h2>
-  {% for p in projects %}
-    <div class="proj {{ 'active' if p.active else '' }}" onclick="selectProject('{{ p.rel }}')">
-      {{ p.name }}<small>{{ p.rel }}</small>
+<!doctype html>
+<html class="dark">
+<head>
+  <meta charset="utf-8">
+  <title>{{ sb.title or "Untitled" }} — Studio Workspace</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            amber: { 400: '#ebba7a', 500: '#e0a458', 600: '#c2863c' },
+            neutral: { 850: '#1a1a1a', 900: '#141414', 950: '#0a0a0a' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #555; }
+    .toast-enter { opacity: 1 !important; transform: translate(-50%, 0) !important; }
+  </style>
+</head>
+<body class="bg-neutral-950 text-neutral-300 font-sans antialiased m-0 flex flex-col min-h-screen">
+  
+  <header class="sticky top-0 z-30 bg-neutral-900/95 backdrop-blur-md border-b border-neutral-800 px-6 py-3 flex items-center gap-6 shadow-md">
+    <h1 class="text-amber-500 font-semibold text-lg tracking-wide">{{ sb.title or "Untitled" }}</h1>
+    <div class="text-neutral-500 text-sm flex gap-3 items-center">
+      <span>{{ sb.shots|length }} beats</span>•
+      <span><span id="paidCount" class="text-amber-500 font-medium">{{ paid }}</span> Tier-C</span>•
+      <span>{{ sb.cultural_origin or "no culture set" }}</span>•
+      <span class="{{ 'text-green-500' if sb.script_locked else 'text-yellow-500' }}">script {{ "locked" if sb.script_locked else "draft" }}</span>
     </div>
-  {% else %}
-    <div class="meta">No manifests found.</div>
-  {% endfor %}
-</aside>
-<main>
+    <div class="flex-1"></div>
+    <span class="text-sm font-medium {{ 'text-green-500' if sb.storyboard_approved else 'text-neutral-500' }}">{{ "APPROVED ✓" if sb.storyboard_approved else "not approved" }}</span>
+    <button class="bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold py-2 px-5 rounded-lg shadow-lg shadow-amber-500/20 transition-all border border-amber-400" onclick="approve()">
+      Approve storyboard →
+    </button>
+  </header>
 
-  <div class="panel">
-    <h3>Generation knobs (this project)</h3>
-    <div class="row" style="margin-top:0;margin-bottom:10px">
-      <label style="margin:0">Default image model</label>
-      <select id="k_backend">
-        {% for v,label in backends.items() %}
-        <option value="{{ v }}" {{ 'selected' if render.backend==v else '' }}>{{ label }}</option>
-        {% endfor %}
-      </select>
-      <span class="meta">nag/steps below apply to flux-general only</span>
-    </div>
-    <div class="knobs">
-      <div><label>guidance_scale</label><input type="number" step="0.1" id="k_guidance" value="{{ render.guidance_scale }}"></div>
-      <div><label>nag_scale (neg strength)</label><input type="number" step="0.1" id="k_nag" value="{{ render.nag_scale }}"></div>
-      <div><label>num_inference_steps</label><input type="number" step="1" id="k_steps" value="{{ render.num_inference_steps }}"></div>
-    </div>
-    <div style="margin-top:10px"><label>negative_prompt override (blank = built-in default)</label>
-      <textarea id="k_negative" placeholder="{{ default_negative }}">{{ render.negative_prompt }}</textarea></div>
-    <div class="row" style="margin-top:10px">
-      <label style="margin:0">Global frame reference</label>
-      {% if render.reference_image %}
-        <img src="/{{ render.reference_image }}" style="height:40px;border:1px solid var(--line);border-radius:4px">
-        <button onclick="clearFrame()">✕ remove</button>
+  <div class="flex flex-1 items-start">
+    <aside class="w-72 shrink-0 border-r border-neutral-800 min-h-[calc(100vh-65px)] p-4 sticky top-[65px] bg-neutral-900/50 overflow-y-auto">
+      <h2 class="text-amber-500/70 text-xs font-bold uppercase tracking-widest mb-4">Projects</h2>
+      <div class="flex flex-col gap-2">
+      {% for p in projects %}
+        <div class="block p-3 rounded-xl border {{ 'border-amber-500/50 bg-amber-500/10' if p.active else 'border-transparent hover:border-neutral-700 bg-neutral-900/50' }} cursor-pointer transition-colors group" onclick="selectProject('{{ p.rel }}')">
+          <div class="text-sm font-medium text-neutral-200 group-hover:text-amber-400 truncate">{{ p.name }}</div>
+          <div class="text-xs text-neutral-500 truncate mt-1">{{ p.rel }}</div>
+        </div>
       {% else %}
-        <span class="meta">none — shots may drift to different borders</span>
-      {% endif %}
-      <div class="drop" id="framedrop"
-           ondragover="event.preventDefault();this.classList.add('over')"
-           ondragleave="this.classList.remove('over')"
-           ondrop="dropFrame(event)"
-           onclick="document.getElementById('framefile').click()">⬆ set frame (border/page-edge)</div>
-      <input type="file" id="framefile" accept="image/*" style="display:none" onchange="uploadFrame(this.files[0])">
-      <span class="meta">Nano Banana 2 only</span>
-    </div>
-    <div class="row"><button onclick="saveRender()">Save knobs</button></div>
-  </div>
+        <div class="text-neutral-500 text-sm italic">No manifests found.</div>
+      {% endfor %}
+      </div>
+    </aside>
 
-  <div class="panel">
-    <h3>Develop with Vesper (Claude) &amp; script gate</h3>
-    <div class="chatlog" id="chatlog"></div>
-    <div class="row" style="margin-top:0">
-      <input type="text" id="chatinput" placeholder="Ask Vesper to develop the entity / angle…" style="flex:1"
-        onkeydown="if(event.key==='Enter')chatSend()">
-      <button onclick="chatSend()">Send</button>
-      <button class="approve" onclick="scriptFromChat()">Use chat → script</button>
-    </div>
-    <div class="row">
-      <input type="text" id="gen_topic" placeholder="Entity / topic to draft a full storyboard…" style="flex:1">
-      <input type="number" id="gen_beats" placeholder="beats" style="width:80px" min="1">
-      <button onclick="genStoryboard()">Draft storyboard</button>
-      <button onclick="lockScript()">🔒 Lock script</button>
-    </div>
-  </div>
+    <main class="flex-1 max-w-7xl mx-auto p-6 lg:p-8">
 
-  {% if sb.storyboard_approved %}
-  <div class="panel">
-    <h3>Assemble — storyboard approved ✓</h3>
-    <div class="row"><button id="btn-narration" onclick="assemble('narration',this)">1 · Generate narration</button>
-      <span id="st-narration" class="meta"></span></div>
-    <div class="row"><button id="btn-render" onclick="assemble('render',this)">2 · Render clips (local, slow)</button>
-      <span id="st-render" class="meta"></span></div>
-    <div class="row"><button id="btn-preview" onclick="assemble('preview',this)">3 · Build preview (watch the cut)</button>
-      <span id="st-preview" class="meta"></span></div>
-    <div class="row"><button id="btn-timeline" onclick="assemble('timeline',this)">4 · Build DaVinci timeline (OTIO + FCPXML)</button>
-      <span id="st-timeline" class="meta"></span></div>
-    {% if paid %}<div class="meta">{{ paid }} Tier-C (ai_video) shot(s) render as placeholders until the paid fal video stage (Seedance/Kling) is wired.</div>{% endif %}
-    {% if heroes %}<div class="meta">{{ heroes }} shot(s) flagged VEO/Flow hero — hand-animate those in Flow and import the clips.</div>{% endif %}
-    {% if preview_url %}
-    <div style="margin-top:12px">
-      <video controls playsinline style="width:100%;max-height:440px;background:#000;border:1px solid var(--line);border-radius:8px"
-             src="{{ preview_url }}?v={{ range(100000)|random }}"></video>
-      <div class="meta">Assembled preview — narration + music + all clips. This is the review proxy, not the master.</div>
-    </div>
-    {% endif %}
-    {% if fcpxml_ready %}
-    <div class="meta" style="margin-top:8px;color:var(--amber)">▶ Next step: open <b>{{ ep_slug }}.fcpxml</b> in DaVinci Resolve
-      (File → Import → Timeline) to finish the master cut.</div>
-    {% endif %}
-    <div class="meta">Runs on the server; outputs are namespaced to this episode. Watch status here or the terminal.</div>
-  </div>
-  {% endif %}
+      <!-- Configuration Panel -->
+      <div class="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 mb-8 shadow-sm">
+        <h3 class="text-amber-500 font-medium uppercase tracking-wider text-xs mb-5">Generation Knobs (This Project)</h3>
+        
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4 items-end">
+          <div class="md:col-span-2">
+            <label class="block text-xs text-neutral-400 mb-1">Default Image Model (fal.ai)</label>
+            <select id="k_backend" class="w-full bg-neutral-950 text-neutral-200 border border-neutral-800 rounded-lg p-2.5 text-sm focus:border-amber-500 focus:outline-none">
+              {% for v,label in backends.items() %}
+              <option value="{{ v }}" {{ 'selected' if render.backend==v else '' }}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div><label class="block text-xs text-neutral-400 mb-1">guidance_scale</label><input type="number" step="0.1" id="k_guidance" value="{{ render.guidance_scale }}" class="w-full bg-neutral-950 border border-neutral-800 rounded-lg p-2.5 text-sm focus:border-amber-500 outline-none"></div>
+          <div><label class="block text-xs text-neutral-400 mb-1">steps</label><input type="number" step="1" id="k_steps" value="{{ render.num_inference_steps }}" class="w-full bg-neutral-950 border border-neutral-800 rounded-lg p-2.5 text-sm focus:border-amber-500 outline-none"></div>
+        </div>
 
-{% for s in sb.shots %}
-  <div class="beat {{ 'approved' if s.approved else '' }} {{ 'hero' if s.flow_hero else '' }} {{ 'tierC' if s.motion_type.value=='ai_video' else '' }}" id="beat-{{ s.scene_id }}">
-    <div class="beat-top">
-      <div class="sid">{{ s.scene_id }}
-        <div style="color:var(--amber);font-size:12px;font-weight:400;margin-top:4px">⏱ {{ '%.1f'|format(s.camera.duration) }}s</div></div>
-      <div style="flex:1">
-        <label>narration · {{ '%.1f'|format(s.camera.duration) }}s slot</label>
-        <textarea onchange="saveField('{{ s.scene_id }}','narration',this.value)">{{ s.narration }}</textarea>
-        <label style="margin-top:8px">scene (visual)</label>
-        <textarea onchange="saveField('{{ s.scene_id }}','prompt',this.value)">{{ s.prompt }}</textarea>
-        <label style="margin-top:8px">style_medium</label>
-        <input type="text" value="{{ s.style_medium }}" onchange="saveField('{{ s.scene_id }}','style_medium',this.value)">
-        {% if s.motion_type.value=='ai_video' or s.flow_hero %}
-        <label style="margin-top:8px">🎬 video-gen prompt (Veo/Flow/Seedance) · animate to ~{{ '%.0f'|format(s.camera.duration) }}s</label>
-        <textarea id="mp-{{ s.scene_id }}" onchange="saveField('{{ s.scene_id }}','motion_prompt',this.value)">{{ s.motion_prompt or motion_suggest[s.scene_id] }}</textarea>
-        <div class="row" style="margin-top:4px">
-          <button onclick="copyText('mp-{{ s.scene_id }}')">Copy prompt</button>
-          <div class="drop" id="clipdrop-{{ s.scene_id }}"
-               ondragover="event.preventDefault();this.classList.add('over')"
-               ondragleave="this.classList.remove('over')"
-               ondrop="dropClip(event,'{{ s.scene_id }}')"
-               onclick="document.getElementById('clipfile-{{ s.scene_id }}').click()">⬆ import hero clip (Veo/Flow)</div>
-          <input type="file" id="clipfile-{{ s.scene_id }}" accept="video/*" style="display:none"
-                 onchange="uploadClip('{{ s.scene_id }}',this.files[0])">
-          <span class="meta">{% if s.hero_clip %}✓ hero clip imported{% else %}target ~{{ '%.0f'|format(s.camera.duration) }}s{% endif %}</span>
+        <div class="mb-5">
+          <label class="block text-xs text-neutral-400 mb-1">negative_prompt override (blank = built-in default)</label>
+          <textarea id="k_negative" placeholder="{{ default_negative }}" class="w-full bg-neutral-950 border border-neutral-800 rounded-lg p-3 text-sm focus:border-amber-500 outline-none min-h-[60px]">{{ render.negative_prompt }}</textarea>
+        </div>
+
+        <div class="flex items-center gap-4 pt-2 border-t border-neutral-800/50">
+          <button onclick="saveRender()" class="bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 rounded-lg px-4 py-2 text-sm transition-colors">Save Knobs</button>
+          
+          <div class="flex items-center gap-3 ml-auto">
+            <span class="text-xs text-neutral-500">Global Reference:</span>
+            {% if render.reference_image %}
+              <img src="/{{ render.reference_image }}" class="h-8 rounded border border-neutral-700">
+              <button onclick="clearFrame()" class="text-xs text-red-400 hover:text-red-300">✕ remove</button>
+            {% else %}
+              <span class="text-xs text-neutral-600 italic">None</span>
+            {% endif %}
+            <div id="framedrop" class="border border-dashed border-neutral-700 hover:border-amber-500 rounded-lg px-4 py-2 text-xs text-neutral-400 cursor-pointer transition-colors"
+                 ondragover="event.preventDefault();this.classList.add('border-amber-500')"
+                 ondragleave="this.classList.remove('border-amber-500')"
+                 ondrop="dropFrame(event)"
+                 onclick="document.getElementById('framefile').click()">⬆ Set Frame Edge</div>
+            <input type="file" id="framefile" accept="image/*" class="hidden" onchange="uploadFrame(this.files[0])">
+          </div>
+        </div>
+      </div>
+
+      <!-- Vesper Chat Panel -->
+      <div class="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 mb-8 shadow-sm">
+        <h3 class="text-amber-500 font-medium uppercase tracking-wider text-xs mb-4">Develop with Vesper (Claude) & Script Gate</h3>
+        <div id="chatlog" class="max-h-64 overflow-y-auto bg-neutral-950 border border-neutral-800 rounded-xl p-4 mb-4 flex flex-col gap-3"></div>
+        
+        <div class="flex gap-3 mb-4 border-b border-neutral-800/50 pb-4">
+          <input type="text" id="chatinput" placeholder="Ask Vesper to develop the entity / angle…" class="flex-1 bg-neutral-950 border border-neutral-800 rounded-lg p-2.5 text-sm focus:border-amber-500 outline-none" onkeydown="if(event.key==='Enter')chatSend()">
+          <button onclick="chatSend()" id="chatbtn" class="bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-neutral-200 px-5 py-2 rounded-lg text-sm transition-colors">Send</button>
+          <button onclick="scriptFromChat()" class="bg-neutral-800 hover:border-amber-500 border border-neutral-700 text-amber-500 px-5 py-2 rounded-lg text-sm transition-colors">Use Chat → Script</button>
+        </div>
+
+        <div class="flex gap-3 items-center">
+          <input type="text" id="gen_topic" placeholder="Entity / topic to draft a full storyboard…" class="flex-1 bg-neutral-950 border border-neutral-800 rounded-lg p-2.5 text-sm focus:border-amber-500 outline-none">
+          <input type="number" id="gen_beats" placeholder="beats" min="1" class="w-24 bg-neutral-950 border border-neutral-800 rounded-lg p-2.5 text-sm focus:border-amber-500 outline-none">
+          <button onclick="genStoryboard()" id="draftbtn" class="bg-neutral-800 hover:border-amber-500 border border-neutral-700 text-neutral-200 px-5 py-2 rounded-lg text-sm transition-colors">Draft Storyboard</button>
+          <button onclick="lockScript()" class="bg-green-900/40 text-green-500 border border-green-800 hover:bg-green-900/60 px-5 py-2 rounded-lg text-sm transition-colors">🔒 Lock Script</button>
+        </div>
+      </div>
+
+      <!-- Render Pipeline Panel -->
+      {% if sb.storyboard_approved %}
+      <div class="bg-neutral-900 border border-green-900/50 rounded-2xl p-6 mb-8 shadow-lg shadow-green-900/10">
+        <h3 class="text-green-500 font-medium uppercase tracking-wider text-xs mb-4">Pipeline Assembly (Approved ✓)</h3>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+          <div class="flex flex-col gap-2">
+            <button id="btn-narration" onclick="assemble('narration',this)" class="bg-neutral-800 border border-neutral-700 hover:border-amber-500 rounded-lg py-3 px-4 text-sm font-medium transition-colors">1. Generate Narration</button>
+            <span id="st-narration" class="text-xs text-center text-neutral-500"></span>
+          </div>
+          <div class="flex flex-col gap-2">
+            <button id="btn-render" onclick="assemble('render',this)" class="bg-neutral-800 border border-neutral-700 hover:border-amber-500 rounded-lg py-3 px-4 text-sm font-medium transition-colors">2. Render Clips (fal.ai)</button>
+            <span id="st-render" class="text-xs text-center text-neutral-500"></span>
+          </div>
+          <div class="flex flex-col gap-2">
+            <button id="btn-preview" onclick="assemble('preview',this)" class="bg-neutral-800 border border-neutral-700 hover:border-amber-500 rounded-lg py-3 px-4 text-sm font-medium transition-colors">3. Build Preview</button>
+            <span id="st-preview" class="text-xs text-center text-neutral-500"></span>
+          </div>
+          <div class="flex flex-col gap-2">
+            <button id="btn-timeline" onclick="assemble('timeline',this)" class="bg-neutral-800 border border-neutral-700 hover:border-amber-500 rounded-lg py-3 px-4 text-sm font-medium transition-colors">4. Export FCPXML</button>
+            <span id="st-timeline" class="text-xs text-center text-neutral-500"></span>
+          </div>
+        </div>
+        
+        <div class="text-xs text-neutral-400 space-y-1 mb-4">
+          {% if paid %}<div>• <span class="text-amber-500">{{ paid }} Tier-C shots</span> will route to fal.ai video endpoints.</div>{% endif %}
+          {% if heroes %}<div>• <span class="text-amber-500">{{ heroes }} shots flagged Hero</span> require manual upload.</div>{% endif %}
+        </div>
+
+        {% if preview_url %}
+        <div class="mt-4 rounded-xl overflow-hidden border border-neutral-800 bg-black">
+          <video controls playsinline class="w-full max-h-[500px]" src="{{ preview_url }}?v={{ range(100000)|random }}"></video>
+        </div>
+        {% endif %}
+        
+        {% if fcpxml_ready %}
+        <div class="mt-4 p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg text-sm text-amber-500">
+          ▶ Next step: Open <b>{{ ep_slug }}.fcpxml</b> in DaVinci Resolve (File → Import → Timeline) for final grading.
         </div>
         {% endif %}
       </div>
-      <div class="ctrls">
-        <select onchange="saveField('{{ s.scene_id }}','motion_type',this.value)">
-          {% for v,label in tiers.items() %}
-          <option value="{{ v }}" {{ 'selected' if s.motion_type.value==v else '' }}>{{ label }}</option>
-          {% endfor %}
-        </select>
-        <label class="hero-tog">
-          <input type="checkbox" {{ 'checked' if s.flow_hero else '' }}
-            onchange="saveField('{{ s.scene_id }}','flow_hero',this.checked)"> VEO/Flow hero
-        </label>
-      </div>
-    </div>
+      {% endif %}
 
-    {% if s.draft_variations %}
-    <div class="vars">
-      {% for path in s.draft_variations %}
-      <div class="var {{ 'sel' if s.chosen_variation==loop.index0 else '' }}"
-           onclick="pick('{{ s.scene_id }}',{{ loop.index0 }},this)">
-        <img src="/{{ path }}" loading="lazy"><div class="tick">✓</div>
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-    <div class="empty">No drafts yet.</div>
-    {% endif %}
+      <!-- Shot Grid -->
+      <div class="space-y-6">
+      {% for s in sb.shots %}
+        <div class="bg-neutral-900 border rounded-2xl p-6 transition-all {{ 'border-green-800/50' if s.approved else 'border-neutral-800' }} {{ 'shadow-[inset_4px_0_0_#e0a458]' if s.flow_hero else '' }} {{ 'border-amber-500/30 bg-amber-500/5' if s.motion_type.value=='ai_video' else '' }}" id="beat-{{ s.scene_id }}">
+          
+          <div class="flex flex-col lg:flex-row gap-6 mb-6">
+            <!-- Beat Info -->
+            <div class="w-24 shrink-0">
+              <div class="font-mono text-amber-500 text-sm font-bold">{{ s.scene_id }}</div>
+              <div class="text-neutral-400 text-xs mt-1">⏱ {{ '%.1f'|format(s.camera.duration) }}s</div>
+            </div>
+            
+            <!-- Text Prompts -->
+            <div class="flex-1 space-y-4">
+              <div>
+                <label class="block text-xs text-neutral-400 mb-1">Narration ({{ '%.1f'|format(s.camera.duration) }}s slot)</label>
+                <textarea onchange="saveField('{{ s.scene_id }}','narration',this.value)" class="w-full bg-neutral-950 border border-neutral-800 rounded-lg p-3 text-sm focus:border-amber-500 outline-none">{{ s.narration }}</textarea>
+              </div>
+              <div>
+                <label class="block text-xs text-neutral-400 mb-1">Visual Prompt</label>
+                <textarea onchange="saveField('{{ s.scene_id }}','prompt',this.value)" class="w-full bg-neutral-950 border border-neutral-800 rounded-lg p-3 text-sm focus:border-amber-500 outline-none">{{ s.prompt }}</textarea>
+              </div>
+              <div class="flex gap-4">
+                <div class="flex-1">
+                  <label class="block text-xs text-neutral-400 mb-1">Style/Medium</label>
+                  <input type="text" value="{{ s.style_medium }}" onchange="saveField('{{ s.scene_id }}','style_medium',this.value)" class="w-full bg-neutral-950 border border-neutral-800 rounded-lg p-2.5 text-sm focus:border-amber-500 outline-none">
+                </div>
+              </div>
 
-    {% if shot_clips[s.scene_id] %}
-    <div style="margin-top:10px">
-      <video controls playsinline preload="none"
-             {% if s.draft_image %}poster="/{{ s.draft_image }}"{% endif %}
-             style="width:100%;max-height:240px;background:#000;border-radius:8px"
-             src="{{ shot_clips[s.scene_id] }}?v={{ range(100000)|random }}"></video>
-      <div class="visual">▶ {% if s.hero_clip %}imported hero clip (Veo/Flow){% else %}rendered {{ s.motion_type.value }} clip{% endif %}</div>
-    </div>
-    {% endif %}
+              {% if s.motion_type.value=='ai_video' or s.flow_hero %}
+              <div class="mt-4 p-4 bg-black/30 rounded-xl border border-neutral-800">
+                <label class="block text-xs text-amber-500/80 mb-2">🎬 Video Generation Prompt (Target ~{{ '%.0f'|format(s.camera.duration) }}s)</label>
+                <textarea id="mp-{{ s.scene_id }}" onchange="saveField('{{ s.scene_id }}','motion_prompt',this.value)" class="w-full bg-neutral-950 border border-neutral-800 rounded-lg p-3 text-sm focus:border-amber-500 outline-none min-h-[80px]">{{ s.motion_prompt or motion_suggest[s.scene_id] }}</textarea>
+                
+                <div class="flex items-center gap-3 mt-3">
+                  <button onclick="copyText('mp-{{ s.scene_id }}')" class="bg-neutral-800 border border-neutral-700 text-xs px-3 py-1.5 rounded-md hover:border-amber-500 transition-colors">Copy Prompt</button>
+                  <div id="clipdrop-{{ s.scene_id }}" class="border border-dashed border-neutral-700 hover:border-amber-500 rounded-md px-4 py-1.5 text-xs text-neutral-400 cursor-pointer transition-colors"
+                       ondragover="event.preventDefault();this.classList.add('border-amber-500')"
+                       ondragleave="this.classList.remove('border-amber-500')"
+                       ondrop="dropClip(event,'{{ s.scene_id }}')"
+                       onclick="document.getElementById('clipfile-{{ s.scene_id }}').click()">⬆ Manual Hero Import</div>
+                  <input type="file" id="clipfile-{{ s.scene_id }}" accept="video/*" class="hidden" onchange="uploadClip('{{ s.scene_id }}',this.files[0])">
+                  <span class="text-xs text-green-500 font-medium ml-auto">{% if s.hero_clip %}✓ Hero Clip Saved{% endif %}</span>
+                </div>
+              </div>
+              {% endif %}
+            </div>
 
-    <div class="refs">
-      {% for r in shot_refs[s.scene_id] %}
-        <div class="ref" title="{{ r.name }}">
-          {% if r.file %}<img src="/references/{{ r.file }}">{% else %}<div class="tag">{{ r.name }}</div>{% endif %}
-          <span class="refx" title="remove reference" onclick="removeRef('{{ s.scene_id }}','{{ r.name }}')">✕</span>
+            <!-- Controls -->
+            <div class="w-48 shrink-0 flex flex-col gap-3">
+              <label class="block text-xs text-neutral-400">Motion Tier</label>
+              <select onchange="saveField('{{ s.scene_id }}','motion_type',this.value)" class="w-full bg-neutral-950 border border-neutral-800 rounded-lg p-2.5 text-sm focus:border-amber-500 outline-none {{ 'text-amber-500 border-amber-500/50' if s.motion_type.value=='ai_video' else '' }}">
+                {% for v,label in tiers.items() %}
+                <option value="{{ v }}" {{ 'selected' if s.motion_type.value==v else '' }}>{{ label }}</option>
+                {% endfor %}
+              </select>
+              
+              {% if s.motion_type.value=='ai_video' %}
+              <label class="block text-xs text-neutral-400 mt-2">fal.ai Video Model</label>
+              <select onchange="saveField('{{ s.scene_id }}','video_model',this.value)" class="w-full bg-neutral-950 border border-neutral-800 rounded-lg p-2.5 text-xs focus:border-amber-500 outline-none text-amber-500">
+                {% for v,label in video_backends.items() %}
+                <option value="{{ v }}" {{ 'selected' if s.video_model==v else '' }}>{{ label }}</option>
+                {% endfor %}
+              </select>
+              {% endif %}
+
+              <label class="flex items-center gap-2 text-sm text-neutral-300 mt-2 cursor-pointer group">
+                <input type="checkbox" {{ 'checked' if s.flow_hero else '' }} class="rounded border-neutral-700 text-amber-500 focus:ring-amber-500 bg-neutral-950" onchange="saveField('{{ s.scene_id }}','flow_hero',this.checked)">
+                <span class="group-hover:text-amber-400 transition-colors">VEO/Flow Hero</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Assets Gallery -->
+          <div class="border-t border-neutral-800/50 pt-5 mt-5">
+            {% if s.draft_variations %}
+            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mb-5">
+              {% for path in s.draft_variations %}
+              <div class="relative rounded-xl overflow-hidden cursor-pointer bg-black aspect-video group transition-all border-2 {{ 'border-amber-500' if s.chosen_variation==loop.index0 else 'border-transparent hover:border-neutral-600' }}" onclick="pick('{{ s.scene_id }}',{{ loop.index0 }},this)">
+                <img src="/{{ path }}" loading="lazy" class="w-full h-full object-cover">
+                <div class="absolute top-2 right-2 bg-amber-500 text-neutral-950 rounded-full w-6 h-6 flex items-center justify-center font-bold text-xs transition-all {{ 'opacity-100 scale-100' if s.chosen_variation==loop.index0 else 'opacity-0 scale-90' }}">✓</div>
+              </div>
+              {% endfor %}
+            </div>
+            {% else %}
+            <div class="text-neutral-500 italic text-sm mb-5">No draft images generated yet.</div>
+            {% endif %}
+
+            <!-- Final Renders & Uploaders -->
+            {% if shot_clips[s.scene_id] %}
+            <div class="mb-5 rounded-xl overflow-hidden border border-neutral-800 bg-black max-w-lg">
+              <video controls playsinline preload="none" {% if s.draft_image %}poster="/{{ s.draft_image }}"{% endif %} class="w-full aspect-video object-cover" src="{{ shot_clips[s.scene_id] }}?v={{ range(100000)|random }}"></video>
+              <div class="bg-neutral-900 px-3 py-2 text-xs text-neutral-400">▶ {% if s.hero_clip %}Imported Hero Clip{% else %}Rendered {{ s.motion_type.value }}{% endif %}</div>
+            </div>
+            {% endif %}
+
+            <div class="flex flex-wrap gap-4 items-center justify-between">
+              <div class="flex items-center gap-2">
+                <select id="be-{{ s.scene_id }}" class="bg-neutral-950 border border-neutral-800 rounded-lg p-2 text-xs focus:border-amber-500 outline-none text-neutral-300">
+                  {% for v,label in backends.items() %}
+                  <option value="{{ v }}" {{ 'selected' if render.backend==v else '' }}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+                <button onclick="regen('{{ s.scene_id }}',this)" class="bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-neutral-200 text-xs px-4 py-2 rounded-lg transition-colors flex items-center">↻ Generate Drafts</button>
+                <div id="imgdrop-{{ s.scene_id }}" class="border border-dashed border-neutral-700 hover:border-amber-500 rounded-lg px-4 py-2 text-xs text-neutral-400 cursor-pointer transition-colors ml-2"
+                     ondragover="event.preventDefault();this.classList.add('border-amber-500')"
+                     ondragleave="this.classList.remove('border-amber-500')"
+                     ondrop="dropImage(event,'{{ s.scene_id }}')"
+                     onclick="document.getElementById('imgfile-{{ s.scene_id }}').click()">⬆ Manual Image Upload</div>
+                <input type="file" id="imgfile-{{ s.scene_id }}" accept="image/*" class="hidden" onchange="uploadImage('{{ s.scene_id }}',this.files[0])">
+              </div>
+
+              <!-- References -->
+              <div class="flex flex-wrap gap-2 items-center">
+                {% for r in shot_refs[s.scene_id] %}
+                  <div class="relative w-16 h-10 border border-neutral-700 rounded overflow-hidden bg-black group" title="{{ r.name }}">
+                    {% if r.file %}<img src="/references/{{ r.file }}" class="w-full h-full object-cover">{% else %}<div class="text-[10px] text-neutral-500 p-1">{{ r.name }}</div>{% endif %}
+                    <span class="absolute top-0 right-0 w-4 h-4 leading-4 text-center text-[10px] cursor-pointer bg-black/70 text-amber-500 rounded-bl opacity-0 group-hover:opacity-100 hover:bg-red-900 hover:text-white transition-all" onclick="removeRef('{{ s.scene_id }}','{{ r.name }}')">✕</span>
+                  </div>
+                {% endfor %}
+                <div id="drop-{{ s.scene_id }}" class="border border-dashed border-neutral-700 hover:border-amber-500 rounded px-3 h-10 flex items-center text-[11px] text-neutral-500 cursor-pointer transition-colors"
+                     ondragover="event.preventDefault();this.classList.add('border-amber-500')"
+                     ondragleave="this.classList.remove('border-amber-500')"
+                     ondrop="dropRef(event,'{{ s.scene_id }}')"
+                     onclick="document.getElementById('file-{{ s.scene_id }}').click()">+ reference</div>
+                <input type="file" id="file-{{ s.scene_id }}" accept="image/*" class="hidden" onchange="uploadRef('{{ s.scene_id }}',this.files[0])">
+              </div>
+            </div>
+          </div>
+          
         </div>
       {% endfor %}
-      <div class="drop" id="drop-{{ s.scene_id }}"
-           ondragover="event.preventDefault();this.classList.add('over')"
-           ondragleave="this.classList.remove('over')"
-           ondrop="dropRef(event,'{{ s.scene_id }}')"
-           onclick="document.getElementById('file-{{ s.scene_id }}').click()">+ drop / click to add reference</div>
-      <input type="file" id="file-{{ s.scene_id }}" accept="image/*" style="display:none"
-             onchange="uploadRef('{{ s.scene_id }}',this.files[0])">
-    </div>
-
-    <div class="row">
-      <select id="be-{{ s.scene_id }}" title="image model for this regenerate">
-        {% for v,label in backends.items() %}
-        <option value="{{ v }}" {{ 'selected' if render.backend==v else '' }}>{{ label }}</option>
-        {% endfor %}
-      </select>
-      <button onclick="regen('{{ s.scene_id }}',this)">↻ Regenerate</button>
-      <div class="drop" id="imgdrop-{{ s.scene_id }}"
-           ondragover="event.preventDefault();this.classList.add('over')"
-           ondragleave="this.classList.remove('over')"
-           ondrop="dropImage(event,'{{ s.scene_id }}')"
-           onclick="document.getElementById('imgfile-{{ s.scene_id }}').click()">⬆ Upload finished image (use as draft)</div>
-      <input type="file" id="imgfile-{{ s.scene_id }}" accept="image/*" style="display:none"
-             onchange="uploadImage('{{ s.scene_id }}',this.files[0])">
-    </div>
+      </div>
+    </main>
   </div>
-{% endfor %}
-</main>
-</div>
-<div id="toast"></div>
+
+  <div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 bg-black border border-amber-500 text-amber-500 px-5 py-2.5 rounded-xl shadow-lg opacity-0 transition-opacity pointer-events-none z-50 text-sm font-medium"></div>
+
 <script>
-function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'),1800); }
+function btnSpin(btn, text) {
+    btn.disabled = true;
+    btn.innerHTML = `<svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-current inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> ${text}`;
+}
+function btnReset(btn, text) { btn.disabled = false; btn.innerHTML = text; }
+
+function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('toast-enter');
+  setTimeout(()=>t.classList.remove('toast-enter'),2000); }
 async function post(url,body){ const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(body||{})}); return {ok:r.ok, data:await r.json()}; }
 
 function copyText(id){ const el=document.getElementById(id); if(!el) return;
-  navigator.clipboard.writeText(el.value).then(()=>toast('prompt copied')).catch(()=>{ el.select(); document.execCommand('copy'); toast('prompt copied'); }); }
+  navigator.clipboard.writeText(el.value).then(()=>toast('Prompt copied')).catch(()=>{ el.select(); document.execCommand('copy'); toast('Prompt copied'); }); }
 
 async function saveField(sid,field,val){ const b={}; b[field]=val; const {data}=await post('/api/shot/'+sid,b);
   if(field==='motion_type'){ document.getElementById('paidCount').textContent=data.paid_count;
-    document.getElementById('beat-'+sid).classList.toggle('tierC',val==='ai_video'); }
-  if(field==='flow_hero'){ document.getElementById('beat-'+sid).classList.toggle('hero',val); }
-  toast(sid+' saved'); }
+    const bt=document.getElementById('beat-'+sid); 
+    if(val==='ai_video'){ bt.classList.add('border-amber-500/30','bg-amber-500/5'); } else { bt.classList.remove('border-amber-500/30','bg-amber-500/5'); }
+  }
+  if(field==='flow_hero'){ const bt=document.getElementById('beat-'+sid); if(val) bt.classList.add('shadow-[inset_4px_0_0_#e0a458]'); else bt.classList.remove('shadow-[inset_4px_0_0_#e0a458]'); }
+  toast('Saved'); }
 
 async function saveRender(){ const body={ backend:document.getElementById('k_backend').value,
   guidance_scale:parseFloat(document.getElementById('k_guidance').value),
   nag_scale:parseFloat(document.getElementById('k_nag').value),
   num_inference_steps:parseInt(document.getElementById('k_steps').value),
   negative_prompt:document.getElementById('k_negative').value };
-  const {ok}=await post('/api/render',body); toast(ok?'knobs saved':'save failed'); }
+  const {ok}=await post('/api/render',body); toast(ok?'Knobs saved':'Save failed'); }
 
-async function pick(sid,idx,el){ el.parentNode.querySelectorAll('.var').forEach(v=>v.classList.remove('sel'));
-  el.classList.add('sel'); await post('/api/shot/'+sid,{chosen_variation:idx}); toast(sid+' → variation '+(idx+1)); }
+async function pick(sid,idx,el){ 
+  const container = el.parentNode;
+  container.querySelectorAll('div').forEach(v=>{ v.classList.remove('border-amber-500'); v.classList.add('border-transparent'); });
+  container.querySelectorAll('.absolute').forEach(v=>{ v.classList.remove('opacity-100','scale-100'); v.classList.add('opacity-0','scale-90'); });
+  el.classList.remove('border-transparent'); el.classList.add('border-amber-500');
+  el.querySelector('.absolute').classList.remove('opacity-0','scale-90'); el.querySelector('.absolute').classList.add('opacity-100','scale-100');
+  await post('/api/shot/'+sid,{chosen_variation:idx}); toast('Selected variation '+(idx+1)); }
 
 async function regen(sid,btn){
   const be=document.getElementById('be-'+sid).value;
-  const cost = be==='nano2' ? 'Nano Banana 2 (~$0.15/still \\u00d7 3 \\u2248 $0.45)'
-                            : 'flux-general (~$0.04/still \\u00d7 3 \\u2248 $0.12)';
-  if(!confirm('\\u26A0 PAID: Regenerate calls '+cost+' via fal and counts against this session\\u2019s limit. Continue?')) return;
-  btn.disabled=true; btn.textContent='↻ generating…';
-  const {ok,data}=await post('/api/regenerate/'+sid,{backend:be}); btn.disabled=false; btn.textContent='↻ Regenerate';
-  if(ok){ toast(sid+' regenerated ('+data.regen_used+'/'+data.regen_limit+', '+data.backend+')'); setTimeout(()=>location.reload(),500);}
-  else { toast((data&&data.error)?data.error:'regen failed'); } }
+  const cost = be==='flux-pro' ? 'FLUX.2 [pro] (~$0.045/img)' 
+             : be==='flux-ultra' ? 'FLUX 1.1 [pro] Ultra (~$0.06/img)'
+             : be==='flux-turbo' ? 'FLUX.1 [dev] Turbo (~$0.008/img)'
+             : 'Nano Banana (~$0.15/img)';
+  if(!confirm('\\u26A0 PAID API CALL: Generate 3 variations using '+cost+'? This counts against the local server session limit.')) return;
+  btnSpin(btn, 'Generating...');
+  const {ok,data}=await post('/api/regenerate/'+sid,{backend:be}); 
+  btnReset(btn, '↻ Generate Drafts');
+  if(ok){ toast('Generated ('+data.regen_used+'/'+data.regen_limit+' used)'); setTimeout(()=>location.reload(),500);}
+  else { toast((data&&data.error)?data.error:'Generation failed'); } }
 
 async function approve(){ const {ok,data}=await post('/api/approve');
-  if(ok){ toast(data.gate_cleared?'Approved — paid stage unlocked':'Approved'); setTimeout(()=>location.reload(),700); }
+  if(ok){ toast(data.gate_cleared?'Approved — Pipeline Unlocked':'Approved'); setTimeout(()=>location.reload(),700); }
   else { alert('Cannot approve yet:\\n'+(data.error||'')+'\\n'+(data.scenes||[]).join(', ')); } }
 
 async function selectProject(rel){ const {ok}=await post('/api/project/select',{rel:rel});
-  if(ok){ location.reload(); } else { toast('could not open project'); } }
+  if(ok){ location.reload(); } else { toast('Could not open project'); } }
 
 function addFile(sid,file){ const fd=new FormData(); fd.append('file',file);
   return fetch('/api/shot/'+sid+'/reference',{method:'POST',body:fd}).then(r=>r.json()); }
 async function uploadRef(sid,file){ if(!file) return; const d=await addFile(sid,file);
-  if(d.ok){ toast('reference added'); setTimeout(()=>location.reload(),400);} else { toast(d.error||'upload failed'); } }
-function dropRef(ev,sid){ ev.preventDefault(); document.getElementById('drop-'+sid).classList.remove('over');
+  if(d.ok){ toast('Reference added'); setTimeout(()=>location.reload(),400);} else { toast(d.error||'Upload failed'); } }
+function dropRef(ev,sid){ ev.preventDefault(); document.getElementById('drop-'+sid).classList.remove('border-amber-500');
   const f=ev.dataTransfer.files[0]; if(f) uploadRef(sid,f); }
 async function removeRef(sid,name){ const {ok}=await post('/api/shot/'+sid+'/reference/remove',{name:name});
-  if(ok){ toast('reference removed'); setTimeout(()=>location.reload(),300);} else { toast('remove failed'); } }
+  if(ok){ toast('Reference removed'); setTimeout(()=>location.reload(),300);} else { toast('Remove failed'); } }
 
-async function uploadImage(sid,file){ if(!file) return; toast('uploading image\\u2026');
+async function uploadImage(sid,file){ if(!file) return; toast('Uploading image...');
   const fd=new FormData(); fd.append('file',file);
   const r=await fetch('/api/shot/'+sid+'/image',{method:'POST',body:fd}); const d=await r.json();
-  if(d.ok){ toast('image uploaded & selected'); setTimeout(()=>location.reload(),400);} else { toast(d.error||'upload failed'); } }
-function dropImage(ev,sid){ ev.preventDefault(); document.getElementById('imgdrop-'+sid).classList.remove('over');
+  if(d.ok){ toast('Uploaded & selected'); setTimeout(()=>location.reload(),400);} else { toast(d.error||'Upload failed'); } }
+function dropImage(ev,sid){ ev.preventDefault(); document.getElementById('imgdrop-'+sid).classList.remove('border-amber-500');
   const f=ev.dataTransfer.files[0]; if(f) uploadImage(sid,f); }
 
-async function uploadClip(sid,file){ if(!file) return; toast('importing clip (normalizing\\u2026)'); const fd=new FormData(); fd.append('file',file);
+async function uploadClip(sid,file){ if(!file) return; toast('Importing & normalizing clip...'); const fd=new FormData(); fd.append('file',file);
   const r=await fetch('/api/shot/'+sid+'/clip',{method:'POST',body:fd}); const d=await r.json();
-  if(d.ok){ toast('hero clip imported ('+d.duration+'s)'); setTimeout(()=>location.reload(),500);} else { toast(d.error||'import failed'); } }
-function dropClip(ev,sid){ ev.preventDefault(); document.getElementById('clipdrop-'+sid).classList.remove('over');
+  if(d.ok){ toast('Hero clip imported ('+d.duration+'s)'); setTimeout(()=>location.reload(),500);} else { toast(d.error||'Import failed'); } }
+function dropClip(ev,sid){ ev.preventDefault(); document.getElementById('clipdrop-'+sid).classList.remove('border-amber-500');
   const f=ev.dataTransfer.files[0]; if(f) uploadClip(sid,f); }
 
-async function uploadFrame(file){ if(!file) return; toast('uploading frame\\u2026'); const fd=new FormData(); fd.append('file',file);
+async function uploadFrame(file){ if(!file) return; toast('Uploading frame...'); const fd=new FormData(); fd.append('file',file);
   const r=await fetch('/api/render/reference',{method:'POST',body:fd}); const d=await r.json();
-  if(d.ok){ toast('frame reference set'); setTimeout(()=>location.reload(),400);} else { toast(d.error||'upload failed'); } }
-function dropFrame(ev){ ev.preventDefault(); document.getElementById('framedrop').classList.remove('over');
+  if(d.ok){ toast('Frame reference set'); setTimeout(()=>location.reload(),400);} else { toast(d.error||'Upload failed'); } }
+function dropFrame(ev){ ev.preventDefault(); document.getElementById('framedrop').classList.remove('border-amber-500');
   const f=ev.dataTransfer.files[0]; if(f) uploadFrame(f); }
-async function clearFrame(){ const {ok}=await post('/api/render/reference/clear'); if(ok){ toast('frame cleared'); setTimeout(()=>location.reload(),300);} }
+async function clearFrame(){ const {ok}=await post('/api/render/reference/clear'); if(ok){ toast('Frame cleared'); setTimeout(()=>location.reload(),300);} }
 
 let chat=[];
 function logMsg(role,text){ const l=document.getElementById('chatlog');
-  const d=document.createElement('div'); d.className='msg '+(role==='user'?'u':'a');
+  const d=document.createElement('div'); d.className='text-sm mb-2 '+(role==='user'?'text-neutral-300':'text-amber-500 whitespace-pre-wrap');
   d.textContent=(role==='user'?'You: ':'Vesper: ')+text; l.appendChild(d); l.scrollTop=l.scrollHeight; }
 async function chatSend(){ const inp=document.getElementById('chatinput'); const text=inp.value.trim(); if(!text) return;
+  const btn = document.getElementById('chatbtn'); btnSpin(btn, 'Thinking');
   inp.value=''; logMsg('user',text); chat.push({role:'user',content:text});
   const {ok,data}=await post('/chat/develop',{messages:chat});
+  btnReset(btn, 'Send');
   if(ok){ logMsg('assistant',data.reply); chat.push({role:'assistant',content:data.reply}); }
   else { logMsg('assistant','[error] '+(data.error||'failed')); } }
 
 async function scriptFromChat(){
-  if(!chat.length){ toast('chat with Vesper first'); return; }
-  if(!confirm('\\u26A0 DESTRUCTIVE: turn this conversation into a NEW storyboard, OVERWRITING the active project (all shot text, knobs, chosen drafts, uploaded reference links). Continue?')) return;
+  if(!chat.length){ toast('Chat with Vesper first'); return; }
+  if(!confirm('\\u26A0 DESTRUCTIVE: OVERWRITE the active project with this conversation? (All chosen drafts will be reset).')) return;
   const beats=document.getElementById('gen_beats').value;
-  toast('writing script from chat\\u2026');
+  toast('Writing script...');
   const {ok,data}=await post('/api/script/from_chat',{messages:chat,beats:beats||null});
-  if(ok){ toast('scripted '+data.shots+' beats from chat'); setTimeout(()=>location.reload(),600); }
+  if(ok){ toast('Scripted '+data.shots+' beats'); setTimeout(()=>location.reload(),600); }
   else { alert('Failed:\\n'+(data.error||'')); } }
 
-async function genStoryboard(){ const topic=document.getElementById('gen_topic').value.trim(); if(!topic){ toast('enter a topic'); return; }
-  if(!confirm('\\u26A0 DESTRUCTIVE: Draft Storyboard will OVERWRITE the active project.\\n\\n'
-    +'A fresh AI draft replaces EVERYTHING in this manifest:\\n'
-    +'  \\u2022 all shot text (narration, scene, style_medium)\\n'
-    +'  \\u2022 the generation knobs (guidance / cfg / steps / negative)\\n'
-    +'  \\u2022 chosen drafts and per-shot uploaded reference links\\n\\n'
-    +'This cannot be undone. Continue?')) return;
+async function genStoryboard(){ const topic=document.getElementById('gen_topic').value.trim(); if(!topic){ toast('Enter a topic'); return; }
+  if(!confirm('\\u26A0 DESTRUCTIVE: A fresh AI draft will OVERWRITE the active project completely. Continue?')) return;
   const beats=document.getElementById('gen_beats').value;
-  toast('drafting…'); const {ok,data}=await post('/api/script/generate',{topic:topic,beats:beats||null});
-  if(ok){ toast('drafted '+data.shots+' beats'); setTimeout(()=>location.reload(),600); } else { alert('Draft failed:\\n'+(data.error||'')); } }
+  const btn=document.getElementById('draftbtn'); btnSpin(btn, 'Drafting');
+  const {ok,data}=await post('/api/script/generate',{topic:topic,beats:beats||null});
+  if(ok){ toast('Drafted '+data.shots+' beats'); setTimeout(()=>location.reload(),600); } else { btnReset(btn, 'Draft Storyboard'); alert('Draft failed:\\n'+(data.error||'')); } }
 
 async function lockScript(){ const {ok,data}=await post('/api/script/lock');
-  if(ok){ toast('script locked'); setTimeout(()=>location.reload(),500); } else { alert('Cannot lock:\\n'+(data.error||'')); } }
+  if(ok){ toast('Script locked'); setTimeout(()=>location.reload(),500); } else { alert('Cannot lock:\\n'+(data.error||'')); } }
 
-async function assemble(stage,btn){ btn.disabled=true;
+async function assemble(stage,btn){ btnSpin(btn, 'Starting...');
   const {ok,data}=await post('/api/assemble/'+stage,{});
-  if(!ok){ toast(data.error||'could not start'); btn.disabled=false; return; }
-  toast(stage+' started'); pollAssemble(); }
+  if(!ok){ toast(data.error||'Could not start'); btnReset(btn, btn.textContent.replace('Starting...','')); return; }
+  toast(stage+' running'); pollAssemble(); }
+
 let _lastStatus={};
 async function pollAssemble(){ let r; try{ r=await fetch('/api/assemble/status'); }catch(e){ return; }
   const d=await r.json(); let running=false, justFinished=false;
   for(const [k,v] of Object.entries(d.jobs||{})){
     const el=document.getElementById('st-'+k), b=document.getElementById('btn-'+k);
-    if(el){ el.textContent=v.status+(v.status==='error'?' \\u2014 check terminal':'');
-      el.style.color = v.status==='error'?'#c66':(v.status==='done'?'#7a3':'var(--amber)'); }
-    if(b){ b.disabled=(v.status==='running'); }
+    if(el){ el.textContent=v.status+(v.status==='error'?' \\u2014 Check terminal logs':'');
+      el.className = 'text-xs text-center font-medium ' + (v.status==='error'?'text-red-500':(v.status==='done'?'text-green-500':'text-amber-500 animate-pulse')); }
+    if(b && v.status==='running'){ btnSpin(b, 'Processing...'); }
     if(v.status==='running') running=true;
     if(_lastStatus[k]==='running' && v.status!=='running') justFinished=true;
     _lastStatus[k]=v.status; }
   if(running) setTimeout(pollAssemble,2500);
-  else if(justFinished) setTimeout(()=>location.reload(),800); }  // show new clips/preview
+  else if(justFinished) setTimeout(()=>location.reload(),800); } 
 if(document.getElementById('btn-narration')) pollAssemble();
 </script></body></html>
 """
@@ -586,7 +649,7 @@ def index():
     return render_template_string(
         PAGE, sb=sb, tiers=TIER_LABEL, paid=_paid_count(sb),
         projects=_scan_projects(), render=sb.render, shot_refs=shot_refs,
-        default_negative=NEGATIVE_PROMPT, backends=BACKENDS,
+        default_negative=NEGATIVE_PROMPT, backends=BACKENDS, video_backends=VIDEO_BACKENDS,
         heroes=sum(1 for s in sb.shots if getattr(s, "flow_hero", False)),
         shot_clips=shot_clips, preview_url=preview_url,
         fcpxml_ready=fcpxml_ready, ep_slug=ep["slug"],
@@ -594,21 +657,40 @@ def index():
     )
 
 
+# --------------------------------------------------------------------------- #
+# GCS Absolute Pathing Fix (replaces send_from_directory)
+# --------------------------------------------------------------------------- #
 @app.get("/assets/<scene>/<path:filename>")
 def asset(scene: str, filename: str):
-    return send_from_directory(str(config.ASSETS / scene), filename)
+    # Absolute pathing completely bypasses the Flask subpath error while maintaining security bounds
+    target_dir = os.path.abspath(str(config.ASSETS / scene))
+    abs_path = os.path.abspath(os.path.join(target_dir, filename))
+    if not abs_path.startswith(target_dir):
+        abort(403)
+    return send_file(abs_path) if os.path.exists(abs_path) else abort(404)
 
 
 @app.get("/references/<path:filename>")
 def reference_file(filename: str):
-    return send_from_directory(str(config.REFERENCES_DIR), filename)
+    target_dir = os.path.abspath(str(config.REFERENCES_DIR))
+    abs_path = os.path.abspath(os.path.join(target_dir, filename))
+    if not abs_path.startswith(target_dir):
+        abort(403)
+    return send_file(abs_path) if os.path.exists(abs_path) else abort(404)
 
 
 @app.get("/render/<path:filename>")
 def render_file(filename: str):
-    return send_from_directory(str(config.RENDER_DIR), filename)
+    target_dir = os.path.abspath(str(config.RENDER_DIR))
+    abs_path = os.path.abspath(os.path.join(target_dir, filename))
+    if not abs_path.startswith(target_dir):
+        abort(403)
+    return send_file(abs_path) if os.path.exists(abs_path) else abort(404)
 
 
+# --------------------------------------------------------------------------- #
+# Endpoints
+# --------------------------------------------------------------------------- #
 @app.post("/api/project/select")
 def select_project():
     data = request.get_json(force=True) or {}
@@ -693,6 +775,8 @@ def update_shot(scene_id: str):
             shot.video_model = shot.video_model or DEFAULT_VIDEO_MODEL
         else:
             shot.video_model = None
+    if "video_model" in data:
+        shot.video_model = data["video_model"]
     if "narration" in data:
         shot.narration = data["narration"]
     if "prompt" in data:
@@ -736,12 +820,7 @@ def add_reference(scene_id: str):
 
 @app.post("/api/shot/<scene_id>/image")
 def add_image(scene_id: str):
-    """Upload a finished image made outside the pipeline as a draft for this shot.
-
-    Saves it beside any generated variations, appends it to ``draft_variations``,
-    and auto-selects it (``chosen_variation`` + ``draft_image``) since it was made
-    on purpose. No fal call — free, and works even if the shot has no drafts yet.
-    """
+    """Upload a finished image made outside the pipeline as a draft for this shot."""
     sb = _load()
     shot = _find(sb, scene_id)
     if not shot:
@@ -788,12 +867,7 @@ def remove_reference(scene_id: str):
 
 @app.post("/api/shot/<scene_id>/clip")
 def add_clip(scene_id: str):
-    """Import a finished hero video (Veo/Flow) as this shot's render clip.
-
-    Normalizes to the local render format (1280x720, 24fps, silent H.264) so it
-    drops straight into the preview concat and the DaVinci timeline, fits the shot
-    duration to the clip, and marks the shot so a future render won't overwrite it.
-    """
+    """Import a finished hero video (Veo/Flow) as this shot's render clip."""
     import subprocess
     import tempfile
 
