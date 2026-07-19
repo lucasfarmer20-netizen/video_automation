@@ -264,10 +264,15 @@ def _main() -> None:
     # Check if we are running in a Cloud Run environment to bind to the correct host address
     target_host = "0.0.0.0" if os.environ.get("K_SERVICE") else args.host
     
+    # NEW: Catch Cloud Run's dynamic PORT environment variable (defaults to 8080)
+    target_port = int(os.environ.get("PORT", 8080)) if os.environ.get("K_SERVICE") else args.port
+    
     print(f"\nTarget Workspace: [{CHANNEL_TITLE}] -> Project: {args.project}")
     print(f"Isolated Manifest: {MANIFEST_PATH}\n")
     
-    run_pipeline(topic=args.topic, num_beats=args.beats, host=target_host, port=args.port)
+    # Pass both the dynamic host and port to the pipeline
+    run_pipeline(topic=args.topic, num_beats=args.beats, host=target_host, port=target_port)
+    
 
 
 if __name__ == "__main__":
