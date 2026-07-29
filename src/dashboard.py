@@ -1232,39 +1232,6 @@ if(document.getElementById('btn-narration')) pollAssemble();
 # --------------------------------------------------------------------------- #
 # routes
 # --------------------------------------------------------------------------- #
-@app.get("/api/debug/gcs")
-def debug_gcs():
-    import os
-    gcs_parent = Path("/gcs").resolve()
-    all_manifests = []
-    if gcs_parent.exists():
-        for dirpath, dirnames, filenames in os.walk(gcs_parent):
-            if "assets" in dirpath or "references" in dirpath or "source" in dirpath:
-                continue
-            if "storyboard_manifest.json" in filenames:
-                all_manifests.append(Path(dirpath) / "storyboard_manifest.json")
-                
-    manifest_infos = {}
-    for p in all_manifests:
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            manifest_infos[str(p)] = {
-                "title": data.get("title"),
-                "channel": data.get("channel"),
-                "shots_count": len(data.get("shots", [])),
-                "shots_slice": [s.get("scene_id") for s in data.get("shots", [])[:5]]
-            }
-        except Exception as e:
-            manifest_infos[str(p)] = f"Error: {e}"
-            
-    return jsonify({
-        "all_manifests_found": [str(x) for x in all_manifests],
-        "manifest_infos": manifest_infos,
-        "active_manifest": str(_state["manifest"]),
-        "scanned_projects": _scan_projects()
-    })
-
-
 @app.get("/")
 def index():
     sb = _load()
