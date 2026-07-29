@@ -78,7 +78,7 @@ IGNORE_DIRS = {".venv", ".git", "__pycache__", "assets", "audio", "audio_pool",
                "node_modules", "scripts", "src", "tmp", "temp", "output", "cache"}
 
 # Active project setup
-ACTIVE_PROJECT_FILE = WORKSPACE_ROOT / ".active_project"
+ACTIVE_PROJECT_FILE = Path("/gcs/.active_project") if Path("/gcs").exists() else (WORKSPACE_ROOT / ".active_project")
 
 def _get_active_manifest_path() -> Path:
     if ACTIVE_PROJECT_FILE.exists():
