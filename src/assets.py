@@ -35,8 +35,8 @@ DEFAULT_VARIATIONS = 3
 DEFAULT_BACKEND = "nano2"
 STYLE_REF = "style"  # implicit style reference applied to every Nano Banana beat
 
-NANO2_ENDPOINT = "fal-ai/gemini-3-pro-image-preview"  # Nano Banana 2 / Gemini 3 Pro Image
-NANO2_EDIT_ENDPOINT = "fal-ai/gemini-3-pro-image-preview/edit"  # image-conditioned (frame ref)
+NANO2_ENDPOINT = "fal-ai/nano-banana"  # Nano Banana 2 (Gemini 3.1 Flash Image)
+NANO2_EDIT_ENDPOINT = "fal-ai/nano-banana/edit"  # image-conditioned (frame ref)
 NANO2_RESOLUTION = "2K"               # 1K/2K same price ($0.15/img); 4K is 2x
 CFG_ENDPOINT = "fal-ai/flux-general"  # FLUX.1 [dev] w/ NAG negative prompt (cheaper fallback)
 NANO_ENDPOINT = "fal-ai/nano-banana/edit"
@@ -203,6 +203,90 @@ def _generate_nano2(prompt: str, n: int, negative: str = NEGATIVE_PROMPT,
     return [img["url"] for img in result.get("images", [])]
 
 
+def generate_image_edit(public_image_url: str, prompt: str, n: int, backend: str, render=None) -> list[str]:
+    """Route an image edit/Image-to-Image request to the appropriate Fal.ai model."""
+    import fal_client
+    
+    # Resolve project render settings
+    negative, steps, guidance, nag = _resolve_render(render)
+    
+    # 1. Gemini / Nano Banana 2 edit endpoint
+    if backend == "nano2":
+        result = fal_client.subscribe(
+            NANO2_EDIT_ENDPOINT,
+            arguments={
+                "prompt": prompt,
+                "image_urls": [public_image_url],
+                "num_images": n,
+                "aspect_ratio": "16:9",
+                "resolution": NANO2_RESOLUTION,
+                "output_format": "png",
+            },
+            with_logs=False,
+        )
+        return [img["url"] for img in result.get("images", [])]
+        
+    # 2. Flux Image-to-Image (using dev/image-to-image or general/image-to-image if applicable)
+    elif "flux" in backend or backend == "flux-cfg":
+        result = fal_client.subscribe(
+            "fal-ai/flux/dev/image-to-image",
+            arguments={
+                "prompt": prompt,
+                "image_url": public_image_url,
+                "strength": 0.5,
+                "num_images": n,
+                "image_size": IMAGE_SIZE,
+                "num_inference_steps": 30,
+                "enable_safety_checker": False,
+            },
+            with_logs=False,
+        )
+        return [img["url"] for img in result.get("images", [])]
+        
+    # 3. Ideogram Image-to-Image (using ideogram/v4 remix/image-to-image)
+    elif "ideogram" in backend:
+        result = fal_client.subscribe(
+            "ideogram/v4",
+            arguments={
+                "prompt": prompt,
+                "image_url": public_image_url,
+                "num_images": n,
+                "aspect_ratio": "16:9",
+            },
+            with_logs=False,
+        )
+        return [img["url"] for img in result.get("images", [])]
+        
+    elif "wan" in backend:
+        result = fal_client.subscribe(
+            "fal-ai/wan/v2.7/text-to-image",
+            arguments={
+                "prompt": prompt,
+                "image_urls": [public_image_url],
+                "num_images": n,
+                "aspect_ratio": "16:9",
+            },
+            with_logs=False,
+        )
+        return [img["url"] for img in result.get("images", [])]
+
+    # Default fallback to Flux dev image-to-image
+    else:
+        result = fal_client.subscribe(
+            "fal-ai/flux/dev/image-to-image",
+            arguments={
+                "prompt": prompt,
+                "image_url": public_image_url,
+                "strength": 0.5,
+                "num_images": n,
+                "image_size": IMAGE_SIZE,
+                "enable_safety_checker": False,
+            },
+            with_logs=False,
+        )
+        return [img["url"] for img in result.get("images", [])]
+
+
 def _generate_flux_cfg(
     prompt: str, n: int, negative: str = NEGATIVE_PROMPT, steps: int = CFG_STEPS,
     guidance: float = GUIDANCE_SCALE, nag: float = NAG_SCALE,
@@ -341,6 +425,17 @@ def generate_for_shot(
     ``render`` is a ``Storyboard.render`` (RenderConfig) whose knobs override the
     flux-cfg defaults; ``None`` uses the module defaults.
     """
+    if isinstance(backend, str) and "," in backend:
+        backends = [b.strip() for b in backend.split(",") if b.strip()]
+        all_rel_paths = []
+        for b in backends:
+            try:
+                paths = generate_for_shot(shot, n, backend=b, lora=lora, render=render)
+                all_rel_paths.extend(paths)
+            except Exception as e:
+                print(f"Error generating for backend {b}: {e}")
+        return all_rel_paths
+
     if backend == "nano2":
         # Default: Nano Banana 2 (Gemini 3 Pro Image), medium-leading prompt + folded negatives,
         # optionally conditioned on the project's global frame reference.
@@ -351,6 +446,34 @@ def generate_for_shot(
         # medium-leading positive prompt + NAG negative prompt (cheaper fallback).
         negative, steps, guidance, nag = _resolve_render(render)
         gen_urls = _generate_flux_cfg(_compose_prompt(shot), n, negative, steps, guidance, nag)
+    elif backend in ("flux_2_max", "flux_2_pro", "flux_1_1_pro_ultra", "flux_1_dev_turbo", "ideogram_4", "ideogram_4_instant", "wan_2_7_image"):
+        endpoints = {
+            "flux_2_max": "fal-ai/flux-2-max",
+            "flux_2_pro": "fal-ai/flux-2-pro",
+            "flux_1_1_pro_ultra": "fal-ai/flux-pro/v1.1-ultra",
+            "flux_1_dev_turbo": "fal-ai/flux/dev",
+            "ideogram_4": "ideogram/v4",
+            "ideogram_4_instant": "ideogram/v4/instant",
+            "wan_2_7_image": "fal-ai/wan/v2.7/text-to-image",
+        }
+        endpoint = endpoints[backend]
+        
+        args = {
+            "prompt": _compose_prompt(shot),
+            "num_images": n,
+        }
+        if "ideogram" in backend or "wan" in backend:
+            args["aspect_ratio"] = "16:9"
+        else:
+            args["image_size"] = IMAGE_SIZE;
+            args["enable_safety_checker"] = False
+            
+        result = fal_client.subscribe(
+            endpoint,
+            arguments=args,
+            with_logs=False,
+        )
+        gen_urls = [img["url"] for img in result.get("images", [])]
     elif backend == "nano":
         urls = ref_urls([STYLE_REF, *(shot.references or [])])
         if not urls:
@@ -363,12 +486,24 @@ def generate_for_shot(
             lora = load_lora()
         gen_urls = _generate_flux(style_prompt(shot.prompt, lora), n, lora)
 
+    import time
+    ts = int(time.time())
     rel_paths: list[str] = []
     for i, url in enumerate(gen_urls):
-        dest = config.ASSETS / shot.scene_id / f"var_{i}.png"
+        dest = config.ASSETS / shot.scene_id / f"var_{ts}_{i}.png"
         _download(url, dest)
-        rel_paths.append(str(dest.relative_to(config.ROOT)).replace("\\", "/"))
-    shot.draft_variations = rel_paths
+        try:
+            rel = str(dest.relative_to(config.ROOT)).replace("\\", "/")
+        except ValueError:
+            rel = str(dest).replace("\\", "/").lstrip("/")
+        rel_paths.append(rel)
+
+    existing = list(shot.draft_variations or [])
+    new_start_idx = len(existing)
+    shot.draft_variations = existing + rel_paths
+    if rel_paths:
+        shot.chosen_variation = new_start_idx
+        shot.draft_image = rel_paths[0]
     return rel_paths
 
 
@@ -416,12 +551,190 @@ def generate_drafts(
     return storyboard
 
 
+def extract_final_frame(video_path: str | Path, output_image_path: str | Path) -> Path:
+    """Extract the final frame from a video segment using OpenCV and save it as an image.
+
+    Used for continuous frame-to-video generation so that subsequent Fal.ai video calls start
+    seamlessly from the last frame of the preceding generated segment.
+    """
+    import cv2
+    v_path = Path(video_path)
+    o_path = Path(output_image_path)
+
+    if not v_path.exists():
+        raise FileNotFoundError(f"Video file not found: {v_path}")
+
+    cap = cv2.VideoCapture(str(v_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video file with OpenCV: {v_path}")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total_frames <= 0:
+        cap.release()
+        raise ValueError(f"Video file has no readable frames: {v_path}")
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames - 1)
+    ret, frame = cap.read()
+
+    if not ret or frame is None:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        last_good = None
+        while True:
+            r, f = cap.read()
+            if not r or f is None:
+                break
+            last_good = f
+        frame = last_good
+
+    cap.release()
+
+    if frame is None:
+        raise RuntimeError(f"Could not extract final frame from: {v_path}")
+
+    o_path.parent.mkdir(parents=True, exist_ok=True)
+    success = cv2.imwrite(str(o_path), frame)
+    if not success:
+        raise RuntimeError(f"OpenCV failed to write final frame image to: {o_path}")
+
+    print(f"Extracted final frame ({frame.shape[1]}x{frame.shape[0]}) from {v_path.name} -> {o_path.name}")
+    return o_path
+
+
+def generate_continuous_video_sequence(
+    storyboard: Storyboard,
+    out_dir: Path | None = None,
+    default_model: str = "fal-ai/kling-video/v3/image-to-video",
+) -> list[Path]:
+    """Generate a continuous sequence of video segments where each segment begins with
+    the exact final frame of the preceding video segment.
+
+    1. Starts with the initial draft image for beat 1.
+    2. Calls Fal.ai image-to-video for the current beat.
+    3. Saves/downloads the generated video segment .mp4.
+    4. Uses OpenCV (`extract_final_frame`) to extract the final frame of that segment.
+    5. Feeds the extracted final frame image into the next Fal.ai video call for seamless sequence flow.
+    """
+    import fal_client
+    config.require_for("video")
+
+    if out_dir is None:
+        ep_slug = getattr(storyboard, "title", "episode").lower().replace(" ", "_")
+        out_dir = config.ROOT / "render" / ep_slug
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    generated_video_paths: list[Path] = []
+    previous_final_frame: Path | None = None
+
+    shots = [s for s in storyboard.shots if s.motion_type == MotionType.AI_VIDEO or getattr(s, "flow_hero", False)]
+    if not shots:
+        print("No AI video / hero beats assigned for video generation.")
+        return []
+
+    for idx, shot in enumerate(shots):
+        model_key = shot.video_model or default_model
+        MAP = {
+            "seedance_2_0": "bytedance/seedance-2.0/image-to-video",
+            "seedance": "bytedance/seedance-2.0/image-to-video",
+            "seedance-2.0": "bytedance/seedance-2.0/image-to-video",
+            "seedance-2.0/image-to-video": "bytedance/seedance-2.0/image-to-video",
+            "bytedance/seedance-2.0": "bytedance/seedance-2.0/image-to-video",
+            "bytedance/seedance-2.0/image-to-video": "bytedance/seedance-2.0/image-to-video",
+            "fal-ai/bytedance/seedance-2.0": "bytedance/seedance-2.0/image-to-video",
+            "fal-ai/bytedance/seedance-2.0/image-to-video": "bytedance/seedance-2.0/image-to-video",
+            "veo_3_1": "fal-ai/veo3.1/image-to-video",
+            "kling_2_5_turbo_pro": "fal-ai/kling-video/v3/image-to-video",
+            "wan_2_7": "fal-ai/wan/v2.7/image-to-video",
+            "hunyuan_video": "fal-ai/hunyuan-video/image-to-video",
+            "luma_dream_machine": "fal-ai/luma-dream-machine/ray-2/image-to-video",
+        }
+        model_endpoint = MAP.get(model_key, model_key)
+        if "seedance" in model_endpoint.lower():
+            model_endpoint = "bytedance/seedance-2.0/image-to-video"
+        elif not model_endpoint.startswith("fal-ai/") and not "/" in model_endpoint[:10]:
+            model_endpoint = f"fal-ai/{model_endpoint.lstrip('/')}"
+        print(f"\n--- [Continuous Frame-to-Video {idx+1}/{len(shots)}] Beat {shot.scene_id} ({model_endpoint}) ---")
+
+        if previous_final_frame and previous_final_frame.exists():
+            starting_image_path = previous_final_frame
+            print(f"Chaining from previous beat's final frame: {starting_image_path.name}")
+        else:
+            p_clean = str(shot.draft_image or "").replace("\\", "/").lstrip("/")
+            candidates = [
+                config.ROOT / p_clean,
+                config.ASSETS / p_clean,
+                config.ASSETS / shot.scene_id / Path(p_clean).name,
+                Path("/") / p_clean,
+            ]
+            found = None
+            for cand in candidates:
+                if cand.exists() and cand.is_file():
+                    found = cand
+                    break
+            if not found:
+                backend = getattr(storyboard.render, "backend", DEFAULT_BACKEND)
+                generate_for_shot(shot, n=1, backend=backend, render=storyboard.render)
+                shot.draft_image = shot.draft_variations[0]
+                found = config.ROOT / str(shot.draft_image).replace("\\", "/").lstrip("/")
+            starting_image_path = found
+
+        if not starting_image_path or not starting_image_path.exists():
+            raise FileNotFoundError(f"Starting image not found on disk: {shot.draft_image}")
+
+        print(f"Uploading starting frame to Fal.ai: {starting_image_path.name}...")
+        public_image_url = fal_client.upload_file(str(starting_image_path))
+
+        target_dur = float(getattr(shot.camera, "duration", 6.0))
+        dur_int = max(3, min(10, int(round(target_dur))))
+
+        motion_prompt = shot.motion_prompt or f"Cinematic continuous motion, high-quality, authentic detail, {shot.prompt}"
+        if f"{dur_int}s" not in motion_prompt and "second" not in motion_prompt:
+            motion_prompt = f"{motion_prompt} (duration: ~{dur_int} seconds)"
+
+        print(f"Triggering Fal.ai video generation ({dur_int}s target): {motion_prompt[:80]}...")
+        arguments = {
+            "image_url": public_image_url,
+            "prompt": motion_prompt,
+            "duration": str(dur_int),
+        }
+        if "veo" in model_endpoint.lower():
+            if dur_int <= 5:
+                arguments["duration"] = "4s"
+            elif dur_int <= 7:
+                arguments["duration"] = "6s"
+            else:
+                arguments["duration"] = "8s"
+        elif "seedance" not in model_endpoint.lower():
+            arguments.pop("duration", None)
+
+        result = fal_client.subscribe(
+            model_endpoint,
+            arguments=arguments,
+            with_logs=True,
+        )
+
+        video_url = result.get("video", {}).get("url") or result.get("file", {}).get("url")
+        if not video_url:
+            raise RuntimeError(f"No video URL returned from Fal.ai for {shot.scene_id}")
+
+        dest_video_path = out_dir / f"{shot.scene_id}.mp4"
+        print(f"Downloading segment video -> {dest_video_path.name}...")
+        _download(video_url, dest_video_path)
+        generated_video_paths.append(dest_video_path)
+
+        # Extract final frame for the NEXT segment call
+        extracted_frame_dest = config.ASSETS / shot.scene_id / f"final_frame_{shot.scene_id}.png"
+        previous_final_frame = extract_final_frame(dest_video_path, extracted_frame_dest)
+
+    print(f"\nCompleted continuous frame-to-video sequence: {len(generated_video_paths)} segments rendered.")
+    return generated_video_paths
+
+
 def _main() -> None:
     parser = argparse.ArgumentParser(description="The Illuminated Bestiary draft-image stage.")
     parser.add_argument("--scene", nargs="*", help="scene id(s) to generate (default: all).")
     parser.add_argument("--variations", type=int, default=DEFAULT_VARIATIONS)
     parser.add_argument("--limit", type=int, default=None, help="cap number of beats.")
-    parser.add_argument("--backend", default=DEFAULT_BACKEND, choices=["nano2", "flux-cfg", "nano", "flux", "flux-lora"])
+    parser.add_argument("--backend", default=DEFAULT_BACKEND, choices=["nano2", "flux-cfg", "nano", "flux", "flux-lora", "flux_2_max", "flux_2_pro", "flux_1_1_pro_ultra", "flux_1_dev_turbo", "ideogram_4", "ideogram_4_instant"])
     parser.add_argument("--force", action="store_true", help="regenerate beats that already have drafts.")
     args = parser.parse_args()
 

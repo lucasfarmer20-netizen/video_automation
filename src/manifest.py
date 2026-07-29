@@ -48,6 +48,9 @@ class RenderConfig:
     """
 
     backend: str = "nano2"          # default image model: nano2 | flux-cfg
+    video_model: str = "seedance_2_0" # default video model: seedance_2_0 | veo_3_1 | kling_2_5_turbo_pro | wan_2_7
+    video_chaining: str = "native_extend" # video sequence mode: native_extend | opencv_chain | independent
+    video_audio: bool = True        # generate synchronized audio natively if supported (e.g. Seedance)
     guidance_scale: float = 3.5
     nag_scale: float = 5.0          # negative-prompt strength (NAG) on flux-general
     num_inference_steps: int = 28
@@ -72,11 +75,15 @@ class Shot:
     sfx: str = ""                              # ElevenLabs sound-effects prompt (ambience/foley)
     references: list[str] = field(default_factory=list)  # character refs (Nano Banana), style is implicit
     video_model: str | None = None            # set only when motion_type == AI_VIDEO
+    video_audio: bool | None = None           # generate audio toggle (None => fallback to render.video_audio)
+    image_model: str | None = None            # recommended image model from Claude
     flow_hero: bool = False                    # manual VEO/Flow hero (export -> Google Flow -> import bridge)
     hero_clip: bool = False                    # a finished Veo/Flow clip was imported -> don't re-render over it
     audio_anchor: float | None = None         # librosa beat (s) this cut lands on
     draft_variations: list[str] = field(default_factory=list)  # paths to fal draft variations
     draft_image: str | None = None            # path to chosen draft still
+    video_variations: list[str] = field(default_factory=list)  # paths to fal video variations
+    video_clip: str | None = None             # path to chosen active video variation
     approved: bool = False                    # human sign-off (Gate 1)
     notes: str = ""                           # human continuity/review notes (Gate 1)
 
@@ -90,6 +97,7 @@ class Storyboard:
 
     version: int = MANIFEST_VERSION
     title: str = ""
+    channel: str = "bestiary"
     cultural_origin: str = ""         # entity's real ethnography; drives each shot's style_medium
     script_locked: bool = False       # Script gate
     storyboard_approved: bool = False  # Gate 1 (human pressed "approve")
@@ -141,6 +149,7 @@ class Storyboard:
         return cls(
             version=data.get("version", MANIFEST_VERSION),
             title=data.get("title", ""),
+            channel=data.get("channel", "bestiary"),
             cultural_origin=data.get("cultural_origin", ""),
             script_locked=data.get("script_locked", False),
             storyboard_approved=data.get("storyboard_approved", False),

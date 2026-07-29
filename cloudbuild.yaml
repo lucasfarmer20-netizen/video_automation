@@ -25,7 +25,7 @@ steps:
       - '1'
       - '--port'
       - '8080'
-      - '--add-volume=name=media-storage,type=cloud-storage,bucket=my-storyboard-vault'
+      - '--add-volume=name=media-storage,type=cloud-storage,bucket=lucas-storyboard-vault-001-483921'
       - '--add-volume-mount=volume=media-storage,mount-path=/gcs'
       - '--update-secrets=CLAUDE_API_KEY=CLAUDE_API_KEY:latest'
       - '--set-env-vars'

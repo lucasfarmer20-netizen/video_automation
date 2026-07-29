@@ -82,6 +82,8 @@ def _get_session():
         return _SESSION
     _SESSION_TRIED = True
 
+    import os
+    import platform
     from . import config
 
     model_path = getattr(config, "DEPTH_MODEL", None)
@@ -91,13 +93,24 @@ def _get_session():
         import onnxruntime as ort
     except Exception:
         return None
-    for providers in (["DmlExecutionProvider", "CPUExecutionProvider"],
-                      ["CPUExecutionProvider"]):
-        try:
-            _SESSION = ort.InferenceSession(str(model_path), providers=providers)
-            return _SESSION
-        except Exception:
-            continue
+
+    # Limit to CPU execution provider if explicitly requested or on non-Windows platforms
+    if os.environ.get("ONNX_CPU_ONLY") == "1" or platform.system() != "Windows":
+        providers = ["CPUExecutionProvider"]
+    else:
+        providers = ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+    try:
+        _SESSION = ort.InferenceSession(str(model_path), providers=providers)
+        return _SESSION
+    except Exception:
+        # Fallback to CPU-only if primary providers list failed
+        if providers != ["CPUExecutionProvider"]:
+            try:
+                _SESSION = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+                return _SESSION
+            except Exception:
+                pass
     return None
 
 

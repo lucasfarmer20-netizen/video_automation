@@ -20,18 +20,44 @@ load_dotenv()
 # --- Paths (derived, never hardcoded absolutes) -----------------------------
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
-ASSETS = ROOT / "assets"              # generated media cache (gitignored)
 AUDIO_POOL = ROOT / "audio_pool"      # curated, owned/licensed music (gitignored)
 LORA_TRAINING = ROOT / "lora_training"  # style-LoRA training frames (gitignored)
-MANIFEST_PATH = ROOT / "storyboard_manifest.json"
 LORA_CONFIG = ROOT / "lora_config.json"  # legacy "DEEPROOTLORE" LoRA pointer (flux-lora fallback)
-REFERENCES_DIR = ROOT / "references"     # style + character reference images
-REFERENCES_CONFIG = ROOT / "references.json"  # name -> files/urls registry
-CHARACTERS_CONFIG = ROOT / "characters.json"  # name -> {description, seed, structural_anchor}
 MODELS_DIR = ROOT / "models"             # local ML models (gitignored, large)
 # Depth-Anything V2 (ONNX) for the 2.5D depth stage; overridable via env.
 DEPTH_MODEL = os.environ.get("DEPTH_MODEL") or str(MODELS_DIR / "depth_anything_v2_vits.onnx")
 AUDIO_DIR = ROOT / "audio"               # generated narration + sfx (gitignored)
+
+# Dynamic variables that can change based on active project
+MANIFEST_PATH = ROOT / "storyboard_manifest.json"
+ASSETS = ROOT / "assets"
+REFERENCES_DIR = ROOT / "references"
+REFERENCES_CONFIG = ROOT / "references.json"
+CHARACTERS_CONFIG = ROOT / "characters.json"
+
+def set_active_manifest(path: Path | str) -> None:
+    global MANIFEST_PATH, ASSETS, REFERENCES_DIR, REFERENCES_CONFIG, CHARACTERS_CONFIG
+    p = Path(path).resolve()
+    MANIFEST_PATH = p
+    
+    # Check if we should override assets directory based on environment variables
+    env_assets = os.environ.get("ASSETS_DIR")
+    if env_assets:
+        ASSETS = Path(env_assets).resolve()
+    else:
+        ASSETS = p.parent / "assets"
+        
+    REFERENCES_DIR = p.parent / "references"
+    REFERENCES_CONFIG = p.parent / "references.json"
+    CHARACTERS_CONFIG = p.parent / "characters.json"
+    
+    # Ensure they exist
+    ASSETS.mkdir(parents=True, exist_ok=True)
+    REFERENCES_DIR.mkdir(parents=True, exist_ok=True)
+
+# Initialize with environment values if set, else defaults
+initial_manifest = os.environ.get("MANIFEST_PATH") or str(ROOT / "storyboard_manifest.json")
+set_active_manifest(initial_manifest)
 
 # ElevenLabs narration voice + model (overridable via env). Default voice: "Adam".
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB")
@@ -45,7 +71,9 @@ VESPER_VOICE_ID = os.environ.get("VESPER_VOICE_ID", "")
 # --- Secrets (fetched natively; presence validated on demand) ---------------
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 FAL_KEY = os.environ.get("FAL_KEY")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
+if ANTHROPIC_API_KEY and not os.environ.get("ANTHROPIC_API_KEY"):
+    os.environ["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
 
 # Which key each stage needs, for clear failures before an API is ever called.
 REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
@@ -66,7 +94,11 @@ def require(*names: str) -> None:
     Call this at the top of a stage before touching its API so failures are
     loud and early rather than deep inside a request.
     """
-    missing = [name for name in names if not os.environ.get(name)]
+    missing = []
+    for name in names:
+        val = globals().get(name) or os.environ.get(name)
+        if not val:
+            missing.append(name)
     if missing:
         raise MissingKeyError(
             "Missing required environment variable(s): "
