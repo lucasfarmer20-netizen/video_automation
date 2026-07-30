@@ -1,0 +1,107 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #050508;
+    --foreground: #f4f4f5;
+  }
+}
+
+body {
+  background: radial-gradient(circle at 50% 0%, #121217 0%, #050508 100%) no-repeat fixed;
+  color: var(--foreground);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #050508; }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.08); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.18); }
+
+/* Glassmorphism Styles */
+.glass-panel {
+  background: rgba(18, 18, 22, 0.45);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-panel:hover {
+  background: rgba(26, 26, 32, 0.6);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.glass-header {
+  background: rgba(9, 9, 11, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 4px 20px 0 rgba(0, 0, 0, 0.4);
+}
+
+/* Buttons */
+.btn-premium {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.03) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #f4f4f5;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.btn-premium:hover {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.06) 100%);
+  border-color: rgba(255, 255, 255, 0.15);
+  transform: translateY(-1px);
+}
+.btn-premium:active { transform: translateY(0); }
+
+.btn-accent {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #050508;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 14px 0 rgba(245, 158, 11, 0.3);
+}
+.btn-accent:hover {
+  background: linear-gradient(135deg, #fbbf24 0%, #ea580c 100%);
+  box-shadow: 0 6px 20px 0 rgba(245, 158, 11, 0.45);
+  transform: translateY(-1px);
+}
+.btn-accent:active { transform: translateY(0); }
+
+/* Drop Zones */
+.drop-zone {
+  border: 1px dashed rgba(255, 255, 255, 0.05);
+  background: rgba(9, 9, 11, 0.2);
+  transition: all 0.2s ease;
+}
+.drop-zone:hover, .drop-zone.over {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.02);
+  color: #f4f4f5;
+}
+
+/* Connective vertical timeline line */
+.timeline-bar {
+  position: absolute;
+  left: 31px;
+  top: 50px;
+  bottom: -40px;
+  width: 2px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.01) 100%);
+}
+

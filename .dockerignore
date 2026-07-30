@@ -1,0 +1,48 @@
+# Ignore git repository history
+.git
+.github
+.gitignore
+
+# Ignore local virtual environment
+.venv
+venv
+ENV
+
+# Ignore Python cache and bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore local config and devcontainers
+.devcontainer/
+.vscode/
+
+# Ignore local configuration files containing secrets
+.env
+
+# Ignore large generated assets and audio directories
+assets/
+audio_pool/
+lora_training/
+references/
+references.json
+render/
+audio/
+sizzle/
+intro/
+
+# Ignore timelines and XML project files
+*.otio
+*.fcpxml
+
+# Ignore temporary and cache files
+tmp/
+temp/
+output/
+cache/
+.cache/
+*.tmp
+
+# Ignore local models (large weights should not be baked in directly or should be mounted)
+models/
