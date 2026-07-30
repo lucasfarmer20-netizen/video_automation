@@ -490,6 +490,54 @@ def generate_fal_and_render(sb: Storyboard) -> None:
     print("Generation and rendering complete!")
 
 
+def migrate_assets_to_project_folders(gcs_root: Path):
+    projects = [
+        ("bestiary/manananggal", gcs_root / "bestiary" / "manananggal"),
+        ("bestiary/leshy", gcs_root / "bestiary" / "leshy")
+    ]
+    global_assets_dir = gcs_root / "assets"
+    if not global_assets_dir.exists():
+        return
+        
+    for name, p_dir in projects:
+        manifest_file = p_dir / "storyboard_manifest.json"
+        if not manifest_file.exists():
+            continue
+            
+        try:
+            data = json.loads(manifest_file.read_text(encoding="utf-8"))
+            shots = data.get("shots", [])
+            for shot in shots:
+                scene_id = shot.get("scene_id")
+                if not scene_id:
+                    continue
+                    
+                paths = []
+                if shot.get("draft_image"):
+                    paths.append(shot["draft_image"])
+                if shot.get("video_clip"):
+                    paths.append(shot["video_clip"])
+                paths.extend(shot.get("draft_variations") or [])
+                paths.extend(shot.get("video_variations") or [])
+                
+                for p_str in paths:
+                    p_clean = str(p_str).replace("\\", "/").lstrip("/")
+                    if p_clean.startswith("assets/"):
+                        sub_path = p_clean[7:]
+                    else:
+                        sub_path = p_clean
+                        
+                    src_file = global_assets_dir / sub_path
+                    if src_file.exists() and src_file.is_file():
+                        dest_file = p_dir / "assets" / sub_path
+                        dest_file.parent.mkdir(parents=True, exist_ok=True)
+                        if not dest_file.exists() or dest_file.stat().st_size != src_file.stat().st_size:
+                            shutil.copy2(src_file, dest_file)
+                            print(f"Migration: Copied {src_file.name} to {dest_file}")
+        except Exception as e:
+            print(f"Migration warning: Failed to migrate assets for {name}: {e}")
+
+
 def ensure_gcs_projects():
     gcs_root = Path("/gcs").resolve()
     if not gcs_root.exists():
@@ -569,6 +617,12 @@ def ensure_gcs_projects():
             print(f"Cleanup: Removed old calluses folder {old_calluses_dir}")
     except Exception as e:
         pass
+
+    # 3. Migrate assets to project subfolders
+    try:
+        migrate_assets_to_project_folders(gcs_root)
+    except Exception as e:
+        print(f"Startup Warning: migrate_assets_to_project_folders failed: {e}")
 
 
 @app.on_event("startup")
