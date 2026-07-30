@@ -89,12 +89,13 @@ def generate_anchor(name: str, spec: dict, model: str | None = None, client=None
     config.require_for("script")  # anchors are a Claude (text) call
     import anthropic
 
-    from .script import DEFAULT_MODEL
+    from .script import DEFAULT_MODEL, normalize_claude_model
 
     client = client or anthropic.Anthropic()
     desc = (spec.get("description") or "").strip()
+    norm_model = normalize_claude_model(model or DEFAULT_MODEL)
     resp = client.messages.create(
-        model=model or DEFAULT_MODEL, max_tokens=400, system=ANCHOR_SYSTEM,
+        model=norm_model, max_tokens=400, system=ANCHOR_SYSTEM,
         messages=[{
             "role": "user",
             "content": f"Character: {name}\n\nDescription:\n{desc}\n\n"

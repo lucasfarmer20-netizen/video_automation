@@ -289,22 +289,81 @@ def _scope(num_beats: int | None) -> str:
     return "Produce as many beats as the investigation needs (typically 15-40)."
 
 
-def normalize_claude_model(model_name: str) -> str:
-    """Map legacy/alias Claude model names to valid date-versioned Anthropic model IDs."""
+VALID_CLAUDE_MODELS = {
+    "claude-3-5-sonnet-20241022",
+    "claude-3-7-sonnet-20250219",
+    "claude-3-5-sonnet-20240620",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
+}
+
+DEFAULT_CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
+
+
+def normalize_claude_model(model_name: str | None) -> str:
+    """Normalize any Claude model name, alias, legacy string, or typo to a valid, active date-versioned Anthropic model ID.
+    Always falls back to 'claude-3-5-sonnet-20241022' for any unknown or invalid inputs."""
     if not model_name:
-        return "claude-3-5-sonnet-20241022"
+        return DEFAULT_CLAUDE_MODEL
+
     m = str(model_name).strip().lower()
+
+    if m in VALID_CLAUDE_MODELS:
+        return m
+
     alias_map = {
+        # Sonnet 3.5
+        "claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
         "claude-3-5-sonnet-latest": "claude-3-5-sonnet-20241022",
-        "claude-3-opus-latest": "claude-3-5-sonnet-20241022",
-        "claude-3-5-haiku-latest": "claude-3-5-haiku-20241022",
-        "claude-3-haiku-latest": "claude-3-haiku-20240307",
+        "claude-3.5-sonnet": "claude-3-5-sonnet-20241022",
+        "claude-sonnet-3.5": "claude-3-5-sonnet-20241022",
+        "claude-sonnet-3-5": "claude-3-5-sonnet-20241022",
         "claude-sonnet-5": "claude-3-5-sonnet-20241022",
-        "claude-opus-4-8": "claude-3-5-sonnet-20241022",
-        "claude-fable-5": "claude-3-5-sonnet-20241022",
         "claude-sonnet-4-6": "claude-3-5-sonnet-20241022",
+        "claude-fable-5": "claude-3-5-sonnet-20241022",
+        "claude-3-sonnet": "claude-3-5-sonnet-20241022",
+        "claude-sonnet": "claude-3-5-sonnet-20241022",
+        "sonnet": "claude-3-5-sonnet-20241022",
+        # Sonnet 3.7
+        "claude-3-7-sonnet": "claude-3-7-sonnet-20250219",
+        "claude-3-7-sonnet-latest": "claude-3-7-sonnet-20250219",
+        "claude-3.7-sonnet": "claude-3-7-sonnet-20250219",
+        "claude-sonnet-3.7": "claude-3-7-sonnet-20250219",
+        "claude-3-7": "claude-3-7-sonnet-20250219",
+        "claude-3.7": "claude-3-7-sonnet-20250219",
+        "3.7-sonnet": "claude-3-7-sonnet-20250219",
+        # Haiku
+        "claude-3-5-haiku": "claude-3-5-haiku-20241022",
+        "claude-3-5-haiku-latest": "claude-3-5-haiku-20241022",
+        "claude-3.5-haiku": "claude-3-5-haiku-20241022",
+        "claude-haiku-3.5": "claude-3-5-haiku-20241022",
+        "claude-3-haiku": "claude-3-5-haiku-20241022",
+        "claude-3-haiku-latest": "claude-3-5-haiku-20241022",
+        "claude-3-haiku-20240307": "claude-3-5-haiku-20241022",
+        "claude-haiku": "claude-3-5-haiku-20241022",
+        "haiku": "claude-3-5-haiku-20241022",
+        # Opus
+        "claude-3-opus": "claude-3-opus-20240229",
+        "claude-3-opus-latest": "claude-3-opus-20240229",
+        "claude-3.0-opus": "claude-3-opus-20240229",
+        "claude-opus": "claude-3-opus-20240229",
+        "claude-opus-4-8": "claude-3-5-sonnet-20241022",
+        "opus": "claude-3-opus-20240229",
     }
-    return alias_map.get(m, m)
+
+    if m in alias_map:
+        return alias_map[m]
+
+    if "3-7" in m or "3.7" in m:
+        return "claude-3-7-sonnet-20250219"
+    if "haiku" in m:
+        return "claude-3-5-haiku-20241022"
+    if "opus" in m:
+        return "claude-3-opus-20240229"
+    if "sonnet" in m or "claude" in m:
+        return DEFAULT_CLAUDE_MODEL
+
+    return DEFAULT_CLAUDE_MODEL
 
 
 def _parse_json_robust(raw_text: str) -> dict:
@@ -336,18 +395,17 @@ def _request_storyboard(messages: list[dict], model: str, client=None, system_pr
     config.require_for("script")
     client = client or anthropic.Anthropic()
     
-    models_to_try = [
+    norm_req = normalize_claude_model(model)
+    models_to_try = [norm_req]
+    fallbacks = [
         "claude-3-5-sonnet-20241022",
         "claude-3-7-sonnet-20250219",
         "claude-3-5-sonnet-20240620",
         "claude-3-5-haiku-20241022",
-        "claude-3-haiku-20240307"
     ]
-    
-    norm_req = normalize_claude_model(model)
-    if norm_req and "opus" not in norm_req and norm_req in models_to_try:
-        models_to_try.remove(norm_req)
-        models_to_try.insert(0, norm_req)
+    for fb in fallbacks:
+        if fb not in models_to_try:
+            models_to_try.append(fb)
 
     last_exc = None
     for m in models_to_try:
