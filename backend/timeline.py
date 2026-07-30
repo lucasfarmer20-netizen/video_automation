@@ -39,12 +39,24 @@ FPS = 24
 # small OTIO helpers
 # --------------------------------------------------------------------------- #
 def _probe_seconds(path: Path) -> float:
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=nw=1:nk=1", str(path)],
-        capture_output=True, text=True,
-    )
-    return float(out.stdout.strip() or 0.0)
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, timeout=10
+        )
+        val = float(out.stdout.strip() or 0.0)
+        if val > 0:
+            return val
+    except Exception:
+        pass
+        
+    try:
+        import librosa
+        return float(librosa.get_duration(filename=str(path)))
+    except Exception:
+        pass
+    return 6.0
 
 
 def _rt(seconds: float) -> otio.opentime.RationalTime:
