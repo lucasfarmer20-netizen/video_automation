@@ -695,6 +695,20 @@ export default function WorkspacePage() {
                 </div>
               </div>
 
+              {/* Job Error Log Banner */}
+              {Object.entries(jobs).some(([_, j]) => j.status === "error") && (
+                <div className="bg-red-950/40 border border-red-900/50 rounded-lg p-3.5 mt-2 flex flex-col gap-2">
+                  <div className="text-xs font-bold text-red-400 font-mono flex items-center justify-between">
+                    <span>⚠ Pipeline Execution Warning / Failure Log</span>
+                  </div>
+                  {Object.entries(jobs).map(([stage, job]) => job.status === "error" && (
+                    <div key={stage} className="bg-zinc-950 p-2.5 rounded border border-red-900/30 text-[11px] font-mono text-red-300 overflow-x-auto whitespace-pre-wrap max-h-40">
+                      <span className="font-bold uppercase text-red-400">[{stage}]</span>: {job.log || "Stage failed to execute."}
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {/* Preview player */}
               {preview_url && (
                 <div className="border-t border-zinc-900 pt-4 mt-2">

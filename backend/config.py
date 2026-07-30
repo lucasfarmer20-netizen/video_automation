@@ -70,9 +70,15 @@ ELEVENLABS_SIMILARITY_BOOST = float(os.environ.get("ELEVENLABS_SIMILARITY_BOOST"
 ELEVENLABS_SPEAKER_BOOST = os.environ.get("ELEVENLABS_SPEAKER_BOOST", "true").lower() == "true"
 
 # --- Secrets (fetched natively; presence validated on demand) ---------------
-ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
-FAL_KEY = os.environ.get("FAL_KEY")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY") or os.environ.get("ELEVEN_LABS_API_KEY") or os.environ.get("ELEVENLABS_KEY")
+if ELEVENLABS_API_KEY and not os.environ.get("ELEVENLABS_API_KEY"):
+    os.environ["ELEVENLABS_API_KEY"] = ELEVENLABS_API_KEY
+
+FAL_KEY = os.environ.get("FAL_KEY") or os.environ.get("FAL_API_KEY")
+if FAL_KEY and not os.environ.get("FAL_KEY"):
+    os.environ["FAL_KEY"] = FAL_KEY
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_KEY")
 if ANTHROPIC_API_KEY and not os.environ.get("ANTHROPIC_API_KEY"):
     os.environ["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
 

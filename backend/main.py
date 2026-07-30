@@ -1592,7 +1592,11 @@ def run_assemble_endpoint(stage: str):
         
         if stage == "narration":
             if not sb.script_locked:
-                return JSONResponse(status_code=400, content={"ok": False, "error": "Lock the script first."})
+                if sb.storyboard_approved:
+                    sb.script_locked = True
+                    save_current_project(sb)
+                else:
+                    return JSONResponse(status_code=400, content={"ok": False, "error": "Lock the script first."})
             
             def fn():
                 audio.synthesize_narration(sb)
