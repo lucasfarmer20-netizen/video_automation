@@ -230,14 +230,14 @@ def _resolve_local_image_file(path_str: str | None, scene_id: str | None = None)
     candidates.append(WORKSPACE_ROOT / p_clean)
     if sid:
         candidates.append(WORKSPACE_ROOT / "assets" / sid / filename)
-    candidates.append(Path(p_raw))
-    candidates.append(Path("/") / p_clean)
 
+    allowed_roots = [WORKSPACE_ROOT.resolve(), Path("/gcs").resolve()]
     for cand in candidates:
         try:
             res = cand.resolve()
             if res.exists() and res.is_file():
-                return res
+                if any(res == root or root in res.parents for root in allowed_roots):
+                    return res
         except Exception:
             pass
     return None
@@ -1569,14 +1569,15 @@ def serve_media_files(filepath: str):
         config.ASSETS / clean,
         WORKSPACE_ROOT / clean,
         config.REFERENCES_DIR / clean,
-        Path("/") / clean,
     ]
 
+    allowed_roots = [WORKSPACE_ROOT.resolve(), Path("/gcs").resolve()]
     for cand in candidates:
         try:
             res = cand.resolve()
             if res.exists() and res.is_file():
-                return FileResponse(res, headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"})
+                if any(res == root or root in res.parents for root in allowed_roots):
+                    return FileResponse(res, headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"})
         except Exception:
             pass
 
