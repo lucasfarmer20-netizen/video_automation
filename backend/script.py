@@ -12,7 +12,7 @@ import anthropic
 
 from .manifest import Camera, MotionType, Shot, Storyboard
 
-DEFAULT_MODEL = os.environ.get("SCRIPT_MODEL", "claude-3-5-sonnet-latest")
+DEFAULT_MODEL = os.environ.get("SCRIPT_MODEL", "claude-3-5-sonnet-20241022")
 
 BESTIARY_SYSTEM_PROMPT = """\
 You are Vesper — the researcher-narrator of "The Illuminated Bestiary," a folklore DOCUMENTARY channel. Vesper is an authoritative, deeply curious ethnographic researcher and academic investigator who tracks a folkloric entity the way a field anthropologist would: through the archival record and the evidence, not a campfire story. Your register is investigation, never fiction.
@@ -208,9 +208,11 @@ def _scope(num_beats: int | None) -> str:
 def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anthropic, system_prompt: str) -> Storyboard:
     models_to_try = [model]
     fallbacks = [
-        "claude-3-5-sonnet-latest",
         "claude-3-5-sonnet-20241022",
-        "claude-3-opus-latest"
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-haiku-20241022",
+        "claude-3-opus-20240229",
+        "claude-3-5-sonnet-latest"
     ]
     for fb in fallbacks:
         if fb not in models_to_try:
