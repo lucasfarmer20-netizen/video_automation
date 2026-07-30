@@ -21,7 +21,21 @@ import anthropic
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from werkzeug.utils import secure_filename
+import unicodedata
+
+def secure_filename(filename: str) -> str:
+    """A pure-python replacement for werkzeug.utils.secure_filename."""
+    filename = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode("ascii")
+    seps = [os.path.sep]
+    if getattr(os, "altsep", None):
+        seps.append(os.path.altsep)
+    for sep in seps:
+        if sep:
+            filename = filename.replace(sep, "_")
+    filename = re.sub(r"[^a-zA-Z0-9_.-]", "", filename).strip("._")
+    if not filename:
+        filename = "project"
+    return filename
 
 # Submodule imports
 from . import config, manifest, script, assets, audio, motion, timeline, sizzle
