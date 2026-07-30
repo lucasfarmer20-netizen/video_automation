@@ -282,7 +282,9 @@ def create_claude_message(client, model, max_tokens, system, messages):
     fallbacks = [
         "claude-3-5-sonnet-20241022",
         "claude-3-5-sonnet-latest",
+        "claude-3-5-sonnet-20240620",
         "claude-3-7-sonnet-20250219",
+        "claude-3-haiku-20240307",
         "claude-3-5-haiku-20241022",
         "claude-3-opus-20240229"
     ]
@@ -309,6 +311,12 @@ def create_claude_message(client, model, max_tokens, system, messages):
             continue
 
     if first_exc:
+        err_msg = str(first_exc)
+        if "not_found" in err_msg.lower() or "404" in err_msg:
+            raise RuntimeError(
+                f"Anthropic API Key Error (404 Not Found): None of the standard Claude models were accessible with your current API key. "
+                f"Please verify your CLAUDE_API_KEY secret in Cloud Run or ensure your Anthropic account has access to the Claude Messages API."
+            ) from first_exc
         raise first_exc
     if last_exc:
         raise last_exc
