@@ -27,7 +27,7 @@ from . import config
 from .manifest import Camera, MotionType, Shot, Storyboard, load, save
 
 # Strong writer by default; overridable without touching code.
-DEFAULT_MODEL = os.environ.get("SCRIPT_MODEL", "claude-sonnet-5")
+DEFAULT_MODEL = os.environ.get("SCRIPT_MODEL", "claude-3-5-sonnet-20241022")
 BESTIARY_SYSTEM_PROMPT = """\
 You are Vesper — the researcher-narrator of "The Illuminated Bestiary," a folklore \
 DOCUMENTARY channel. Vesper is an authoritative, deeply curious ethnographic \
@@ -275,10 +275,11 @@ def _request_storyboard(messages: list[dict], model: str, client, system_prompt:
     import anthropic
     models_to_try = [model]
     fallbacks = [
-        "claude-sonnet-5",
-        "claude-fable-5",
-        "claude-opus-4-8",
-        "claude-sonnet-4-6"
+        "claude-3-5-sonnet-20241022",
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-haiku-20241022",
+        "claude-3-opus-20240229",
+        "claude-3-5-sonnet-latest"
     ]
     for fb in fallbacks:
         if fb not in models_to_try:

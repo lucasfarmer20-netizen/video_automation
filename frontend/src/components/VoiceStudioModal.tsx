@@ -91,7 +91,7 @@ export default function VoiceStudioModal({ isOpen, onClose, post }: VoiceStudioM
         <div className="p-6 overflow-y-auto space-y-6 flex-1">
           
           {/* AI Voice Designer Section */}
-          <div className="bg-zinc-950/60 p-4 rounded-xl border border-zinc-850 space-y-4">
+          <div className="bg-zinc-950/60 p-4 rounded-xl border border-zinc-800 space-y-4">
             <div className="flex items-center gap-2 text-amber-400 text-xs font-bold font-mono uppercase tracking-wider">
               <Sparkles className="w-3.5 h-3.5" />
               <span>Voice Design Generator (Zero Uploads)</span>
@@ -161,7 +161,7 @@ export default function VoiceStudioModal({ isOpen, onClose, post }: VoiceStudioM
           </div>
 
           {/* Voice Tuning Sliders Section */}
-          <div className="bg-zinc-950/60 p-4 rounded-xl border border-zinc-850 space-y-4">
+          <div className="bg-zinc-950/60 p-4 rounded-xl border border-zinc-800 space-y-4">
             <div className="flex items-center gap-2 text-zinc-300 text-xs font-bold font-mono uppercase tracking-wider">
               <Sliders className="w-3.5 h-3.5 text-amber-500" />
               <span>Vocal Cadence & Resonance Tuning</span>

@@ -2053,11 +2053,10 @@ def test_anthropic_models():
     client_clean = anthropic.Anthropic(api_key=clean_key)
     
     models = [
-        "claude-sonnet-5",
-        "claude-sonnet-4.6",
-        "claude-opus-4-8",
-        "claude-fable-5",
+        "claude-3-5-sonnet-20241022",
         "claude-3-7-sonnet-20250219",
+        "claude-3-5-haiku-20241022",
+        "claude-3-opus-20240229",
         "claude-3-5-sonnet-latest"
     ]
     

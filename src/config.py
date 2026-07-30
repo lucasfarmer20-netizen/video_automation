@@ -68,6 +68,12 @@ ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2")
 # Empty string means "not yet bound" (audio falls back to ELEVENLABS_VOICE_ID).
 VESPER_VOICE_ID = os.environ.get("VESPER_VOICE_ID", "")
 
+# ElevenLabs voice synthesis tuning parameters (overridable via env)
+ELEVENLABS_STABILITY = float(os.environ.get("ELEVENLABS_STABILITY", "0.35"))
+ELEVENLABS_STYLE_EXAGGERATION = float(os.environ.get("ELEVENLABS_STYLE_EXAGGERATION", "0.35"))
+ELEVENLABS_SIMILARITY_BOOST = float(os.environ.get("ELEVENLABS_SIMILARITY_BOOST", "0.85"))
+ELEVENLABS_SPEAKER_BOOST = os.environ.get("ELEVENLABS_SPEAKER_BOOST", "true").lower() == "true"
+
 # --- Secrets (fetched natively; presence validated on demand) ---------------
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 FAL_KEY = os.environ.get("FAL_KEY")

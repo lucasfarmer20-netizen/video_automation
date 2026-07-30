@@ -88,9 +88,25 @@ def synthesize_narration(storyboard: Storyboard | None = None,
             out.append(dest)
             continue
         print(f"TTS {shot.scene_id}: {text[:56]}...")
+        try:
+            from elevenlabs import VoiceSettings
+            v_settings = VoiceSettings(
+                stability=config.ELEVENLABS_STABILITY,
+                similarity_boost=config.ELEVENLABS_SIMILARITY_BOOST,
+                style=config.ELEVENLABS_STYLE_EXAGGERATION,
+                use_speaker_boost=config.ELEVENLABS_SPEAKER_BOOST,
+            )
+        except ImportError:
+            v_settings = {
+                "stability": config.ELEVENLABS_STABILITY,
+                "similarity_boost": config.ELEVENLABS_SIMILARITY_BOOST,
+                "style": config.ELEVENLABS_STYLE_EXAGGERATION,
+                "use_speaker_boost": config.ELEVENLABS_SPEAKER_BOOST,
+            }
         stream = client.text_to_speech.convert(
             voice_id=voice, text=text,
             model_id=config.ELEVENLABS_MODEL, output_format=OUTPUT_FORMAT,
+            voice_settings=v_settings,
         )
         out.append(_write_stream(stream, dest))
     return out
@@ -254,6 +270,29 @@ def generate_sfx_fal(prompt: str, dest: Path, duration_seconds: float | None = N
         print(f"Fal SFX generation failed ({e}); falling back to local empty placeholder audio.")
         dest.write_bytes(b"")
         return dest
+
+
+def generate_shot_sfx(storyboard: Storyboard | None = None,
+                      only: set[str] | None = None) -> list[Path]:
+    """Generate a sound effect for every beat that carries an ``sfx`` prompt."""
+    sb = storyboard or load()
+    sfx_dir = config.episode_paths(sb.title)["sfx"]
+    out: list[Path] = []
+    for shot in sb.shots:
+        if only and shot.scene_id not in only:
+            continue
+        prompt = (shot.sfx or "").strip()
+        if not prompt:
+            continue
+        dest = sfx_dir / f"{shot.scene_id}.mp3"
+        if dest.exists():
+            print(f"{shot.scene_id}: sfx exists — skipping.")
+            out.append(dest)
+            continue
+        dur = shot.camera.duration if shot.camera else None
+        print(f"SFX {shot.scene_id}: {prompt[:56]}...")
+        out.append(generate_sfx_fal(prompt, dest, duration_seconds=dur))
+    return out
 
 
 def generate_voice_design_elevenlabs(gender: str, age: str, accent: str, description: str, sample_text: str = "") -> dict:

@@ -58,7 +58,7 @@ const BeatNode = ({ data }: any) => {
               🔊
             </button>
           )}
-          <span className="text-[9px] uppercase tracking-wider px-2 py-0.5 rounded bg-zinc-900 border border-zinc-850 font-mono font-semibold">
+          <span className="text-[9px] uppercase tracking-wider px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono font-semibold">
             {data.motion_type}
           </span>
         </div>

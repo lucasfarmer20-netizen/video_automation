@@ -111,7 +111,7 @@ export default function KnobsSidebar({
           <select
             value={config.video_model}
             onChange={(e) => setConfig({ ...config, video_model: e.target.value })}
-            className="w-full bg-zinc-950 text-amber-300 text-xs px-3 py-2 rounded-lg border border-zinc-850 focus:outline-none focus:border-amber-400 transition cursor-pointer font-semibold"
+            className="w-full bg-zinc-950 text-amber-300 text-xs px-3 py-2 rounded-lg border border-zinc-800 focus:outline-none focus:border-amber-400 transition cursor-pointer font-semibold"
           >
             {Object.entries(videoBackends).map(([v, label]) => (
               <option key={v} value={v}>
@@ -129,7 +129,7 @@ export default function KnobsSidebar({
           <select
             value={config.video_chaining}
             onChange={(e) => setConfig({ ...config, video_chaining: e.target.value })}
-            className="w-full bg-zinc-950 text-zinc-300 text-xs px-3 py-2 rounded-lg border border-zinc-850 focus:outline-none focus:border-amber-400 transition cursor-pointer"
+            className="w-full bg-zinc-950 text-zinc-300 text-xs px-3 py-2 rounded-lg border border-zinc-800 focus:outline-none focus:border-amber-400 transition cursor-pointer"
           >
             <option value="native_extend">Native Video Extend (Seedance/Luma)</option>
             <option value="opencv_chain">OpenCV Final Frame Chaining</option>
@@ -145,7 +145,7 @@ export default function KnobsSidebar({
           <select
             value={config.video_audio ? "true" : "false"}
             onChange={(e) => setConfig({ ...config, video_audio: e.target.value === "true" })}
-            className="w-full bg-zinc-950 text-zinc-300 text-xs px-3 py-2 rounded-lg border border-zinc-850 focus:outline-none focus:border-amber-400 transition cursor-pointer"
+            className="w-full bg-zinc-950 text-zinc-300 text-xs px-3 py-2 rounded-lg border border-zinc-800 focus:outline-none focus:border-amber-400 transition cursor-pointer"
           >
             <option value="true">Enabled (Sound synthesis)</option>
             <option value="false">Disabled (Silent b-roll)</option>
@@ -161,7 +161,7 @@ export default function KnobsSidebar({
               step="0.1"
               value={config.guidance_scale}
               onChange={(e) => setConfig({ ...config, guidance_scale: parseFloat(e.target.value) || 3.5 })}
-              className="bg-zinc-950 text-zinc-200 text-xs px-2.5 py-1.5 rounded border border-zinc-850"
+              className="bg-zinc-950 text-zinc-200 text-xs px-2.5 py-1.5 rounded border border-zinc-800"
             />
           </div>
           <div className="flex flex-col gap-1">
@@ -171,7 +171,7 @@ export default function KnobsSidebar({
               step="0.1"
               value={config.nag_scale}
               onChange={(e) => setConfig({ ...config, nag_scale: parseFloat(e.target.value) || 5.0 })}
-              className="bg-zinc-950 text-zinc-200 text-xs px-2.5 py-1.5 rounded border border-zinc-850"
+              className="bg-zinc-950 text-zinc-200 text-xs px-2.5 py-1.5 rounded border border-zinc-800"
             />
           </div>
           <div className="flex flex-col gap-1 col-span-2">
@@ -180,7 +180,7 @@ export default function KnobsSidebar({
               type="number"
               value={config.num_inference_steps}
               onChange={(e) => setConfig({ ...config, num_inference_steps: parseInt(e.target.value) || 28 })}
-              className="bg-zinc-950 text-zinc-200 text-xs px-2.5 py-1.5 rounded border border-zinc-850 w-full"
+              className="bg-zinc-950 text-zinc-200 text-xs px-2.5 py-1.5 rounded border border-zinc-800 w-full"
             />
           </div>
         </div>
@@ -194,7 +194,7 @@ export default function KnobsSidebar({
             value={config.negative_prompt}
             onChange={(e) => setConfig({ ...config, negative_prompt: e.target.value })}
             placeholder="Blank defaults to cinematic standard exclusions"
-            className="w-full bg-zinc-950 text-zinc-300 placeholder-zinc-700 border border-zinc-850 rounded-lg p-2.5 h-16 focus:outline-none focus:border-amber-400 transition text-xs resize-none"
+            className="w-full bg-zinc-950 text-zinc-300 placeholder-zinc-700 border border-zinc-800 rounded-lg p-2.5 h-16 focus:outline-none focus:border-amber-400 transition text-xs resize-none"
           />
         </div>
 
@@ -205,7 +205,7 @@ export default function KnobsSidebar({
           </label>
           
           {config.reference_image ? (
-            <div className="flex items-center gap-2.5 bg-zinc-900/60 p-2 border border-zinc-850 rounded-lg shadow-inner">
+            <div className="flex items-center gap-2.5 bg-zinc-900/60 p-2 border border-zinc-800 rounded-lg shadow-inner">
               <img
                 src={mediaUrl(config.reference_image)}
                 className="h-10 w-16 object-cover rounded border border-zinc-800"
@@ -213,7 +213,7 @@ export default function KnobsSidebar({
               />
               <button
                 onClick={onClearGlobalRef}
-                className="text-rose-400 hover:text-rose-300 text-[10px] font-semibold px-2 py-1 bg-zinc-950/80 rounded border border-zinc-850 transition hover:bg-zinc-900"
+                className="text-rose-400 hover:text-rose-300 text-[10px] font-semibold px-2 py-1 bg-zinc-950/80 rounded border border-zinc-800 transition hover:bg-zinc-900"
               >
                 ✕ remove
               </button>
@@ -225,7 +225,7 @@ export default function KnobsSidebar({
               onDrop={handleDrop}
               onClick={() => document.getElementById("global-ref-file")?.click()}
               className={`border border-dashed rounded-lg p-4 text-center cursor-pointer transition-all duration-200 text-xs flex flex-col items-center gap-1.5 ${
-                dragOver ? "border-amber-500 bg-amber-500/5 text-zinc-200" : "border-zinc-850 text-zinc-500 hover:text-zinc-400"
+                dragOver ? "border-amber-500 bg-amber-500/5 text-zinc-200" : "border-zinc-800 text-zinc-500 hover:text-zinc-400"
               }`}
             >
               <Upload className="h-4 w-4" />
