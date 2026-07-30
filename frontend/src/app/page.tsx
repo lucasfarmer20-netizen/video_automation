@@ -13,7 +13,9 @@ import {
   Clock,
   Play,
   RotateCcw,
-  Sparkles
+  Sparkles,
+  Menu,
+  X
 } from "lucide-react";
 
 // Components
@@ -84,6 +86,8 @@ export default function WorkspacePage() {
   const [chatHistory, setChatHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [voiceStudioOpen, setVoiceStudioOpen] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [mobileRightPanelOpen, setMobileRightPanelOpen] = useState(false);
 
   // Helper: media url resolver
   const mediaUrl = useCallback((path: string) => {
@@ -446,8 +450,17 @@ export default function WorkspacePage() {
     <div className="min-h-screen bg-zinc-950 flex flex-col overflow-hidden text-zinc-100">
       
       {/* Floating Header */}
-      <header className="sticky top-0 z-40 bg-zinc-900/60 backdrop-blur-xl border-b border-zinc-900 px-6 py-4 flex flex-col md:flex-row items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-4 w-full md:w-auto">
+      <header className="sticky top-0 z-40 bg-zinc-900/60 backdrop-blur-xl border-b border-zinc-900 px-4 md:px-6 py-3 md:py-4 flex flex-col md:flex-row items-center justify-between gap-3 md:gap-4">
+        <div className="flex flex-wrap items-center gap-2.5 md:gap-4 w-full md:w-auto">
+          {/* Mobile Sidebar Toggle */}
+          <button
+            onClick={() => setMobileSidebarOpen(!mobileSidebarOpen)}
+            className="lg:hidden p-2 rounded-lg bg-zinc-950 text-zinc-300 border border-zinc-800 hover:text-amber-400 transition"
+            title="Toggle Storyboards Menu"
+          >
+            <Menu className="h-4 w-4" />
+          </button>
+
           {/* Logo badge */}
           <div className={`h-8 w-8 rounded-lg flex items-center justify-center font-extrabold text-sm border shadow-inner ${
             project.channel === "bestiary"
@@ -468,14 +481,14 @@ export default function WorkspacePage() {
               }
             })}
             onBlur={(e) => post("/api/project/meta", { title: e.target.value, channel: project.channel })}
-            className="bg-zinc-950/80 text-amber-400 font-extrabold px-3 py-1.5 rounded-lg text-md border border-zinc-850 focus:outline-none focus:border-amber-400 w-full sm:w-64 md:w-80 transition"
+            className="bg-zinc-950/80 text-amber-400 font-extrabold px-3 py-1.5 rounded-lg text-sm md:text-md border border-zinc-800 focus:outline-none focus:border-amber-400 flex-1 sm:w-64 md:w-80 transition"
             placeholder="Project Title"
           />
 
-          <div className="flex items-center gap-1.5 bg-zinc-950/60 px-3 py-1.5 rounded-lg border border-zinc-900 text-xs font-mono text-zinc-400 select-none shadow-inner">
+          <div className="hidden sm:flex items-center gap-1.5 bg-zinc-950/60 px-3 py-1.5 rounded-lg border border-zinc-900 text-xs font-mono text-zinc-400 select-none shadow-inner">
             <span className="text-amber-500 font-bold">{project.shots?.length || 0}</span> beats · 
             <span className="text-amber-500 font-bold">{paid_count}</span> Tier-C · 
-            <span className="text-zinc-500 max-w-[200px] truncate">{project.cultural_origin || "no cultural scope set"}</span> · 
+            <span className="text-zinc-500 max-w-[140px] md:max-w-[200px] truncate">{project.cultural_origin || "no cultural scope set"}</span> · 
             <span className="flex items-center gap-1.5">
               <span className={`w-1.5 h-1.5 rounded-full ${project.script_locked ? "bg-emerald-500 shadow-[0_0_8px_#10b981]" : "bg-amber-500 shadow-[0_0_8px_#f59e0b]"}`}></span>
               <span>{project.script_locked ? "locked" : "draft"}</span>
@@ -483,9 +496,9 @@ export default function WorkspacePage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 justify-end w-full md:w-auto">
+        <div className="flex items-center gap-2.5 md:gap-3 justify-between md:justify-end w-full md:w-auto">
           {/* View toggle */}
-          <div className="flex items-center bg-zinc-950 p-1 rounded-lg border border-zinc-850">
+          <div className="flex items-center bg-zinc-950 p-1 rounded-lg border border-zinc-800">
             <button
               onClick={() => setActiveView("grid")}
               className={`p-1.5 rounded transition ${activeView === "grid" ? "bg-zinc-800 text-amber-500" : "text-zinc-500 hover:text-zinc-300"}`}
@@ -504,25 +517,35 @@ export default function WorkspacePage() {
 
           <button
             onClick={() => setVoiceStudioOpen(true)}
-            className="bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 text-amber-400 font-bold px-3 py-1.5 rounded-lg transition text-xs flex items-center gap-1.5 shadow-sm"
+            className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-amber-400 font-bold px-3 py-1.5 rounded-lg transition text-xs flex items-center gap-1.5 shadow-sm"
           >
             <Volume2 className="w-3.5 h-3.5 text-amber-500" />
-            <span>Voice Studio</span>
+            <span className="hidden sm:inline">Voice Studio</span>
+          </button>
+
+          {/* Mobile Right Drawer Toggle */}
+          <button
+            onClick={() => setMobileRightPanelOpen(!mobileRightPanelOpen)}
+            className="lg:hidden p-2 rounded-lg bg-zinc-950 text-amber-500 border border-zinc-800 hover:bg-zinc-900 transition flex items-center gap-1 text-xs font-bold font-mono"
+            title="Toggle Vesper / Parameters"
+          >
+            <MessageSquare className="h-4 w-4" />
+            <span className="text-[10px]">Assistant</span>
           </button>
           
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-mono font-bold select-none ${
+          <div className={`hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-mono font-bold select-none ${
             project.storyboard_approved
               ? "border-emerald-500/20 bg-emerald-950/20 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.05)]"
-              : "border-zinc-850 bg-zinc-900/40 text-zinc-550"
+              : "border-zinc-800 bg-zinc-900/40 text-zinc-550"
           }`}>
             <span className={`w-1.5 h-1.5 rounded-full ${project.storyboard_approved ? "bg-emerald-500 shadow-[0_0_8px_#10b981]" : "bg-zinc-650"}`}></span>
             {project.storyboard_approved ? "Approved ✓" : "Draft"}
           </div>
           <button
             onClick={handleApproveStoryboard}
-            className="bg-amber-500 hover:bg-amber-600 text-zinc-950 font-bold px-4 py-2 rounded-lg transition text-xs shadow-md shadow-amber-500/10 active:scale-95"
+            className="bg-amber-500 hover:bg-amber-600 text-zinc-950 font-bold px-3 sm:px-4 py-1.5 md:py-2 rounded-lg transition text-xs shadow-md shadow-amber-500/10 active:scale-95 whitespace-nowrap"
           >
-            Approve storyboard →
+            Approve →
           </button>
         </div>
       </header>
@@ -530,18 +553,34 @@ export default function WorkspacePage() {
       {/* Main Grid Wrapper */}
       <div className="flex flex-1 overflow-hidden">
         
+        {/* Mobile Left Sidebar Backdrop */}
+        {mobileSidebarOpen && (
+          <div
+            onClick={() => setMobileSidebarOpen(false)}
+            className="lg:hidden fixed inset-0 z-40 bg-zinc-950/80 backdrop-blur-sm transition-opacity"
+          />
+        )}
+
         {/* Left projects navigation sidebar */}
-        <ProjectSidebar
-          projects={projects}
-          activeProjectId={project.id}
-          onSelectProject={handleSelectProject}
-          onCreateProject={handleCreateProject}
-          activeChannel={activeChannel}
-          setActiveChannel={setActiveChannel}
-        />
+        <div className={`
+          fixed inset-y-0 left-0 z-50 transition-transform duration-300 lg:static lg:z-0 lg:translate-x-0
+          ${mobileSidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}
+        `}>
+          <ProjectSidebar
+            projects={projects}
+            activeProjectId={project.id}
+            onSelectProject={(rel) => {
+              handleSelectProject(rel);
+              setMobileSidebarOpen(false);
+            }}
+            onCreateProject={handleCreateProject}
+            activeChannel={activeChannel}
+            setActiveChannel={setActiveChannel}
+          />
+        </div>
 
         {/* Central timeline editor */}
-        <main className="flex-1 overflow-y-auto p-6 flex flex-col gap-6">
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 flex flex-col gap-6 w-full">
           
           {/* Assemble control board */}
           {project.storyboard_approved && (
@@ -675,7 +714,7 @@ export default function WorkspacePage() {
 
           {/* Workflow Graph View (React Flow) */}
           {activeView === "canvas" ? (
-            <div className="h-[550px] w-full shrink-0">
+            <div className="h-[380px] sm:h-[500px] md:h-[550px] w-full shrink-0">
               <FlowCanvas
                 shots={project.shots}
                 mediaUrl={mediaUrl}
@@ -717,8 +756,20 @@ export default function WorkspacePage() {
           )}
         </main>
 
+        {/* Mobile Right Drawer Backdrop */}
+        {mobileRightPanelOpen && (
+          <div
+            onClick={() => setMobileRightPanelOpen(false)}
+            className="lg:hidden fixed inset-0 z-40 bg-zinc-950/80 backdrop-blur-sm transition-opacity"
+          />
+        )}
+
         {/* Right workspace drawer (Vesper Assistant + Generator & knobs toggle) */}
-        <div className="flex h-full shrink-0 border-l border-zinc-900">
+        <div className={`
+          fixed inset-y-0 right-0 z-50 transition-transform duration-300 lg:static lg:z-0 lg:translate-x-0 bg-zinc-950
+          ${mobileRightPanelOpen ? "translate-x-0" : "translate-x-full lg:translate-x-0"}
+          flex h-full shrink-0 border-l border-zinc-900
+        `}>
           <div className="bg-zinc-950/90 w-12 border-r border-zinc-900 flex flex-col items-center py-4 gap-4 select-none">
             <button
               onClick={() => setRightPanel("vesper")}
@@ -738,9 +789,16 @@ export default function WorkspacePage() {
             >
               <Sliders className="h-5 w-5" />
             </button>
+            <button
+              onClick={() => setMobileRightPanelOpen(false)}
+              className="lg:hidden p-2 rounded-lg text-zinc-500 hover:text-zinc-200 mt-auto"
+              title="Close Assistant"
+            >
+              <X className="h-5 w-5" />
+            </button>
           </div>
 
-          <div className="flex h-full">
+          <div className="flex h-full w-[300px] sm:w-[360px]">
             {rightPanel === "vesper" ? (
               <VesperChat
                 channel={project.channel}
