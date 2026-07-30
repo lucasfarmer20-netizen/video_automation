@@ -1742,24 +1742,19 @@ def set_active_video_clip(sb, shot, video_rel_path, out_dir):
 
 VALID_CLAUDE_MODELS = {
     "claude-3-5-sonnet-latest",
-    "claude-3-5-sonnet-20241022",
     "claude-3-7-sonnet-latest",
-    "claude-3-7-sonnet-20250219",
 }
 
 DEFAULT_CLAUDE_MODEL = "claude-3-5-sonnet-latest"
 
 
 def normalize_claude_model(model_name: str | None) -> str:
-    """Normalize any Claude model name, alias, legacy string, or typo strictly to a valid Sonnet model ID.
-    All requests default to 'claude-3-5-sonnet-latest'."""
+    """Normalize ANY Claude model string (including dated IDs like 20241022, shorthands, legacy names, and typos)
+    strictly to the canonical active Anthropic API endpoint 'claude-3-5-sonnet-latest' (or 'claude-3-7-sonnet-latest')."""
     if not model_name:
         return DEFAULT_CLAUDE_MODEL
 
     m = str(model_name).strip().lower()
-
-    if m in VALID_CLAUDE_MODELS:
-        return m
 
     if "3-7" in m or "3.7" in m:
         return "claude-3-7-sonnet-latest"
@@ -1771,13 +1766,7 @@ def create_claude_message(client, model, max_tokens, system, messages):
     import anthropic
     norm_model = normalize_claude_model(model)
     models_to_try = [norm_model]
-    fallbacks = [
-        "claude-3-5-sonnet-latest",
-        "claude-3-5-sonnet-20241022",
-        "claude-3-7-sonnet-latest",
-        "claude-3-7-sonnet-20250219",
-    ]
-    for fb in fallbacks:
+    for fb in ["claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest"]:
         if fb not in models_to_try:
             models_to_try.append(fb)
 
