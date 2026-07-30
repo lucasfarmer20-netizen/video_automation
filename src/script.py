@@ -288,6 +288,28 @@ def normalize_claude_model(model_name: str) -> str:
     return alias_map.get(m, m)
 
 
+def _parse_json_robust(raw_text: str) -> dict:
+    """Parse JSON with auto-repair for trailing truncation if needed."""
+    raw_text = raw_text.strip()
+    if raw_text.startswith("```"):
+        import re
+        match = re.search(r"```(?:json)?\s*(.*?)\s*```", raw_text, re.DOTALL)
+        if match:
+            raw_text = match.group(1).strip()
+            
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError:
+        # Attempt simple auto-closure for truncated JSON objects
+        repaired = raw_text
+        if not repaired.endswith("}"):
+            open_braces = repaired.count("{") - repaired.count("}")
+            open_brackets = repaired.count("[") - repaired.count("]")
+            repaired += "}" * max(0, open_braces)
+            repaired += "]" * max(0, open_brackets)
+        return json.loads(repaired)
+
+
 def _request_storyboard(messages: list[dict], model: str, client, system_prompt: str = SYSTEM_PROMPT) -> Storyboard:
     """Run the structured (json_schema) storyboard request and map the result."""
     import anthropic
@@ -324,7 +346,7 @@ def _request_storyboard(messages: list[dict], model: str, client, system_prompt:
                 if response.stop_reason == "refusal":
                     raise RuntimeError("Claude declined to draft this script (safety refusal).")
                 text = next(b.text for b in response.content if b.type == "text")
-                return _beats_to_storyboard(json.loads(text))
+                return _beats_to_storyboard(_parse_json_robust(text))
             else:
                 import copy
                 fallback_messages = copy.deepcopy(messages)
@@ -338,22 +360,18 @@ def _request_storyboard(messages: list[dict], model: str, client, system_prompt:
 
                 response = client.messages.create(
                     model=m,
-                    max_tokens=4000,
+                    max_tokens=8192,
                     system=system_prompt,
                     messages=fallback_messages,
                 )
                 raw_text = next(b.text for b in response.content if b.type == "text").strip()
-                if raw_text.startswith("```"):
-                    import re
-                    match = re.search(r"```(?:json)?\s*(.*?)\s*```", raw_text, re.DOTALL)
-                    if match:
-                        raw_text = match.group(1).strip()
-                return _beats_to_storyboard(json.loads(raw_text))
+                data = _parse_json_robust(raw_text)
+                return _beats_to_storyboard(data)
         except Exception as exc:
             exc_str = str(exc).lower()
             print(f"Script draft model {m} failed: {exc}")
             last_exc = exc
-            if any(k in exc_str for k in ["not_found", "not found", "404", "invalid_request_error", "model"]):
+            if any(k in exc_str for k in ["not_found", "not found", "404", "invalid_request_error", "model", "permission"]):
                 continue
             if isinstance(exc, (json.JSONDecodeError, KeyError, AttributeError)):
                 continue
