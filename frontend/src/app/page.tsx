@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Folder,
   Sliders,
@@ -84,12 +84,12 @@ export default function WorkspacePage() {
   const [loading, setLoading] = useState(true);
 
   // Helper: media url resolver
-  const mediaUrl = (path: string) => {
+  const mediaUrl = useCallback((path: string) => {
     if (!path) return "";
     if (path.startsWith("http://") || path.startsWith("https://")) return path;
     const clean = path.replace("\\", "/").replace(/^\/+/, "");
     return `${API_BASE}/media/${clean}`;
-  };
+  }, []);
 
   // Fetch projects list
   const fetchProjects = async (ch?: string) => {
@@ -453,7 +453,13 @@ export default function WorkspacePage() {
           <input
             type="text"
             value={project.title}
-            onChange={(e) => handleUpdateField(project.scene_id, "title", e.target.value)}
+            onChange={(e) => setActiveProject({
+              ...activeProject,
+              project: {
+                ...activeProject.project,
+                title: e.target.value
+              }
+            })}
             onBlur={(e) => post("/api/project/meta", { title: e.target.value, channel: project.channel })}
             className="bg-zinc-950/80 text-amber-400 font-extrabold px-3 py-1.5 rounded-lg text-md border border-zinc-850 focus:outline-none focus:border-amber-400 w-full sm:w-64 md:w-80 transition"
             placeholder="Project Title"

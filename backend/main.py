@@ -953,6 +953,71 @@ async def upload_shot_image(scene_id: str, file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 
+@app.post("/api/shot/{scene_id}/edit_image/{var_idx}")
+async def edit_shot_image(scene_id: str, var_idx: int, request: Request):
+    try:
+        config.require_for("image")
+        sb = get_current_project()
+        shot = next((s for s in sb.shots if s.scene_id == scene_id), None)
+        if not shot or not shot.draft_variations:
+            raise HTTPException(status_code=404, detail="Scene or draft variations not found")
+
+        if var_idx < 0 or var_idx >= len(shot.draft_variations):
+            raise HTTPException(status_code=400, detail="Index out of range")
+
+        data = await request.json()
+        edit_prompt = (data.get("prompt") or "").strip()
+        if not edit_prompt:
+            raise HTTPException(status_code=400, detail="Empty edit prompt")
+
+        backend = (data.get("backend") or getattr(sb.render, "backend", None) or assets.DEFAULT_BACKEND)
+
+        # 1. Resolve local file path
+        rel_path = shot.draft_variations[var_idx]
+        local_path = _resolve_local_image_file(rel_path, scene_id=scene_id)
+        if not local_path or not local_path.exists():
+            raise HTTPException(status_code=400, detail=f"Base image variation not found on disk: {rel_path}")
+
+        # 2. Upload the starting image to Fal
+        print(f"Uploading base image {local_path.name} to Fal...")
+        public_image_url = fal_client.upload_file(str(local_path))
+
+        # 3. Call the assets editor
+        print(f"Calling edit on Fal using backend {backend} with prompt: {edit_prompt}...")
+        gen_urls = assets.generate_image_edit(
+            public_image_url=public_image_url,
+            prompt=edit_prompt,
+            n=3,
+            backend=backend,
+            render=sb.render
+        )
+
+        # 4. Download and save the new variations
+        import time
+        ts = int(time.time())
+        rel_paths = []
+        for i, url in enumerate(gen_urls):
+            dest = config.ASSETS / scene_id / f"edit_{ts}_{i}.png"
+            assets._download(url, dest)
+            rel = _safe_rel_path(dest)
+            rel_paths.append(rel)
+
+        # 5. Append new variations to the shot manifest
+        existing = list(shot.draft_variations or [])
+        new_start_idx = len(existing)
+        shot.draft_variations = existing + rel_paths
+        if rel_paths:
+            shot.chosen_variation = new_start_idx
+            shot.draft_image = rel_paths[0]
+
+        save_current_project(sb)
+        return {"ok": True, "variations": shot.draft_variations, "chosen": shot.chosen_variation}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
 @app.post("/api/shot/{scene_id}/clip")
 async def upload_shot_clip(scene_id: str, file: UploadFile = File(...)):
     try:
