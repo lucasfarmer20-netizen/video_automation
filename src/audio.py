@@ -296,7 +296,8 @@ def generate_sfx_fal(prompt: str, dest: Path, duration_seconds: float | None = N
 
 
 def generate_voice_design_elevenlabs(gender: str, age: str, accent: str, description: str, sample_text: str = "") -> dict:
-    """Generate a unique synthetic voice using ElevenLabs Voice Design API (no audio uploads needed)."""
+    """Generate a unique synthetic voice using ElevenLabs Voice Design API and return sample audio preview."""
+    import base64
     import requests
     config.require_for("audio")
     
@@ -316,7 +317,33 @@ def generate_voice_design_elevenlabs(gender: str, age: str, accent: str, descrip
     
     resp = requests.post(url, headers=headers, json=payload, timeout=60)
     resp.raise_for_status()
-    return resp.json()
+    
+    voice_id = resp.headers.get("generated_voice_id") or resp.headers.get("generated-voice-id") or ""
+    
+    # Check if response returned binary audio or JSON
+    content_type = resp.headers.get("content-type", "")
+    if "audio/" in content_type or (resp.content and not resp.content.startswith(b"{")):
+        sample_dir = config.ASSETS / "voice_samples"
+        sample_dir.mkdir(parents=True, exist_ok=True)
+        file_name = f"sample_{voice_id or 'preview'}.mp3"
+        dest_path = sample_dir / file_name
+        dest_path.write_bytes(resp.content)
+        
+        audio_b64 = base64.b64encode(resp.content).decode("utf-8")
+        return {
+            "generated_voice_id": voice_id,
+            "sample_audio_url": f"/media/assets/voice_samples/{file_name}",
+            "sample_audio_base64": f"data:audio/mp3;base64,{audio_b64}"
+        }
+    
+    try:
+        data = resp.json()
+        if not voice_id and isinstance(data, dict):
+            voice_id = data.get("generated_voice_id") or data.get("voice_id") or ""
+        data["generated_voice_id"] = voice_id
+        return data
+    except Exception:
+        return {"generated_voice_id": voice_id}
 
 
 

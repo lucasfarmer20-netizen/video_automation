@@ -23,6 +23,7 @@ export default function VoiceStudioModal({ isOpen, onClose, post }: VoiceStudioM
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [generatedVoiceId, setGeneratedVoiceId] = useState<string | null>(null);
+  const [sampleAudioUrl, setSampleAudioUrl] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -36,9 +37,17 @@ export default function VoiceStudioModal({ isOpen, onClose, post }: VoiceStudioM
         accent,
         description
       });
-      if (res.ok && res.voice?.generated_voice_id) {
-        setGeneratedVoiceId(res.voice.generated_voice_id);
-        setMessage("Unique synthetic voice generated successfully!");
+      if (res.ok && res.voice) {
+        const vId = res.voice.generated_voice_id || res.voice.voice_id || null;
+        if (vId) setGeneratedVoiceId(vId);
+        
+        const audioSrc = res.voice.sample_audio_base64 || res.voice.sample_audio_url || null;
+        if (audioSrc) {
+          setSampleAudioUrl(audioSrc);
+          setMessage("Unique voice sample generated! Listen to preview below.");
+        } else {
+          setMessage("Voice design generated.");
+        }
       } else {
         setMessage("Voice design generated preview.");
       }
@@ -158,6 +167,26 @@ export default function VoiceStudioModal({ isOpen, onClose, post }: VoiceStudioM
               <Sparkles className="w-3.5 h-3.5" />
               <span>{loading ? "Generating Unique Voice..." : "Generate Unique AI Voice"}</span>
             </button>
+
+            {sampleAudioUrl && (
+              <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3.5 space-y-2 mt-3 animate-fade-in">
+                <div className="flex items-center justify-between text-xs text-amber-400 font-mono font-bold">
+                  <span className="flex items-center gap-1.5">
+                    <Volume2 className="w-4 h-4 text-amber-500 animate-pulse" />
+                    <span>Generated Voice Preview Sample</span>
+                  </span>
+                  {generatedVoiceId && (
+                    <span className="text-[10px] text-zinc-400 font-normal">ID: {generatedVoiceId}</span>
+                  )}
+                </div>
+                <audio
+                  controls
+                  autoPlay
+                  src={sampleAudioUrl}
+                  className="w-full h-8 rounded border border-amber-500/20 bg-zinc-950 accent-amber-500"
+                />
+              </div>
+            )}
           </div>
 
           {/* Voice Tuning Sliders Section */}
