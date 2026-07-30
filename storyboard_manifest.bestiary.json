@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "title": "The Illuminated Bestiary — The Manananggal: An Account from the Visayan Record",
-  "cultural_origin": "Visayan (Western Visayas — Iloilo, Antique, Capiz, and Aklan provinces, island of Panay), Philippines; lowland Christianized Visayan folk tradition with pre-Hispanic Austronesian roots, part of the wider aswang complex",
+  "title": "The Illuminated Bestiary \u2014 The Manananggal: An Account from the Visayan Record",
+  "cultural_origin": "Visayan (Western Visayas \u2014 Iloilo, Antique, Capiz, and Aklan provinces, island of Panay), Philippines; lowland Christianized Visayan folk tradition with pre-Hispanic Austronesian roots, part of the wider aswang complex",
   "script_locked": true,
   "storyboard_approved": true,
   "music_track": null,
@@ -84,7 +84,7 @@
     },
     {
       "scene_id": "s003",
-      "narration": "The records make a distinction outsiders usually flatten. This is not simply an aswang. In Visayan speech, aswang is an umbrella — a whole category of night-feeders and shape-changers. The manananggal is one branch of it, defined by a single act: the severing of the self at the waist.",
+      "narration": "The records make a distinction outsiders usually flatten. This is not simply an aswang. In Visayan speech, aswang is an umbrella \u2014 a whole category of night-feeders and shape-changers. The manananggal is one branch of it, defined by a single act: the severing of the self at the waist.",
       "prompt": "An abstract conceptual manuscript diagram and lineage chart, engraved into wood. Minimalist composition. A single heavy vertical black ink line splits into geometric, branching horizontal and vertical sub-lines. No leaves, no roots, no botanical elements. At the end of the main highlighted branch, the word 'Manananggal' is lettered in clean, historic script with a faint metallic gold ink wash. The other branching lines end in simple black ink silhouettes of folklore creatures that fade into heavy charcoal stipple shading at the margins.",
       "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
       "motion_prompt": "",
@@ -117,8 +117,8 @@
     },
     {
       "scene_id": "s004",
-      "narration": "By daylight, the accounts describe an ordinary neighbor — often a midwife, a weaver, a woman who sold at the market. Someone known by name and face. In small barangays, where everyone tracked everyone else's comings and goings, that detail did something dangerous: suspicion always had an exact house to walk to.",
-      "prompt": "Eye-level medium portrait of a 17th-century Visayan woman in a plain camisa, standing motionless in the dark doorway of a hut with woven sawali walls. Split chiaroscuro — one half of her face clean line-work, the other dissolving into black cross-hatching. Deep shadow interior, cinematic 16:9.",
+      "narration": "By daylight, the accounts describe an ordinary neighbor \u2014 often a midwife, a weaver, a woman who sold at the market. Someone known by name and face. In small barangays, where everyone tracked everyone else's comings and goings, that detail did something dangerous: suspicion always had an exact house to walk to.",
+      "prompt": "Eye-level medium portrait of a 17th-century Visayan woman in a plain camisa, standing motionless in the dark doorway of a hut with woven sawali walls. Split chiaroscuro \u2014 one half of her face clean line-work, the other dissolving into black cross-hatching. Deep shadow interior, cinematic 16:9.",
       "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
       "motion_prompt": "",
       "chosen_variation": 1,
@@ -138,19 +138,15 @@
       "flow_hero": false,
       "hero_clip": false,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s004/var_0.png",
-        "assets/s004/var_1.png",
-        "assets/s004/var_2.png"
-      ],
-      "draft_image": "assets/s004/var_1.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
       "scene_id": "s005",
-      "narration": "The separation, the logs insist, happens only after dark. The upper body detaches at the waist and lifts away — and the lower half stays behind, upright, standing in a corner of the room. What unsettles the record isn't what she becomes. It's the half she leaves standing there.",
-      "prompt": "Wide interior of a nipa hut with sawali walls and a bamboo-slat floor. A woman's lower half stands upright and alone in a corner, wrapped in a traditional skirt, the waist-seam kept entirely in deep shadow — no anatomy shown. A glass kerosene lamp on the floor throws stark hatched shadows; carved wooden ancestor figures watch from the dark. High-contrast chiaroscuro, cinematic 16:9.",
+      "narration": "The separation, the logs insist, happens only after dark. The upper body detaches at the waist and lifts away \u2014 and the lower half stays behind, upright, standing in a corner of the room. What unsettles the record isn't what she becomes. It's the half she leaves standing there.",
+      "prompt": "Wide interior of a nipa hut with sawali walls and a bamboo-slat floor. A woman's lower half stands upright and alone in a corner, wrapped in a traditional skirt, the waist-seam kept entirely in deep shadow \u2014 no anatomy shown. A glass kerosene lamp on the floor throws stark hatched shadows; carved wooden ancestor figures watch from the dark. High-contrast chiaroscuro, cinematic 16:9.",
       "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
       "motion_prompt": "",
       "chosen_variation": 2,
@@ -170,18 +166,14 @@
       "flow_hero": false,
       "hero_clip": false,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s005/var_0.png",
-        "assets/s005/var_1.png",
-        "assets/s005/var_2.png"
-      ],
-      "draft_image": "assets/s005/var_2.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
       "scene_id": "s006",
-      "narration": "The freed torso travels low, just above the rooftops. The Panay records are consistent on the anatomy — large, membranous, bat-like wings unfurling from between the shoulder blades. Never feathers. That leathery silhouette became the fixed signature of the creature across three centuries of accounts.",
+      "narration": "The freed torso travels low, just above the rooftops. The Panay records are consistent on the anatomy \u2014 large, membranous, bat-like wings unfurling from between the shoulder blades. Never feathers. That leathery silhouette became the fixed signature of the creature across three centuries of accounts.",
       "prompt": "Wide night landscape. Deep indigo-inked sky, a thin charcoal crescent moon. Below, a huddle of thatched nipa huts. Above them, a vast leathery winged shape rendered as solid black ink against the paler sepia sky, wings half-spread mid-beat, read purely by silhouette. Cinematic 16:9.",
       "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
       "motion_prompt": "",
@@ -215,8 +207,8 @@
     },
     {
       "scene_id": "s007",
-      "narration": "The target, again and again, is the household at its most defenseless — a woman in late pregnancy or early labor. The silhouette settles onto the thatch at midnight and goes still. The sources dwell entirely on that stalking pattern, and they leave the attack itself firmly off the page.",
-      "prompt": "Interior of a darkened nipa hut, camera angled up at the ceiling — a dense weave of layered bamboo and thatch. Through the gaps, a sharp cross-hatched shadow of a massive clawed, winged figure falls across the slats, cast by implied moonlight. Threat conveyed entirely by shadow, cinematic 16:9.",
+      "narration": "The target, again and again, is the household at its most defenseless \u2014 a woman in late pregnancy or early labor. The silhouette settles onto the thatch at midnight and goes still. The sources dwell entirely on that stalking pattern, and they leave the attack itself firmly off the page.",
+      "prompt": "Interior of a darkened nipa hut, camera angled up at the ceiling \u2014 a dense weave of layered bamboo and thatch. Through the gaps, a sharp cross-hatched shadow of a massive clawed, winged figure falls across the slats, cast by implied moonlight. Threat conveyed entirely by shadow, cinematic 16:9.",
       "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
       "motion_prompt": "",
       "chosen_variation": 3,
@@ -269,13 +261,9 @@
       "flow_hero": false,
       "hero_clip": false,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s008/var_0.png",
-        "assets/s008/var_1.png",
-        "assets/s008/var_2.png"
-      ],
-      "draft_image": "assets/s008/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -301,13 +289,9 @@
       "flow_hero": false,
       "hero_clip": false,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s009/var_0.png",
-        "assets/s009/var_1.png",
-        "assets/s009/var_2.png"
-      ],
-      "draft_image": "assets/s009/var_2.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -345,7 +329,7 @@
     },
     {
       "scene_id": "s011",
-      "narration": "If the two halves fail to fuse before first light, the sun finishes the upper body. The whole defense, then, was a race against the sunrise — villagers searching the huts for the stationary lower half while the hunter was still airborne and unaware. Her vulnerability was structural. She lived on a countdown.",
+      "narration": "If the two halves fail to fuse before first light, the sun finishes the upper body. The whole defense, then, was a race against the sunrise \u2014 villagers searching the huts for the stationary lower half while the hunter was still airborne and unaware. Her vulnerability was structural. She lived on a countdown.",
       "prompt": "Wide exterior pre-dawn landscape. A pale sepia band brightening at the horizon; huts and palm trees stand as heavy black silhouettes. A foreground path is lit by a small cross-hatched pool of light from a dim oil lamp carried by an unseen hand. Tense, atmospheric charcoal shading, cinematic 16:9.",
       "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
       "motion_prompt": "",
@@ -379,7 +363,7 @@
     },
     {
       "scene_id": "s012",
-      "narration": "Household records list everyday deterrents at every threshold: braided garlic, dishes of native coconut vinegar, salt lines along the sills. Coastal villages hung the dried tail of a stingray by the door. Not sacred relics — ordinary domestic supplies, repurposed into physical blockades.",
+      "narration": "Household records list everyday deterrents at every threshold: braided garlic, dishes of native coconut vinegar, salt lines along the sills. Coastal villages hung the dried tail of a stingray by the door. Not sacred relics \u2014 ordinary domestic supplies, repurposed into physical blockades.",
       "prompt": "Tight still-life. A rough weathered wooden windowsill; a small unglazed earthen dish of cloudy coconut vinegar catches faint cross-hatched light; braided garlic and a salt line rest along the sill. On the wall behind hangs a detailed barbed stingray tail casting a sharp shadow. Deep shadow surrounds, cinematic 16:9.",
       "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
       "motion_prompt": "",
@@ -412,7 +396,7 @@
     },
     {
       "scene_id": "s013",
-      "narration": "In an era of high infant and maternal mortality, the tradition supplied an explanation for sudden, unpreventable loss. The tragedy inside the archive is that the accused was almost always a real person — the eccentric neighbor, the outsider, or the midwife who happened to be present when a delivery failed.",
+      "narration": "In an era of high infant and maternal mortality, the tradition supplied an explanation for sudden, unpreventable loss. The tragedy inside the archive is that the accused was almost always a real person \u2014 the eccentric neighbor, the outsider, or the midwife who happened to be present when a delivery failed.",
       "prompt": "Wide, somber interior of a traditional bamboo birthing hut, empty. An empty hanging woven cradle is the central focus, rendered in fine line-work. Against a dark shuttered window, the faint ambiguous shadow of a woman's silhouette is cast, still and unreadable. Cross-hatched gloom, cinematic 16:9.",
       "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
       "motion_prompt": "",
@@ -433,18 +417,14 @@
       "flow_hero": false,
       "hero_clip": false,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s013/var_0.png",
-        "assets/s013/var_1.png",
-        "assets/s013/var_2.png"
-      ],
-      "draft_image": "assets/s013/var_2.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
       "scene_id": "s014",
-      "narration": "The record didn't close with the colonial era. The image moved into mid-century print, into radio drama, into the local news. Across Panay it remains a default framework — a shape reached for when a sudden death or a late-night disturbance won't sit quietly inside any other explanation.",
+      "narration": "The record didn't close with the colonial era. The image moved into mid-century print, into radio drama, into the local news. Across Panay it remains a default framework \u2014 a shape reached for when a sudden death or a late-night disturbance won't sit quietly inside any other explanation.",
       "prompt": "Wide night landscape composite. Thatched nipa huts and tin-roofed modern homes share one mixed indigo sky under a low charcoal crescent moon. The winged upper-torso female silhouette, pure black against the sky, glides silently over the mixed-era rooftops. Read entirely by silhouette, cinematic 16:9.",
       "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
       "motion_prompt": "",
@@ -465,18 +445,14 @@
       "flow_hero": false,
       "hero_clip": false,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s014/var_0.png",
-        "assets/s014/var_1.png",
-        "assets/s014/var_2.png"
-      ],
-      "draft_image": "assets/s014/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
       "scene_id": "s015",
-      "narration": "Read the whole Visayan record together and the fear underneath it comes clear. Not the wings. Not the flight. The panic sits in the house itself — the thin seams of the floor, the shuttered window, and the terrible closeness of everyone you already know.",
+      "narration": "Read the whole Visayan record together and the fear underneath it comes clear. Not the wings. Not the flight. The panic sits in the house itself \u2014 the thin seams of the floor, the shuttered window, and the terrible closeness of everyone you already know.",
       "prompt": "Cinematic pull-back. The detailed leather codex cover and parchment page from the opening fill the frame. A weathered ink-drawn hand re-enters and rests gently on the dark cross-hatched text; the ink patterns fade into deep black charcoal as the hand slowly closes the chronicle cover. Candle-lit chiaroscuro, cinematic 16:9.",
       "style_medium": "An ancient, authentic vintage monochrome woodcut engraving on aged frayed parchment, dark ink linework with heavy hand-drawn cross-hatching and ink-stipple shading, framed by a decorative border of indigenous Visayan wave patterns and native tribal symbols, sepia-and-charcoal tones, weathered historical-document texture.",
       "motion_prompt": "",

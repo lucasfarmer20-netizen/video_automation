@@ -24,18 +24,14 @@
       "references": [],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s001/var_0.png",
-        "assets/s001/var_1.png",
-        "assets/s001/var_2.png"
-      ],
-      "draft_image": "assets/s001/var_1.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
       "scene_id": "s002",
-      "narration": "The old ones in the villages had a rule for the forest. Keep the sun on the same shoulder the whole way through. If it moves to the other one, and you never turned — you're already his.",
+      "narration": "The old ones in the villages had a rule for the forest. Keep the sun on the same shoulder the whole way through. If it moves to the other one, and you never turned \u2014 you're already his.",
       "prompt": "A lone hooded traveler seen from behind, faceless in deep shadow, small against a mixed forest of towering dark conifers and pale birch trunks, one shoulder rimmed in warm amber light, no visible face, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
       "chosen_variation": 0,
       "motion_type": "parallax",
@@ -52,13 +48,9 @@
       "references": [],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s002/var_0.png",
-        "assets/s002/var_1.png",
-        "assets/s002/var_2.png"
-      ],
-      "draft_image": "assets/s002/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -82,13 +74,9 @@
       ],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s003/var_0.png",
-        "assets/s003/var_1.png",
-        "assets/s003/var_2.png"
-      ],
-      "draft_image": "assets/s003/var_2.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -110,13 +98,9 @@
       "references": [],
       "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s004/var_0.png",
-        "assets/s004/var_1.png",
-        "assets/s004/var_2.png"
-      ],
-      "draft_image": "assets/s004/var_1.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -140,13 +124,9 @@
       ],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s005/var_0.png",
-        "assets/s005/var_1.png",
-        "assets/s005/var_2.png"
-      ],
-      "draft_image": "assets/s005/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -168,13 +148,9 @@
       "references": [],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s006/var_0.png",
-        "assets/s006/var_1.png",
-        "assets/s006/var_2.png"
-      ],
-      "draft_image": "assets/s006/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -196,13 +172,9 @@
       "references": [],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s007/var_0.png",
-        "assets/s007/var_1.png",
-        "assets/s007/var_2.png"
-      ],
-      "draft_image": "assets/s007/var_2.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -224,18 +196,14 @@
       "references": [],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s008/var_0.png",
-        "assets/s008/var_1.png",
-        "assets/s008/var_2.png"
-      ],
-      "draft_image": "assets/s008/var_2.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
       "scene_id": "s009",
-      "narration": "You pass a fallen birch with a hollow in it. You keep walking. An hour later — the same birch. Same hollow. Your own boot-prints going the wrong way.",
+      "narration": "You pass a fallen birch with a hollow in it. You keep walking. An hour later \u2014 the same birch. Same hollow. Your own boot-prints going the wrong way.",
       "prompt": "A distinctive fallen birch with a dark knot-hole, fresh boot prints in the mud leading past it and returning, low warm light, deep shadow, ink linework, watercolor, cinematic 16:9, Deep Root Lore style",
       "chosen_variation": 0,
       "motion_type": "parallax",
@@ -252,13 +220,9 @@
       "references": [],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s009/var_0.png",
-        "assets/s009/var_1.png",
-        "assets/s009/var_2.png"
-      ],
-      "draft_image": "assets/s009/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -280,13 +244,9 @@
       "references": [],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s010/var_0.png",
-        "assets/s010/var_1.png",
-        "assets/s010/var_2.png"
-      ],
-      "draft_image": "assets/s010/var_2.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -310,13 +270,9 @@
       ],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s011/var_0.png",
-        "assets/s011/var_1.png",
-        "assets/s011/var_2.png"
-      ],
-      "draft_image": "assets/s011/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -338,13 +294,9 @@
       "references": [],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s012/var_0.png",
-        "assets/s012/var_1.png",
-        "assets/s012/var_2.png"
-      ],
-      "draft_image": "assets/s012/var_2.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -366,13 +318,9 @@
       "references": [],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s013/var_0.png",
-        "assets/s013/var_1.png",
-        "assets/s013/var_2.png"
-      ],
-      "draft_image": "assets/s013/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -396,19 +344,15 @@
       ],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s014/var_0.png",
-        "assets/s014/var_1.png",
-        "assets/s014/var_2.png"
-      ],
-      "draft_image": "assets/s014/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
       "scene_id": "s015",
-      "narration": "The voice called again. Sweeter. Closer. And it got her name for him just slightly wrong — the pet name only she used. Almost right. Almost.",
-      "prompt": "The woman's silhouette now much nearer on the path, her outline subtly wrong — too tall, fingers too long, edges bleeding into bark, ink linework, watercolor, near-black, cinematic 16:9, Deep Root Lore style",
+      "narration": "The voice called again. Sweeter. Closer. And it got her name for him just slightly wrong \u2014 the pet name only she used. Almost right. Almost.",
+      "prompt": "The woman's silhouette now much nearer on the path, her outline subtly wrong \u2014 too tall, fingers too long, edges bleeding into bark, ink linework, watercolor, near-black, cinematic 16:9, Deep Root Lore style",
       "chosen_variation": 0,
       "motion_type": "ai_video",
       "camera": {
@@ -424,18 +368,14 @@
       "references": [],
       "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s015/var_0.png",
-        "assets/s015/var_1.png",
-        "assets/s015/var_2.png"
-      ],
-      "draft_image": "assets/s015/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
       "scene_id": "s016",
-      "narration": "He looked down. Bright sun overhead, his own shadow long on the moss. Hers — nothing. Grass, lit clean, right where a shadow ought to lie.",
+      "narration": "He looked down. Bright sun overhead, his own shadow long on the moss. Hers \u2014 nothing. Grass, lit clean, right where a shadow ought to lie.",
       "prompt": "Low forest-floor angle: a bearded man's long dark shadow stretching across sunlit moss, and right beside it a tall figure's bare feet casting no shadow at all on the glowing grass, the man's cast shadow a plain featureless dark silhouette with no facial features, ink and watercolor, cinematic 16:9, Deep Root Lore style",
       "chosen_variation": 0,
       "motion_type": "parallax",
@@ -452,13 +392,9 @@
       "references": [],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s016/var_0.png",
-        "assets/s016/var_1.png",
-        "assets/s016/var_2.png"
-      ],
-      "draft_image": "assets/s016/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -480,13 +416,9 @@
       "references": [],
       "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s017/var_0.png",
-        "assets/s017/var_1.png",
-        "assets/s017/var_2.png"
-      ],
-      "draft_image": "assets/s017/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -510,18 +442,14 @@
       ],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s018/var_0.png",
-        "assets/s018/var_1.png",
-        "assets/s018/var_2.png"
-      ],
-      "draft_image": "assets/s018/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
       "scene_id": "s019",
-      "narration": "Now. Here's what his grandmother taught him, and what saved him. When the woods turn on you, you turn on the woods. Everything you're wearing — off, and back on, inside-out.",
+      "narration": "Now. Here's what his grandmother taught him, and what saved him. When the woods turn on you, you turn on the woods. Everything you're wearing \u2014 off, and back on, inside-out.",
       "prompt": "A bearded peasant man crouched low among forest trees and ferns in a dim beam of light, pulling his coat off with the rough seams turned outward, focused and afraid, outdoors in the woods not indoors, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
       "chosen_variation": 1,
       "motion_type": "parallax",
@@ -540,13 +468,9 @@
       ],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s019/var_0.png",
-        "assets/s019/var_1.png",
-        "assets/s019/var_2.png"
-      ],
-      "draft_image": "assets/s019/var_1.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -570,13 +494,9 @@
       ],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s020/var_0.png",
-        "assets/s020/var_1.png",
-        "assets/s020/var_2.png"
-      ],
-      "draft_image": "assets/s020/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -598,18 +518,14 @@
       "references": [],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s021/var_0.png",
-        "assets/s021/var_1.png",
-        "assets/s021/var_2.png"
-      ],
-      "draft_image": "assets/s021/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
       "scene_id": "s022",
-      "narration": "He left the bread. Turned his coat. And he did the last thing — the hardest one. He stopped listening for her voice.",
+      "narration": "He left the bread. Turned his coat. And he did the last thing \u2014 the hardest one. He stopped listening for her voice.",
       "prompt": "The man walking away with hands over his ears, the sweet familiar silhouette behind him fading back into the trees, unanswered, ink and watercolor, chiaroscuro, cinematic 16:9, Deep Root Lore style",
       "chosen_variation": 1,
       "motion_type": "parallax",
@@ -628,13 +544,9 @@
       ],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s022/var_0.png",
-        "assets/s022/var_1.png",
-        "assets/s022/var_2.png"
-      ],
-      "draft_image": "assets/s022/var_1.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -656,13 +568,9 @@
       "references": [],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s023/var_0.png",
-        "assets/s023/var_1.png",
-        "assets/s023/var_2.png"
-      ],
-      "draft_image": "assets/s023/var_1.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -687,13 +595,9 @@
       ],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s024/var_0.png",
-        "assets/s024/var_1.png",
-        "assets/s024/var_2.png"
-      ],
-      "draft_image": "assets/s024/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -715,13 +619,9 @@
       "references": [],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s025/var_0.png",
-        "assets/s025/var_1.png",
-        "assets/s025/var_2.png"
-      ],
-      "draft_image": "assets/s025/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
@@ -746,18 +646,14 @@
       ],
       "video_model": null,
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s026/var_0.png",
-        "assets/s026/var_1.png",
-        "assets/s026/var_2.png"
-      ],
-      "draft_image": "assets/s026/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     },
     {
       "scene_id": "s027",
-      "narration": "And if something up the path calls you by a name only love should know — look at the ground. If nothing dark lies where it's standing, then whatever loves you is not there. Keep walking. Don't answer.",
+      "narration": "And if something up the path calls you by a name only love should know \u2014 look at the ground. If nothing dark lies where it's standing, then whatever loves you is not there. Keep walking. Don't answer.",
       "prompt": "Final shot: deep in the trees a familiar human silhouette waits in a shaft of pale light, casting absolutely no shadow on the bright grass beneath it (the lit ground unbroken), near-black forest closing around, eerie and still, ink and watercolor, cinematic 16:9, Deep Root Lore style",
       "chosen_variation": 0,
       "motion_type": "ai_video",
@@ -774,13 +670,9 @@
       "references": [],
       "video_model": "fal-ai/kling-video/v3/pro/image-to-video",
       "audio_anchor": null,
-      "draft_variations": [
-        "assets/s027/var_0.png",
-        "assets/s027/var_1.png",
-        "assets/s027/var_2.png"
-      ],
-      "draft_image": "assets/s027/var_0.png",
-      "approved": true,
+      "draft_variations": [],
+      "draft_image": null,
+      "approved": false,
       "notes": ""
     }
   ],

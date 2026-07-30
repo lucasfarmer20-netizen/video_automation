@@ -531,6 +531,54 @@ def migrate_assets_to_project_folders(gcs_root: Path):
             print(f"Migration warning: Failed to migrate assets for {name}: {e}")
 
 
+def sanitize_manifest_image_paths(manifest_file: Path, project_dir: Path):
+    if not manifest_file.exists():
+        return
+    try:
+        data = json.loads(manifest_file.read_text(encoding="utf-8"))
+        shots = data.get("shots", [])
+        modified = False
+        for s in shots:
+            scene_id = s.get("scene_id")
+            if not scene_id:
+                continue
+            
+            # Verify draft_image
+            draft_img = s.get("draft_image")
+            if draft_img:
+                clean_path = str(draft_img).replace("\\", "/").lstrip("/")
+                sub_p = clean_path[7:] if clean_path.startswith("assets/") else clean_path
+                
+                proj_asset = project_dir / "assets" / sub_p
+                global_asset = Path("/gcs/assets") / sub_p
+                
+                # If image is a legacy generic var_X.png or missing on disk/GCS, clear it!
+                if "var_" in clean_path or not (proj_asset.exists() or global_asset.exists()):
+                    s["draft_image"] = None
+                    s["approved"] = False
+                    modified = True
+                    
+            # Verify draft_variations
+            vars_list = s.get("draft_variations") or []
+            new_vars = []
+            for v in vars_list:
+                clean_v = str(v).replace("\\", "/").lstrip("/")
+                sub_v = clean_v[7:] if clean_v.startswith("assets/") else clean_v
+                p_v = project_dir / "assets" / sub_v
+                g_v = Path("/gcs/assets") / sub_v
+                if not "var_" in clean_v and (p_v.exists() or g_v.exists()):
+                    new_vars.append(v)
+            if len(new_vars) != len(vars_list):
+                s["draft_variations"] = new_vars
+                modified = True
+                
+        if modified:
+            manifest_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            print(f"Sanitized stale manifest image paths in {manifest_file}")
+    except Exception as e:
+        print(f"Warning: Failed to sanitize manifest {manifest_file}: {e}")
+
+
 def ensure_gcs_projects():
     gcs_root = Path("/gcs").resolve()
     if not gcs_root.exists():
@@ -616,6 +664,13 @@ def ensure_gcs_projects():
         migrate_assets_to_project_folders(gcs_root)
     except Exception as e:
         print(f"Startup Warning: migrate_assets_to_project_folders failed: {e}")
+
+    # 4. Sanitize stale manifest paths
+    try:
+        sanitize_manifest_image_paths(manananggal_manifest, manananggal_dir)
+        sanitize_manifest_image_paths(leshy_manifest, leshy_dir)
+    except Exception as e:
+        print(f"Startup Warning: sanitize_manifest_image_paths failed: {e}")
 
 
 @app.on_event("startup")
