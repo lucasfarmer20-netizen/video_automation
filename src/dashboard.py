@@ -1770,15 +1770,11 @@ def create_claude_message(client, model, max_tokens, system, messages):
     import anthropic
     norm_model = normalize_claude_model(model)
     models_to_try = [norm_model]
-    fallbacks = [
-        "claude-3-5-sonnet-20241022",
-        "claude-3-7-sonnet-20250219",
-        "claude-3-5-sonnet-20240620",
-    ]
-    for fb in fallbacks:
+    for fb in ["claude-3-5-sonnet-20241022", "claude-3-7-sonnet-20250219"]:
         if fb not in models_to_try:
             models_to_try.append(fb)
 
+    first_exc = None
     last_exc = None
     for m in models_to_try:
         try:
@@ -1790,12 +1786,14 @@ def create_claude_message(client, model, max_tokens, system, messages):
                 messages=messages
             )
         except Exception as exc:
-            exc_str = str(exc).lower()
             print(f"Claude model {m} failed: {exc}")
+            if first_exc is None:
+                first_exc = exc
             last_exc = exc
-            if any(k in exc_str for k in ["not_found", "not found", "404", "invalid_request_error", "model"]):
-                continue
-            raise exc
+            continue
+
+    if first_exc:
+        raise first_exc
     if last_exc:
         raise last_exc
 

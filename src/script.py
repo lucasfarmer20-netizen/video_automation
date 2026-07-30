@@ -346,60 +346,43 @@ def _request_storyboard(messages: list[dict], model: str, client=None, system_pr
     
     norm_req = normalize_claude_model(model)
     models_to_try = [norm_req]
-    fallbacks = [
-        "claude-3-5-sonnet-20241022",
-        "claude-3-7-sonnet-20250219",
-        "claude-3-5-sonnet-20240620",
-    ]
-    for fb in fallbacks:
+    for fb in ["claude-3-5-sonnet-20241022", "claude-3-7-sonnet-20250219"]:
         if fb not in models_to_try:
             models_to_try.append(fb)
 
+    first_exc = None
     last_exc = None
     for m in models_to_try:
         try:
             print(f"Trying script draft with model: {m}...")
-            if "3-7" in m or "claude-3-7" in m:
-                response = client.messages.create(
-                    model=m,
-                    max_tokens=16000,
-                    system=system_prompt,
-                    thinking={"type": "adaptive"},
-                    output_config={
-                        "effort": "high",
-                        "format": {"type": "json_schema", "schema": SCRIPT_SCHEMA},
-                    },
-                    messages=messages,
-                )
-                if response.stop_reason == "refusal":
-                    raise RuntimeError("Claude declined to draft this script (safety refusal).")
-                text = next((b.text for b in response.content if hasattr(b, "text") and b.text), "")
-                return _beats_to_storyboard(_parse_json_robust(text))
-            else:
-                import copy
-                fallback_messages = copy.deepcopy(messages)
-                json_instruction = (
-                    "\n\nIMPORTANT: You must respond ONLY with a raw, valid JSON object matching the requested schema. "
-                    "Do not wrap it in any explanation, and do not use markdown code block backticks. "
-                    "Start your response with { and end it with }."
-                )
-                if fallback_messages and fallback_messages[-1]["role"] == "user":
-                    fallback_messages[-1]["content"] += json_instruction
+            import copy
+            fallback_messages = copy.deepcopy(messages)
+            json_instruction = (
+                "\n\nIMPORTANT: You must respond ONLY with a raw, valid JSON object matching the requested schema. "
+                "Do not wrap it in any explanation, and do not use markdown code block backticks. "
+                "Start your response with { and end it with }."
+            )
+            if fallback_messages and fallback_messages[-1]["role"] == "user":
+                fallback_messages[-1]["content"] += json_instruction
 
-                response = client.messages.create(
-                    model=m,
-                    max_tokens=8192,
-                    system=system_prompt,
-                    messages=fallback_messages,
-                )
-                raw_text = next((b.text for b in response.content if hasattr(b, "text") and b.text), "").strip()
-                data = _parse_json_robust(raw_text)
-                return _beats_to_storyboard(data)
+            response = client.messages.create(
+                model=m,
+                max_tokens=8192,
+                system=system_prompt,
+                messages=fallback_messages,
+            )
+            raw_text = next((b.text for b in response.content if hasattr(b, "text") and b.text), "").strip()
+            data = _parse_json_robust(raw_text)
+            return _beats_to_storyboard(data)
         except Exception as exc:
             print(f"Script draft model {m} failed: {exc}")
+            if first_exc is None:
+                first_exc = exc
             last_exc = exc
             continue
 
+    if first_exc:
+        raise first_exc
     if last_exc:
         raise last_exc
     raise RuntimeError("Failed to call Anthropic API models.")

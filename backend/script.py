@@ -279,15 +279,11 @@ def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anth
     
     norm_req = normalize_claude_model(model)
     models_to_try = [norm_req]
-    fallbacks = [
-        "claude-3-5-sonnet-20241022",
-        "claude-3-7-sonnet-20250219",
-        "claude-3-5-sonnet-20240620",
-    ]
-    for fb in fallbacks:
+    for fb in ["claude-3-5-sonnet-20241022", "claude-3-7-sonnet-20250219"]:
         if fb not in models_to_try:
             models_to_try.append(fb)
 
+    first_exc = None
     last_exc = None
     for m in models_to_try:
         try:
@@ -313,9 +309,13 @@ def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anth
             return _beats_to_storyboard(data)
         except Exception as exc:
             print(f"Script draft model {m} failed: {exc}")
+            if first_exc is None:
+                first_exc = exc
             last_exc = exc
             continue
 
+    if first_exc:
+        raise first_exc
     if last_exc:
         raise last_exc
     raise RuntimeError("Failed to call Anthropic API models.")
