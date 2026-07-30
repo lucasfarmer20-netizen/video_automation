@@ -243,14 +243,34 @@ def _safe_rel_path(dest: Path) -> str:
         return str(dest).replace("\\", "/").lstrip("/")
 
 
+def normalize_claude_model(model_name: str) -> str:
+    """Map legacy/alias Claude model names to valid date-versioned Anthropic model IDs."""
+    if not model_name:
+        return "claude-3-5-sonnet-20241022"
+    m = str(model_name).strip().lower()
+    alias_map = {
+        "claude-3-5-sonnet-latest": "claude-3-5-sonnet-20241022",
+        "claude-3-opus-latest": "claude-3-opus-20240229",
+        "claude-3-5-haiku-latest": "claude-3-5-haiku-20241022",
+        "claude-3-haiku-latest": "claude-3-haiku-20240307",
+        "claude-sonnet-5": "claude-3-5-sonnet-20241022",
+        "claude-opus-4-8": "claude-3-opus-20240229",
+        "claude-fable-5": "claude-3-5-sonnet-20241022",
+        "claude-sonnet-4-6": "claude-3-5-sonnet-20241022",
+    }
+    return alias_map.get(m, m)
+
+
 def create_claude_message(client, model, max_tokens, system, messages):
-    models_to_try = [model]
+    norm_model = normalize_claude_model(model)
+    models_to_try = [norm_model]
     fallbacks = [
         "claude-3-5-sonnet-20241022",
         "claude-3-7-sonnet-20250219",
+        "claude-3-5-sonnet-20240620",
         "claude-3-5-haiku-20241022",
-        "claude-3-opus-20240229",
-        "claude-3-5-sonnet-latest"
+        "claude-3-haiku-20240307",
+        "claude-3-opus-20240229"
     ]
     for fb in fallbacks:
         if fb not in models_to_try:
@@ -268,12 +288,14 @@ def create_claude_message(client, model, max_tokens, system, messages):
             )
         except Exception as exc:
             exc_str = str(exc).lower()
-            if "not_found" in exc_str or "not found" in exc_str or "404" in exc_str:
-                last_exc = exc
+            print(f"Claude model {m} failed: {exc}")
+            last_exc = exc
+            if any(k in exc_str for k in ["not_found", "not found", "404", "invalid_request_error", "model"]):
                 continue
             raise exc
     if last_exc:
         raise last_exc
+
 
 
 def resolve_video_model_endpoint(key: str | None) -> str:
