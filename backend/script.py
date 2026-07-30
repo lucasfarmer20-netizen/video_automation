@@ -175,25 +175,44 @@ SCRIPT_SCHEMA = {
 
 
 def _beats_to_storyboard(data: dict) -> Storyboard:
+    if not isinstance(data, dict):
+        data = {}
+    beats_list = data.get("beats") or data.get("shots") or data.get("scenes") or []
+    if not isinstance(beats_list, list):
+        beats_list = []
+
     shots: list[Shot] = []
-    for i, beat in enumerate(data.get("beats", []), start=1):
+    for i, beat in enumerate(beats_list, start=1):
+        if not isinstance(beat, dict):
+            continue
+            
+        m_type_str = beat.get("suggested_motion_type") or beat.get("motion_type") or "parallax"
+        try:
+            m_type = MotionType(m_type_str)
+        except ValueError:
+            m_type = MotionType.PARALLAX
+            
+        cam_str = beat.get("suggested_camera") or beat.get("camera") or "push_in"
+        if isinstance(cam_str, dict):
+            cam_str = cam_str.get("move", "push_in")
+
         shots.append(
             Shot(
-                scene_id=beat.get("scene_id") or f"s{i:03d}",
-                narration=beat.get("narration", ""),
-                prompt=beat.get("visual", ""),
-                motion_prompt=beat.get("motion_prompt", ""),
-                style_medium=beat.get("style_medium", ""),
-                motion_type=MotionType(beat.get("suggested_motion_type", "parallax")),
-                camera=Camera(move=beat.get("suggested_camera", "push_in")),
-                fx=list(beat.get("suggested_fx") or []),
-                image_model=beat.get("recommended_image_model"),
-                video_model=beat.get("recommended_video_model"),
+                scene_id=beat.get("scene_id") or beat.get("id") or f"s{i:03d}",
+                narration=beat.get("narration") or beat.get("narration_text") or "",
+                prompt=beat.get("visual") or beat.get("prompt") or beat.get("visual_prompt") or "",
+                motion_prompt=beat.get("motion_prompt") or "",
+                style_medium=beat.get("style_medium") or beat.get("style") or "",
+                motion_type=m_type,
+                camera=Camera(move=str(cam_str)),
+                fx=list(beat.get("suggested_fx") or beat.get("fx") or []),
+                image_model=beat.get("recommended_image_model") or beat.get("image_model"),
+                video_model=beat.get("recommended_video_model") or beat.get("video_model"),
             )
         )
     return Storyboard(
-        title=data.get("title", ""),
-        cultural_origin=data.get("cultural_origin", ""),
+        title=str(data.get("title") or "Untitled Storyboard"),
+        cultural_origin=str(data.get("cultural_origin") or ""),
         script_locked=False,
         shots=shots,
     )
@@ -212,11 +231,11 @@ def normalize_claude_model(model_name: str) -> str:
     m = str(model_name).strip().lower()
     alias_map = {
         "claude-3-5-sonnet-latest": "claude-3-5-sonnet-20241022",
-        "claude-3-opus-latest": "claude-3-opus-20240229",
+        "claude-3-opus-latest": "claude-3-5-sonnet-20241022",
         "claude-3-5-haiku-latest": "claude-3-5-haiku-20241022",
         "claude-3-haiku-latest": "claude-3-haiku-20240307",
         "claude-sonnet-5": "claude-3-5-sonnet-20241022",
-        "claude-opus-4-8": "claude-3-opus-20240229",
+        "claude-opus-4-8": "claude-3-5-sonnet-20241022",
         "claude-fable-5": "claude-3-5-sonnet-20241022",
         "claude-sonnet-4-6": "claude-3-5-sonnet-20241022",
     }
@@ -246,20 +265,23 @@ def _parse_json_robust(raw_text: str) -> dict:
 
 
 def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anthropic, system_prompt: str) -> Storyboard:
-    norm_model = normalize_claude_model(model)
-    # Prefer Sonnet 3.5 first if norm_model is 404-prone (like opus)
-    models_to_try = [norm_model]
-    fallbacks = [
+    from . import config
+    config.require_for("script")
+    client = client or anthropic.Anthropic()
+    
+    # Always prioritize reliable Sonnet models that work on all Anthropic API accounts
+    models_to_try = [
         "claude-3-5-sonnet-20241022",
         "claude-3-7-sonnet-20250219",
         "claude-3-5-sonnet-20240620",
         "claude-3-5-haiku-20241022",
-        "claude-3-haiku-20240307",
-        "claude-3-opus-20240229"
+        "claude-3-haiku-20240307"
     ]
-    for fb in fallbacks:
-        if fb not in models_to_try:
-            models_to_try.append(fb)
+    
+    norm_req = normalize_claude_model(model)
+    if norm_req and "opus" not in norm_req and norm_req in models_to_try:
+        models_to_try.remove(norm_req)
+        models_to_try.insert(0, norm_req)
 
     last_exc = None
     for m in models_to_try:
@@ -281,18 +303,14 @@ def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anth
                 system=system_prompt,
                 messages=fallback_messages,
             )
-            raw_text = next(b.text for b in response.content if b.type == "text").strip()
+            raw_text = next((b.text for b in response.content if hasattr(b, "text") and b.text), "").strip()
             data = _parse_json_robust(raw_text)
             return _beats_to_storyboard(data)
         except Exception as exc:
-            exc_str = str(exc).lower()
             print(f"Script draft model {m} failed: {exc}")
             last_exc = exc
-            if any(k in exc_str for k in ["not_found", "not found", "404", "invalid_request_error", "model", "permission"]):
-                continue
-            if isinstance(exc, (json.JSONDecodeError, KeyError, AttributeError)):
-                continue
-            raise exc
+            continue
+
     if last_exc:
         raise last_exc
     raise RuntimeError("Failed to call Anthropic API models.")
