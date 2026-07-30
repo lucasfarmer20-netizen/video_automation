@@ -614,10 +614,10 @@ def get_active_project():
             
         # Preview track resolution
         ep = config.episode_paths(sb.title)
-        preview_file = ep["root"] / "preview.mp4"
+        preview_file = ep["render"] / "_preview.mp4"
         preview_url = f"/media/{_safe_rel_path(preview_file)}" if preview_file.exists() else None
         
-        fcpxml_file = ep["root"] / f"{ep['slug']}.fcpxml"
+        fcpxml_file = config.ROOT / f"{ep['slug']}.fcpxml"
         fcpxml_ready = fcpxml_file.exists()
         
         # Count paid video shots
