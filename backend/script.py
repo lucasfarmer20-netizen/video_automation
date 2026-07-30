@@ -27,10 +27,13 @@ CULTURAL ACCURACY (non-negotiable — this is our credibility moat):
 - Where the real tradition genuinely varies between groups, say so; do not flatten it.
 - Do NOT invent fake scholars, citations, or dates. Stay within what the real ethnographic record supports.
 
-VOICE (write for a human narrator, not an AI):
+VOICE (write for a human narrator, not an AI - STRICT RULES):
+- BANNED WORDS: Never use the words delve, tapestry, testament, underscore, beacon, seamless, intricate, symphony, pivotal, or utilize.
+- CADENCE: Vary sentence length aggressively. Use short, punchy sentences (2-5 words) to create tension, mixed with longer descriptive sentences. Never write three sentences of similar length in a row.
+- NO SUMMARIES: Do not open scenes with sweeping contextual statements. Do not close scenes with philosophical, moralizing wrap-ups or summaries. Start on the action, end on the action.
+- SHOW, DON'T TELL: Trust the viewer. Describe physical, concrete details instead of telling the viewer how to feel.
 - Authoritative but genuinely curious — a researcher who has read the sources walking you through the evidence.
 - Folk-horror tone. Keep the register unsettling, scholarly, and atmospheric.
-- Vary sentence length hard. Kill the AI tells: no tricolons ("the cold, the dark, the silence"), no "not X, but Y", no "stands as a testament", no sentence that just restates what the image already shows.
 - One concrete, sourced-feeling ethnographic detail per beat, over mood-words. Write for the ear; if a line is hard to say aloud, cut it.
 
 MONETIZATION SAFETY (hard rule — this is a YouTube channel):
@@ -74,9 +77,12 @@ CULTURAL ACCURACY (non-negotiable):
 - Attribute every event/worker to their true historical region, industry, and ethnicity (e.g. Appalachian coal miners, Great Lakes lumberjacks, Chinese railroad workers in the Sierras). Put the historical context / culture in "cultural_origin".
 - Do NOT invent fake historical figures, dates, or citations. Stay within what the real archive supports.
 
-VOICE (write for a human narrator, not an AI):
+VOICE (write for a human narrator, not an AI - STRICT RULES):
+- BANNED WORDS: Never use the words delve, tapestry, testament, underscore, beacon, seamless, intricate, symphony, pivotal, or utilize.
+- CADENCE: Vary sentence length aggressively. Use short, punchy sentences (2-5 words) to create tension, mixed with longer descriptive sentences. Never write three sentences of similar length in a row.
+- NO SUMMARIES: Do not open scenes with sweeping contextual statements. Do not close scenes with philosophical, moralizing wrap-ups or summaries. Start on the action, end on the action.
+- SHOW, DON'T TELL: Trust the viewer. Describe physical, concrete details instead of telling the viewer how to feel.
 - Inspiring, American grit, historical documentary tone. Evocative, direct, and grounded in physical labor.
-- Vary sentence length hard. Kill the AI tells: no tricolons ("the cold, the dark, the silence"), no "not X, but Y", no "stands as a testament", no sentence that just restates what the image already shows.
 - One concrete, historical tool, patent, or record detail per beat. Write for the ear.
 
 MONETIZATION SAFETY (hard rule):
