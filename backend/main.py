@@ -220,16 +220,9 @@ def _resolve_local_image_file(path_str: str | None, scene_id: str | None = None)
     if sid:
         candidates.append(active_dir / "assets" / sid / filename)
         candidates.append(active_dir / sid / filename)
-        candidates.append(config.ASSETS / sid / filename)
         
     # 2. General active dir / clean path
     candidates.append(active_dir / p_clean)
-    candidates.append(config.ASSETS / p_clean)
-    
-    # 3. Global fallbacks
-    candidates.append(WORKSPACE_ROOT / p_clean)
-    if sid:
-        candidates.append(WORKSPACE_ROOT / "assets" / sid / filename)
 
     allowed_roots = [WORKSPACE_ROOT.resolve(), Path("/gcs").resolve()]
     for cand in candidates:
@@ -1564,12 +1557,19 @@ def serve_media_files(filepath: str):
     clean = filepath.replace("\\", "/").lstrip("/")
     active_dir = Path(get_active_manifest_path()).parent
 
+    # Enforce strict project-isolated lookups
     candidates = [
         active_dir / clean,
-        config.ASSETS / clean,
-        WORKSPACE_ROOT / clean,
+        active_dir / "assets" / clean,
         config.REFERENCES_DIR / clean,
     ]
+
+    parts = clean.split("/")
+    filename = parts[-1]
+    if len(parts) >= 2:
+        scene_id = parts[-2]
+        candidates.append(active_dir / "assets" / scene_id / filename)
+        candidates.append(active_dir / scene_id / filename)
 
     allowed_roots = [WORKSPACE_ROOT.resolve(), Path("/gcs").resolve()]
     for cand in candidates:
@@ -1578,17 +1578,6 @@ def serve_media_files(filepath: str):
             if res.exists() and res.is_file():
                 if any(res == root or root in res.parents for root in allowed_roots):
                     return FileResponse(res, headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"})
-        except Exception:
-            pass
-
-    parts = clean.split("/")
-    filename = parts[-1]
-    if len(parts) >= 2:
-        scene_id = parts[-2]
-        try:
-            cand = (config.ASSETS / scene_id / filename).resolve()
-            if cand.exists() and cand.is_file():
-                return FileResponse(cand, headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"})
         except Exception:
             pass
 
