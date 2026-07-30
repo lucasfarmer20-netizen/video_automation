@@ -247,16 +247,14 @@ VALID_CLAUDE_MODELS = {
     "claude-3-5-sonnet-20241022",
     "claude-3-7-sonnet-20250219",
     "claude-3-5-sonnet-20240620",
-    "claude-3-5-haiku-20241022",
-    "claude-3-opus-20240229",
 }
 
 DEFAULT_CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
 
 
 def normalize_claude_model(model_name: str | None) -> str:
-    """Normalize any Claude model name, alias, legacy string, or typo to a valid, active date-versioned Anthropic model ID.
-    Always falls back to 'claude-3-5-sonnet-20241022' for any unknown or invalid inputs."""
+    """Normalize any Claude model name, alias, legacy string, or typo strictly to a valid Sonnet model ID.
+    All requests (including Haiku, Opus, legacy strings, and typos) default to 'claude-3-5-sonnet-20241022'."""
     if not model_name:
         return DEFAULT_CLAUDE_MODEL
 
@@ -265,57 +263,8 @@ def normalize_claude_model(model_name: str | None) -> str:
     if m in VALID_CLAUDE_MODELS:
         return m
 
-    alias_map = {
-        # Sonnet 3.5
-        "claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
-        "claude-3-5-sonnet-latest": "claude-3-5-sonnet-20241022",
-        "claude-3.5-sonnet": "claude-3-5-sonnet-20241022",
-        "claude-sonnet-3.5": "claude-3-5-sonnet-20241022",
-        "claude-sonnet-3-5": "claude-3-5-sonnet-20241022",
-        "claude-sonnet-5": "claude-3-5-sonnet-20241022",
-        "claude-sonnet-4-6": "claude-3-5-sonnet-20241022",
-        "claude-fable-5": "claude-3-5-sonnet-20241022",
-        "claude-3-sonnet": "claude-3-5-sonnet-20241022",
-        "claude-sonnet": "claude-3-5-sonnet-20241022",
-        "sonnet": "claude-3-5-sonnet-20241022",
-        # Sonnet 3.7
-        "claude-3-7-sonnet": "claude-3-7-sonnet-20250219",
-        "claude-3-7-sonnet-latest": "claude-3-7-sonnet-20250219",
-        "claude-3.7-sonnet": "claude-3-7-sonnet-20250219",
-        "claude-sonnet-3.7": "claude-3-7-sonnet-20250219",
-        "claude-3-7": "claude-3-7-sonnet-20250219",
-        "claude-3.7": "claude-3-7-sonnet-20250219",
-        "3.7-sonnet": "claude-3-7-sonnet-20250219",
-        # Haiku
-        "claude-3-5-haiku": "claude-3-5-haiku-20241022",
-        "claude-3-5-haiku-latest": "claude-3-5-haiku-20241022",
-        "claude-3.5-haiku": "claude-3-5-haiku-20241022",
-        "claude-haiku-3.5": "claude-3-5-haiku-20241022",
-        "claude-3-haiku": "claude-3-5-haiku-20241022",
-        "claude-3-haiku-latest": "claude-3-5-haiku-20241022",
-        "claude-3-haiku-20240307": "claude-3-5-haiku-20241022",
-        "claude-haiku": "claude-3-5-haiku-20241022",
-        "haiku": "claude-3-5-haiku-20241022",
-        # Opus
-        "claude-3-opus": "claude-3-opus-20240229",
-        "claude-3-opus-latest": "claude-3-opus-20240229",
-        "claude-3.0-opus": "claude-3-opus-20240229",
-        "claude-opus": "claude-3-opus-20240229",
-        "claude-opus-4-8": "claude-3-5-sonnet-20241022",
-        "opus": "claude-3-opus-20240229",
-    }
-
-    if m in alias_map:
-        return alias_map[m]
-
     if "3-7" in m or "3.7" in m:
         return "claude-3-7-sonnet-20250219"
-    if "haiku" in m:
-        return "claude-3-5-haiku-20241022"
-    if "opus" in m:
-        return "claude-3-opus-20240229"
-    if "sonnet" in m or "claude" in m:
-        return DEFAULT_CLAUDE_MODEL
 
     return DEFAULT_CLAUDE_MODEL
 
@@ -327,8 +276,6 @@ def create_claude_message(client, model, max_tokens, system, messages):
         "claude-3-5-sonnet-20241022",
         "claude-3-7-sonnet-20250219",
         "claude-3-5-sonnet-20240620",
-        "claude-3-5-haiku-20241022",
-        "claude-3-opus-20240229"
     ]
     for fb in fallbacks:
         if fb not in models_to_try:
