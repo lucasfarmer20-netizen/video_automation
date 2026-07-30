@@ -245,17 +245,18 @@ def _safe_rel_path(dest: Path) -> str:
 
 VALID_CLAUDE_MODELS = {
     "claude-3-5-sonnet-20241022",
-    "claude-3-5-sonnet-latest",
+    "claude-3-5-sonnet-20240620",
     "claude-3-7-sonnet-20250219",
-    "claude-3-opus-20240229",
     "claude-3-5-haiku-20241022",
+    "claude-3-haiku-20240307",
+    "claude-3-opus-20240229",
 }
 
 DEFAULT_CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
 
 
 def normalize_claude_model(model_name: str | None) -> str:
-    """Normalize any shorthand or custom model string strictly to valid Anthropic API model endpoints."""
+    """Normalize any shorthand or custom model string strictly to immutable date-versioned Anthropic API endpoints."""
     if not model_name:
         return DEFAULT_CLAUDE_MODEL
 
@@ -270,8 +271,6 @@ def normalize_claude_model(model_name: str | None) -> str:
         return "claude-3-opus-20240229"
     if "haiku" in m:
         return "claude-3-5-haiku-20241022"
-    if "latest" in m:
-        return "claude-3-5-sonnet-latest"
 
     return DEFAULT_CLAUDE_MODEL
 
@@ -281,11 +280,10 @@ def create_claude_message(client, model, max_tokens, system, messages):
     models_to_try = [norm_model]
     fallbacks = [
         "claude-3-5-sonnet-20241022",
-        "claude-3-5-sonnet-latest",
         "claude-3-5-sonnet-20240620",
         "claude-3-7-sonnet-20250219",
-        "claude-3-haiku-20240307",
         "claude-3-5-haiku-20241022",
+        "claude-3-haiku-20240307",
         "claude-3-opus-20240229"
     ]
     for fb in fallbacks:
