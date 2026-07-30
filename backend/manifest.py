@@ -194,7 +194,13 @@ def list_projects(channel: Optional[str] = None) -> List[dict]:
         d["id"] = doc.id
         
         # Count beats
-        beats = db.collection("projects").document(doc.id).collection("beats").stream()
+        try:
+            beats_stream = db.collection("projects").document(doc.id).collection("beats").stream()
+            d["beats_count"] = sum(1 for _ in beats_stream)
+        except Exception:
+            d["beats_count"] = 0
+            
+        res.append(d)
     return res
 
 
