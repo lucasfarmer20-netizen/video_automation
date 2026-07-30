@@ -76,9 +76,9 @@ def get_active_manifest_path() -> str:
     # Fallback default path
     gcs_parent = Path("/gcs")
     if gcs_parent.exists():
-        default_p = gcs_parent / "bestiary" / "storyboard_manifest.json"
+        default_p = gcs_parent / "bestiary" / "manananggal" / "storyboard_manifest.json"
     else:
-        default_p = WORKSPACE_ROOT / "bestiary" / "storyboard_manifest.json"
+        default_p = WORKSPACE_ROOT / "bestiary" / "manananggal" / "storyboard_manifest.json"
     return str(default_p.resolve())
 
 
@@ -211,22 +211,27 @@ def _resolve_local_image_file(path_str: str | None, scene_id: str | None = None)
     p_clean = p_raw.lstrip("/")
     active_dir = Path(get_active_manifest_path()).parent
 
-    candidates = [
-        Path(p_raw),
-        WORKSPACE_ROOT / p_clean,
-        active_dir / p_clean,
-        config.ASSETS / p_clean,
-        config.REFERENCES_DIR / p_clean,
-        Path("/") / p_clean,
-    ]
-
     parts = p_clean.split("/")
     filename = parts[-1]
     sid = scene_id or (parts[-2] if len(parts) >= 2 else None)
+
+    candidates = []
+    # 1. Project-specific scene directory (highest priority)
     if sid:
-        candidates.append(config.ASSETS / sid / filename)
+        candidates.append(active_dir / "assets" / sid / filename)
         candidates.append(active_dir / sid / filename)
+        candidates.append(config.ASSETS / sid / filename)
+        
+    # 2. General active dir / clean path
+    candidates.append(active_dir / p_clean)
+    candidates.append(config.ASSETS / p_clean)
+    
+    # 3. Global fallbacks
+    candidates.append(WORKSPACE_ROOT / p_clean)
+    if sid:
         candidates.append(WORKSPACE_ROOT / "assets" / sid / filename)
+    candidates.append(Path(p_raw))
+    candidates.append(Path("/") / p_clean)
 
     for cand in candidates:
         try:
@@ -490,45 +495,80 @@ def ensure_gcs_projects():
     if not gcs_root.exists():
         gcs_root = WORKSPACE_ROOT
         
-    # Bestiary project
-    bestiary_dir = gcs_root / "bestiary"
-    bestiary_dir.mkdir(parents=True, exist_ok=True)
-    bestiary_manifest = bestiary_dir / "storyboard_manifest.json"
+    # 1. Setup isolated directories
+    manananggal_dir = gcs_root / "bestiary" / "manananggal"
+    manananggal_dir.mkdir(parents=True, exist_ok=True)
+    manananggal_manifest = manananggal_dir / "storyboard_manifest.json"
     
-    # Calluses project
-    calluses_dir = gcs_root / "calluses"
-    calluses_dir.mkdir(parents=True, exist_ok=True)
-    calluses_manifest = calluses_dir / "storyboard_manifest.json"
+    leshy_dir = gcs_root / "bestiary" / "leshy"
+    leshy_dir.mkdir(parents=True, exist_ok=True)
+    leshy_manifest = leshy_dir / "storyboard_manifest.json"
     
-    # Copy Bestiary if missing or empty
+    # Copy Manananggal if missing or empty
     local_bestiary = Path(WORKSPACE_ROOT) / "storyboard_manifest.bestiary.json"
     if local_bestiary.exists():
         should_copy = True
-        if bestiary_manifest.exists():
+        if manananggal_manifest.exists():
             try:
-                data = json.loads(bestiary_manifest.read_text(encoding="utf-8"))
+                data = json.loads(manananggal_manifest.read_text(encoding="utf-8"))
                 if len(data.get("shots", [])) > 0:
                     should_copy = False
             except Exception:
                 pass
         if should_copy:
-            bestiary_manifest.write_text(local_bestiary.read_text(encoding="utf-8"), encoding="utf-8")
-            print(f"Copied default bestiary manifest to {bestiary_manifest}")
+            try:
+                data = json.loads(local_bestiary.read_text(encoding="utf-8"))
+                data["channel"] = "bestiary"
+                manananggal_manifest.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                print(f"Copied default manananggal manifest to {manananggal_manifest}")
+            except Exception as e:
+                print(f"Failed to copy manananggal manifest: {e}")
             
-    # Copy Calluses if missing or empty
+    # Copy Leshy if missing or empty
     local_calluses = Path(WORKSPACE_ROOT) / "storyboard_manifest.calluses.json"
     if local_calluses.exists():
         should_copy = True
-        if calluses_manifest.exists():
+        if leshy_manifest.exists():
             try:
-                data = json.loads(calluses_manifest.read_text(encoding="utf-8"))
+                data = json.loads(leshy_manifest.read_text(encoding="utf-8"))
                 if len(data.get("shots", [])) > 0:
                     should_copy = False
             except Exception:
                 pass
         if should_copy:
-            calluses_manifest.write_text(local_calluses.read_text(encoding="utf-8"), encoding="utf-8")
-            print(f"Copied default calluses manifest to {calluses_manifest}")
+            try:
+                data = json.loads(local_calluses.read_text(encoding="utf-8"))
+                data["channel"] = "bestiary" # Force Leshy onto bestiary channel!
+                leshy_manifest.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                print(f"Copied default leshy manifest to {leshy_manifest}")
+            except Exception as e:
+                print(f"Failed to copy leshy manifest: {e}")
+
+    # 2. Cleanup old duplicate files to keep workspace completely clean
+    files_to_remove = [
+        gcs_root / "storyboard_manifest.json",
+        gcs_root / "bestiary" / "storyboard_manifest.json",
+        gcs_root / "calluses" / "storyboard_manifest.json",
+        WORKSPACE_ROOT / "storyboard_manifest.json",
+        WORKSPACE_ROOT / "bestiary" / "storyboard_manifest.json",
+        WORKSPACE_ROOT / "calluses" / "storyboard_manifest.json",
+    ]
+    for f in files_to_remove:
+        try:
+            if f.exists() and f.is_file():
+                f.unlink()
+                print(f"Cleanup: Removed obsolete duplicate manifest file {f}")
+        except Exception as e:
+            print(f"Cleanup warning: could not remove {f}: {e}")
+            
+    # Clean up empty calluses dir on local/GCS
+    try:
+        old_calluses_dir = gcs_root / "calluses"
+        if old_calluses_dir.exists() and old_calluses_dir.is_dir():
+            shutil.rmtree(old_calluses_dir)
+            print(f"Cleanup: Removed old calluses folder {old_calluses_dir}")
+    except Exception as e:
+        pass
 
 
 @app.on_event("startup")
@@ -1471,9 +1511,9 @@ def serve_media_files(filepath: str):
     active_dir = Path(get_active_manifest_path()).parent
 
     candidates = [
-        WORKSPACE_ROOT / clean,
         active_dir / clean,
         config.ASSETS / clean,
+        WORKSPACE_ROOT / clean,
         config.REFERENCES_DIR / clean,
         Path("/") / clean,
     ]
