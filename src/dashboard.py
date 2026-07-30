@@ -1741,19 +1741,18 @@ def set_active_video_clip(sb, shot, video_rel_path, out_dir):
 
 
 VALID_CLAUDE_MODELS = {
-    "claude-sonnet-5",
-    "claude-opus-4-8",
-    "claude-sonnet-4-6",
-    "claude-fable-5",
-    "claude-opus-5",
+    "claude-3-5-sonnet-20241022",
     "claude-3-5-sonnet-latest",
+    "claude-3-7-sonnet-20250219",
+    "claude-3-opus-20240229",
+    "claude-3-5-haiku-20241022",
 }
 
-DEFAULT_CLAUDE_MODEL = "claude-sonnet-5"
+DEFAULT_CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
 
 
 def normalize_claude_model(model_name: str | None) -> str:
-    """Normalize any Claude model string strictly to active Anthropic model endpoints."""
+    """Normalize any shorthand or custom model string strictly to valid Anthropic API model endpoints."""
     if not model_name:
         return DEFAULT_CLAUDE_MODEL
 
@@ -1762,12 +1761,14 @@ def normalize_claude_model(model_name: str | None) -> str:
     if m in VALID_CLAUDE_MODELS:
         return m
 
-    if "opus" in m or "4-8" in m or "4.8" in m:
-        return "claude-opus-4-8"
-    if "fable" in m:
-        return "claude-fable-5"
-    if "4-6" in m or "4.6" in m:
-        return "claude-sonnet-4-6"
+    if "3-7" in m or "3.7" in m:
+        return "claude-3-7-sonnet-20250219"
+    if "opus" in m:
+        return "claude-3-opus-20240229"
+    if "haiku" in m:
+        return "claude-3-5-haiku-20241022"
+    if "latest" in m:
+        return "claude-3-5-sonnet-latest"
 
     return DEFAULT_CLAUDE_MODEL
 
@@ -1776,7 +1777,14 @@ def create_claude_message(client, model, max_tokens, system, messages):
     import anthropic
     norm_model = normalize_claude_model(model)
     models_to_try = [norm_model]
-    for fb in ["claude-sonnet-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-fable-5"]:
+    fallbacks = [
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-sonnet-latest",
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-haiku-20241022",
+        "claude-3-opus-20240229"
+    ]
+    for fb in fallbacks:
         if fb not in models_to_try:
             models_to_try.append(fb)
 

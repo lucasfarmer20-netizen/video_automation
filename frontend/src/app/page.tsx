@@ -386,22 +386,32 @@ export default function WorkspacePage() {
 
   const handleDraftStoryboard = async (topic: string, beats: number | null) => {
     setLoading(true);
-    const data = await post("/api/script/generate", { topic, beats, channel: activeChannel });
-    if (data.ok) {
-      await fetchActiveProject();
-    } else {
-      alert("Draft failed: " + (data.error || "unknown error"));
+    try {
+      const data = await post("/api/script/generate", { topic, beats, channel: activeChannel });
+      if (data.ok) {
+        await fetchActiveProject();
+      } else {
+        alert("Draft failed: " + (data.error || "unknown error"));
+      }
+    } catch (e: any) {
+      alert("Draft failed: " + (e.message || "Network error"));
+    } finally {
       setLoading(false);
     }
   };
 
   const handleScriptFromChat = async (messages: any[], beats: number | null) => {
     setLoading(true);
-    const data = await post("/api/script/from_chat", { messages, beats, channel: activeChannel });
-    if (data.ok) {
-      await fetchActiveProject();
-    } else {
-      alert("Scripting failed: " + (data.error || "unknown error"));
+    try {
+      const data = await post("/api/script/from_chat", { messages, beats, channel: activeChannel });
+      if (data.ok) {
+        await fetchActiveProject();
+      } else {
+        alert("Scripting failed: " + (data.error || "unknown error"));
+      }
+    } catch (e: any) {
+      alert("Scripting failed: " + (e.message || "Network error"));
+    } finally {
       setLoading(false);
     }
   };
