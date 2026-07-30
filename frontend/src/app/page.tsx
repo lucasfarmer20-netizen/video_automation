@@ -22,6 +22,7 @@ import KnobsSidebar from "../components/KnobsSidebar";
 import VesperChat from "../components/VesperChat";
 import BeatCard from "../components/BeatCard";
 import FlowCanvas from "../components/FlowCanvas";
+import VoiceStudioModal from "../components/VoiceStudioModal";
 
 // Setup API URL mapping
 const API_BASE = typeof window !== "undefined"
@@ -82,6 +83,7 @@ export default function WorkspacePage() {
   const [jobs, setJobs] = useState<Record<string, Job>>({});
   const [chatHistory, setChatHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [voiceStudioOpen, setVoiceStudioOpen] = useState(false);
 
   // Helper: media url resolver
   const mediaUrl = useCallback((path: string) => {
@@ -230,14 +232,19 @@ export default function WorkspacePage() {
     }
   };
 
-  const handleRegenStill = async (sceneId: string, btn: HTMLButtonElement) => {
+  const handleRegenStill = async (sceneId: string, btn?: HTMLButtonElement | null) => {
     if (!confirm("⚠️ PAID: Still generation calls fal.ai. Continue?")) return;
-    btn.disabled = true;
-    const oldText = btn.textContent;
-    btn.textContent = "Generating...";
+    let oldText = "";
+    if (btn) {
+      btn.disabled = true;
+      oldText = btn.textContent || "";
+      btn.textContent = "Generating...";
+    }
     const data = await post(`/api/regenerate/${sceneId}`);
-    btn.disabled = false;
-    btn.textContent = oldText;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
     if (data.ok) {
       fetchActiveProject();
     } else {
@@ -495,7 +502,15 @@ export default function WorkspacePage() {
             </button>
           </div>
 
-          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold select-none ${
+          <button
+            onClick={() => setVoiceStudioOpen(true)}
+            className="bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 text-amber-400 font-bold px-3 py-1.5 rounded-lg transition text-xs flex items-center gap-1.5 shadow-sm"
+          >
+            <Volume2 className="w-3.5 h-3.5 text-amber-500" />
+            <span>Voice Studio</span>
+          </button>
+          
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-mono font-bold select-none ${
             project.storyboard_approved
               ? "border-emerald-500/20 bg-emerald-950/20 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.05)]"
               : "border-zinc-850 bg-zinc-900/40 text-zinc-550"
@@ -661,7 +676,16 @@ export default function WorkspacePage() {
           {/* Workflow Graph View (React Flow) */}
           {activeView === "canvas" ? (
             <div className="h-[550px] w-full shrink-0">
-              <FlowCanvas shots={project.shots} mediaUrl={mediaUrl} />
+              <FlowCanvas
+                shots={project.shots}
+                mediaUrl={mediaUrl}
+                onUpdateDuration={(sceneId, dur) => handleUpdateField(sceneId, "camera", { move: "push_in", duration: dur, speed: 1.0 })}
+                onRegenerate={(sceneId) => handleRegenStill(sceneId)}
+                onGenerateSFX={async (sceneId) => {
+                  await post(`/api/audio/sfx/${sceneId}`);
+                  fetchActiveProject();
+                }}
+              />
             </div>
           ) : (
             /* Storyboard Timeline Cards Grid */
@@ -742,6 +766,12 @@ export default function WorkspacePage() {
         </div>
 
       </div>
+      {/* Voice Studio Modal */}
+      <VoiceStudioModal
+        isOpen={voiceStudioOpen}
+        onClose={() => setVoiceStudioOpen(false)}
+        post={post}
+      />
     </div>
   );
 }

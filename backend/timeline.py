@@ -106,6 +106,22 @@ def _make_resolve_compatible(path: Path, width: int, height: int, event_name: st
         event = ET.SubElement(ET.SubElement(root, "library"), "event")
         event.set("name", event_name or "The Illuminated Bestiary")
         event.append(proj)
+        
+    # Add DaVinci Resolve markers to video clips
+    for clip in root.iter("clip"):
+        name = clip.get("name", "")
+        if name and not clip.find("marker"):
+            marker = ET.SubElement(clip, "marker")
+            marker.set("start", "0s")
+            marker.set("duration", "1s")
+            marker.set("value", f"Beat {name}")
+            if "hero" in name.lower() or "video" in name.lower():
+                marker.set("color", "blue")
+            elif "sfx" in name.lower():
+                marker.set("color", "amber")
+            elif "vo" in name.lower():
+                marker.set("color", "green")
+
     body = ET.tostring(root, encoding="unicode")
     path.write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n\n' + body + "\n",

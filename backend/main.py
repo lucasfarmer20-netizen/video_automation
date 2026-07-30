@@ -1580,7 +1580,16 @@ def run_assemble_endpoint(stage: str):
         elif stage == "render":
             if not sb.storyboard_approved:
                 return JSONResponse(status_code=400, content={"ok": False, "error": "Approve the storyboard first."})
-            fn = lambda: generate_fal_and_render(sb)
+            def fn():
+                generate_fal_and_render(sb)
+                # Auto-generate ambient SFX for all beats in the batch render pass
+                sfx_dir = config.ASSETS / "sfx"
+                sfx_dir.mkdir(parents=True, exist_ok=True)
+                for shot in sb.shots:
+                    if shot.sfx:
+                        dest = sfx_dir / f"{shot.scene_id}.mp3"
+                        if not dest.exists():
+                            audio.generate_sfx_fal(shot.sfx, dest, duration_seconds=shot.camera.duration)
             
         elif stage == "preview":
             fn = lambda: timeline.build_preview(sb)
@@ -1594,6 +1603,65 @@ def run_assemble_endpoint(stage: str):
         if start_job(stage, fn):
             return {"ok": True, "stage": stage}
         return JSONResponse(status_code=409, content={"ok": False, "error": f"{stage} already running"})
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/voice/design")
+async def voice_design_endpoint(request: Request):
+    try:
+        data = await request.json()
+        gender = data.get("gender", "male")
+        age = data.get("age", "middle_aged")
+        accent = data.get("accent", "american")
+        description = data.get("description", "A low-pitched raspy documentary narrator")
+        sample_text = data.get("sample_text", "")
+        
+        res = audio.generate_voice_design_elevenlabs(gender, age, accent, description, sample_text)
+        return {"ok": True, "voice": res}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/voice/settings")
+async def voice_settings_endpoint(request: Request):
+    try:
+        data = await request.json()
+        if "voice_id" in data:
+            config.ELEVENLABS_VOICE_ID = str(data["voice_id"]).strip()
+        if "stability" in data:
+            config.ELEVENLABS_STABILITY = float(data["stability"])
+        if "style_exaggeration" in data:
+            config.ELEVENLABS_STYLE_EXAGGERATION = float(data["style_exaggeration"])
+        return {
+            "ok": True,
+            "voice_id": config.ELEVENLABS_VOICE_ID,
+            "stability": config.ELEVENLABS_STABILITY,
+            "style_exaggeration": config.ELEVENLABS_STYLE_EXAGGERATION
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/audio/sfx/{scene_id}")
+async def single_sfx_endpoint(scene_id: str):
+    try:
+        sb = get_current_project()
+        shot = next((s for s in sb.shots if s.scene_id == scene_id), None)
+        if not shot:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        if not shot.sfx:
+            raise HTTPException(status_code=400, detail="No SFX prompt set for this scene")
+            
+        sfx_dir = config.ASSETS / "sfx"
+        sfx_dir.mkdir(parents=True, exist_ok=True)
+        dest = sfx_dir / f"{scene_id}.mp3"
+        
+        out_path = audio.generate_sfx_fal(shot.sfx, dest, duration_seconds=shot.camera.duration)
+        rel = _safe_rel_path(out_path)
+        return {"ok": True, "path": rel}
     except HTTPException as he:
         raise he
     except Exception as e:

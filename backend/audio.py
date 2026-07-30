@@ -219,27 +219,65 @@ def generate_sfx(prompt: str, dest: Path, duration_seconds: float | None = None,
     return _write_stream(stream, Path(dest))
 
 
-def generate_shot_sfx(storyboard: Storyboard | None = None,
-                      only: set[str] | None = None) -> list[Path]:
-    """Generate a sound effect for every beat that carries an ``sfx`` prompt."""
-    sb = storyboard or load()
-    sfx_dir = config.episode_paths(sb.title)["sfx"]
-    out: list[Path] = []
-    for shot in sb.shots:
-        if only and shot.scene_id not in only:
-            continue
-        prompt = (shot.sfx or "").strip()
-        if not prompt:
-            continue
-        dest = sfx_dir / f"{shot.scene_id}.mp3"
-        if dest.exists():
-            print(f"{shot.scene_id}: sfx exists — skipping.")
-            out.append(dest)
-            continue
-        dur = shot.camera.duration if shot.camera else None
-        print(f"SFX {shot.scene_id}: {prompt[:56]}...")
-        out.append(generate_sfx(prompt, dest, duration_seconds=dur))
-    return out
+def generate_sfx_fal(prompt: str, dest: Path, duration_seconds: float | None = None) -> Path:
+    """Generate ambient sound effects using Fal.ai (fal-ai/stable-audio)."""
+    import fal_client
+    import requests
+    
+    config.require_for("assets")
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    
+    dur = min(float(duration_seconds or 10.0), 47.0)
+    print(f"Generating Fal SFX ({dur:.1f}s) for prompt: '{prompt}'...")
+    
+    try:
+        res = fal_client.subscribe(
+            "fal-ai/stable-audio",
+            arguments={
+                "prompt": prompt,
+                "seconds_total": int(dur),
+                "steps": 100
+            }
+        )
+        
+        audio_url = res.get("audio_file", {}).get("url")
+        if not audio_url:
+            raise RuntimeError("Fal Stable Audio returned no audio URL")
+            
+        r = requests.get(audio_url, timeout=60)
+        r.raise_for_status()
+        dest.write_bytes(r.content)
+        print(f"Wrote Fal SFX to {dest}")
+        return dest
+    except Exception as e:
+        print(f"Fal SFX generation failed ({e}); falling back to local empty placeholder audio.")
+        dest.write_bytes(b"")
+        return dest
+
+
+def generate_voice_design_elevenlabs(gender: str, age: str, accent: str, description: str, sample_text: str = "") -> dict:
+    """Generate a unique synthetic voice using ElevenLabs Voice Design API (no audio uploads needed)."""
+    import requests
+    config.require_for("audio")
+    
+    url = "https://api.elevenlabs.io/v1/voice-generation/generate-voice"
+    headers = {
+        "xi-api-key": config.ELEVENLABS_API_KEY,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "gender": gender,
+        "age": age,
+        "accent": accent,
+        "accent_strength": 1.0,
+        "text": sample_text or "In the central islands of the Philippines, the historical field reports don't vary.",
+        "voice_description": description
+    }
+    
+    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    resp.raise_for_status()
+    return resp.json()
 
 
 # --------------------------------------------------------------------------- #
