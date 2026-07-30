@@ -10,13 +10,13 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, List, Optional
-from google.cloud import firestore
-
-# Initialize Firestore
-if os.path.exists("lucas-pipeline-2026-v1-ec3e767f8c46.json"):
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "lucas-pipeline-2026-v1-ec3e767f8c46.json"
-
-db = firestore.Client()
+try:
+    from google.cloud import firestore
+    if os.path.exists("lucas-pipeline-2026-v1-ec3e767f8c46.json"):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "lucas-pipeline-2026-v1-ec3e767f8c46.json"
+    db = firestore.Client()
+except Exception:
+    db = None
 
 MANIFEST_VERSION = 1
 
