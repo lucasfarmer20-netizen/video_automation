@@ -1538,10 +1538,12 @@ async def generate_script_endpoint(request: Request):
             raise HTTPException(status_code=400, detail="Topic is required")
 
         def run_draft():
+            pipeline_worker.log_job("script_draft", f"Generating AI script for topic: '{topic}'...")
             new_sb = script.generate_script(topic, num_beats=beats, channel=channel)
             new_sb.id = sb.id
             new_sb.title = sb.title
             save_current_project(new_sb)
+            pipeline_worker.log_job("script_draft", f"Saved project '{new_sb.title}' with {len(new_sb.shots)} beats to workspace!")
 
         started = start_job("script_draft", run_draft)
         if not started:

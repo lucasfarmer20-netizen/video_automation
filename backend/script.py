@@ -293,13 +293,22 @@ def _parse_json_robust(raw_text: str) -> dict:
         return json.loads(repaired)
 
 
+def _log(msg: str):
+    print(msg)
+    try:
+        from .pipeline_worker import log_job
+        log_job("script_draft", msg)
+    except Exception:
+        pass
+
+
 def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anthropic, system_prompt: str) -> Storyboard:
     from . import config
     if not client:
         api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_KEY") or getattr(config, "ANTHROPIC_API_KEY", None)
         if not api_key:
             raise RuntimeError("Missing Anthropic API Key! Please verify CLAUDE_API_KEY secret in Cloud Run.")
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(api_key=api_key, timeout=45.0)
     
     norm_req = normalize_claude_model(model)
     models_to_try = [norm_req]
@@ -320,7 +329,7 @@ def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anth
     last_exc = None
     for m in models_to_try:
         try:
-            print(f"Trying script draft with model: {m}...")
+            _log(f"Requesting script draft from Claude model: {m}...")
             import copy
             fallback_messages = copy.deepcopy(messages)
             json_instruction = (
@@ -336,12 +345,16 @@ def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anth
                 max_tokens=4096,
                 system=system_prompt,
                 messages=fallback_messages,
+                timeout=45.0,
             )
+            _log(f"Received response from {m}, parsing storyboard JSON...")
             raw_text = next((b.text for b in response.content if hasattr(b, "text") and b.text), "").strip()
             data = _parse_json_robust(raw_text)
-            return _beats_to_storyboard(data)
+            sb = _beats_to_storyboard(data)
+            _log(f"Successfully drafted storyboard '{sb.title}' with {len(sb.shots)} beats!")
+            return sb
         except Exception as exc:
-            print(f"Script draft model {m} failed: {exc}")
+            _log(f"Claude model {m} attempt failed: {exc}")
             if first_exc is None:
                 first_exc = exc
             last_exc = exc
