@@ -1538,12 +1538,12 @@ async def generate_script_endpoint(request: Request):
             raise HTTPException(status_code=400, detail="Topic is required")
 
         def run_draft():
-            pipeline_worker.log_job("script_draft", f"Generating AI script for topic: '{topic}'...")
+            log_job("script_draft", f"Generating AI script for topic: '{topic}'...")
             new_sb = script.generate_script(topic, num_beats=beats, channel=channel)
             new_sb.id = sb.id
             new_sb.title = sb.title
             save_current_project(new_sb)
-            pipeline_worker.log_job("script_draft", f"Saved project '{new_sb.title}' with {len(new_sb.shots)} beats to workspace!")
+            log_job("script_draft", f"Saved project '{new_sb.title}' with {len(new_sb.shots)} beats to workspace!")
 
         started = start_job("script_draft", run_draft)
         if not started:
@@ -1566,10 +1566,12 @@ async def script_from_chat_endpoint(request: Request):
         channel = data.get("channel") or sb.channel or "bestiary"
 
         def run_chat_draft():
+            log_job("script_draft", f"Generating AI script from chat conversation...")
             new_sb = script.generate_script_from_messages(messages, num_beats=beats, channel=channel)
             new_sb.id = sb.id
             new_sb.title = sb.title
             save_current_project(new_sb)
+            log_job("script_draft", f"Saved project '{new_sb.title}' with {len(new_sb.shots)} beats to workspace!")
 
         started = start_job("script_draft", run_chat_draft)
         if not started:
