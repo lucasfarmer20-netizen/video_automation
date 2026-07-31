@@ -87,20 +87,26 @@ def save_characters(chars: dict) -> None:
 def generate_anchor(name: str, spec: dict, model: str | None = None, client=None) -> str:
     """Distill a character's description into a style-agnostic structural anchor."""
     config.require_for("script")  # anchors are a Claude (text) call
-    import anthropic
 
-    from .script import DEFAULT_MODEL, normalize_claude_model
+    from .script import DEFAULT_MODEL, _client
 
-    client = client or anthropic.Anthropic()
+    # ``normalize_claude_model`` was removed when the Anthropic call was
+    # modernised; model IDs are now used exactly as configured. Going through
+    # ``script._client`` also picks up CLAUDE_API_KEY, which is the name the
+    # Cloud Run secret is mounted under.
+    client = _client(client)
     desc = (spec.get("description") or "").strip()
-    norm_model = normalize_claude_model(model or DEFAULT_MODEL)
+    # An anchor is a short paragraph, but thinking is on by default on Opus 5 and
+    # is billed against this same ceiling — a 400-token budget truncated the
+    # answer before any text was produced.
     resp = client.messages.create(
-        model=norm_model, max_tokens=400, system=ANCHOR_SYSTEM,
+        model=model or DEFAULT_MODEL, max_tokens=4000, system=ANCHOR_SYSTEM,
         messages=[{
             "role": "user",
             "content": f"Character: {name}\n\nDescription:\n{desc}\n\n"
                        "Write the Structural Feature Anchor.",
         }],
+        output_config={"effort": "low"},
     )
     return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text").strip()
 

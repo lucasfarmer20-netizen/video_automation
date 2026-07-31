@@ -25,6 +25,19 @@ steps:
       - '1'
       - '--port'
       - '8080'
+      # Script drafting, narration and rendering all run in background threads
+      # (see backend/pipeline_worker.py) and only write the manifest when they
+      # finish. Cloud Run's default is to throttle CPU to ~0 the moment a request
+      # returns, so those threads were being frozen mid-generation and the work
+      # was silently lost -- the job never completed and nothing was ever saved.
+      # CPU-always-allocated keeps them running between requests.
+      - '--no-cpu-throttling'
+      # A 32k-token draft plus librosa/moviepy/onnxruntime does not fit the
+      # 512Mi / 1 vCPU default; an OOM kill looks exactly like a lost job.
+      - '--cpu'
+      - '2'
+      - '--memory'
+      - '4Gi'
       - '--add-volume=name=media-storage,type=cloud-storage,bucket=lucas-storyboard-vault-001-483921'
       - '--add-volume-mount=volume=media-storage,mount-path=/gcs'
       # Every paid stage needs its key. Without FAL_KEY the image/video stages

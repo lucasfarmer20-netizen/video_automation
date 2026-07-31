@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Folder,
   Sliders,
@@ -85,6 +85,9 @@ export default function WorkspacePage() {
   // pollJobs replaces `jobs` wholesale every 3s from the server, which would
   // otherwise resurrect a banner the user just dismissed.
   const [jobs, setJobs] = useState<Record<string, Job>>({});
+  // Last known script_draft status, readable from the polling interval (which
+  // closes over the initial `jobs` value and so cannot see current state).
+  const scriptDraftStatus = useRef<string | undefined>(undefined);
   const [dismissedErrors, setDismissedErrors] = useState<Record<string, string>>({});
   const [chatHistory, setChatHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -140,18 +143,40 @@ export default function WorkspacePage() {
     try {
       const res = await fetch(`${API_BASE}/api/assemble/status`);
       const data = await res.json();
-      if (data.ok) {
-        setJobs((prevJobs: any) => {
-          const newJobs = data.jobs;
-          if (prevJobs?.script_draft?.status === "running" && newJobs?.script_draft?.status === "done") {
-            fetchActiveProject();
-            fetchProjects();
-          }
-          if (prevJobs?.script_draft?.status === "running" && newJobs?.script_draft?.status === "error") {
-            alert("⚠️ Script drafting failed! Review the error log at the top of your workspace.");
-          }
-          return newJobs;
-        });
+      if (!data.ok) return;
+
+      const serverJobs = data.jobs || {};
+      const prevStatus = scriptDraftStatus.current;
+
+      // The job registry lives in the server process's memory, so a Cloud Run
+      // cold start wipes it. Previously the running job just disappeared from
+      // the UI with no error, which is indistinguishable from "the script I
+      // generated never saved" — say so instead of silently dropping it.
+      const nextJobs =
+        prevStatus === "running" && !serverJobs.script_draft
+          ? {
+              ...serverJobs,
+              script_draft: {
+                status: "error",
+                log:
+                  "The server restarted while drafting, so this draft was lost " +
+                  "before it could be saved. Re-run it."
+              }
+            }
+          : serverJobs;
+
+      scriptDraftStatus.current = nextJobs.script_draft?.status;
+      setJobs(nextJobs);
+
+      // Side effects stay outside the state updater — React may run an updater
+      // more than once, which would fire these twice.
+      if (prevStatus === "running") {
+        if (nextJobs.script_draft?.status === "done") {
+          fetchActiveProject();
+          fetchProjects();
+        } else if (nextJobs.script_draft?.status === "error") {
+          alert("⚠️ Script drafting failed! Review the error log at the top of your workspace.");
+        }
       }
     } catch (e) {
       console.error("Failed to poll background jobs", e);
@@ -179,6 +204,16 @@ export default function WorkspacePage() {
     return key ? { ...base, "X-Studio-Key": key } : base;
   };
 
+  const promptForStudioKey = () => {
+    if (typeof window === "undefined") return false;
+    const entered = window.prompt(
+      "This studio requires an access key (STUDIO_API_KEY). Enter it to continue:"
+    );
+    if (!entered?.trim()) return false;
+    window.localStorage.setItem("studioKey", entered.trim());
+    return true;
+  };
+
   const parseError = async (res: Response) => {
     const text = await res.text();
     let errMsg = `Server error (${res.status} ${res.statusText})`;
@@ -188,26 +223,25 @@ export default function WorkspacePage() {
     } catch {
       if (text) errMsg += `: ${text.slice(0, 150)}`;
     }
-    if (res.status === 401 && typeof window !== "undefined") {
-      const entered = window.prompt(
-        "This studio requires an access key (STUDIO_API_KEY). Enter it to continue:"
-      );
-      if (entered) {
-        window.localStorage.setItem("studioKey", entered);
-        errMsg = "Access key saved — retry that action.";
-      }
+    if (res.status === 401) {
+      errMsg = "Access key missing or rejected — re-enter it and try again.";
     }
     return { ok: false, error: errMsg };
   };
 
-  // Post helper
-  const post = async (url: string, body: any = {}) => {
+  // Every mutating call goes through here. On a 401 it prompts for the studio
+  // key and replays the request once: prompting *without* replaying meant the
+  // action that triggered the prompt always reported failure, even though the
+  // key had just been saved and a manual retry would have worked.
+  const sendWithKey = async (
+    url: string,
+    build: (headers: Record<string, string>) => RequestInit
+  ) => {
     try {
-      const res = await fetch(`${API_BASE}${url}`, {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify(body)
-      });
+      let res = await fetch(`${API_BASE}${url}`, build(authHeaders()));
+      if (res.status === 401 && promptForStudioKey()) {
+        res = await fetch(`${API_BASE}${url}`, build(authHeaders()));
+      }
       if (!res.ok) return await parseError(res);
       return await res.json();
     } catch (err: any) {
@@ -215,21 +249,21 @@ export default function WorkspacePage() {
     }
   };
 
-  // Multipart upload helper — same auth + error handling as `post`.
-  const postFile = async (url: string, file: File) => {
+  // Post helper
+  const post = (url: string, body: any = {}) =>
+    sendWithKey(url, (headers) => ({
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }));
+
+  // Multipart upload helper — same auth + error handling as `post`. The browser
+  // sets the multipart Content-Type (with its boundary) itself, so it is never
+  // added here.
+  const postFile = (url: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    try {
-      const res = await fetch(`${API_BASE}${url}`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: fd
-      });
-      if (!res.ok) return await parseError(res);
-      return await res.json();
-    } catch (err: any) {
-      return { ok: false, error: err.message || "Network request failed" };
-    }
+    return sendWithKey(url, (headers) => ({ method: "POST", headers, body: fd }));
   };
 
   // Action handlers
@@ -444,6 +478,7 @@ export default function WorkspacePage() {
 
   const handleDraftStoryboard = async (topic: string, beats: number | null) => {
     try {
+      scriptDraftStatus.current = "running";
       setJobs((prev: any) => ({
         ...prev,
         script_draft: { status: "running", log: "Vesper is starting your documentary script draft..." }
@@ -452,10 +487,12 @@ export default function WorkspacePage() {
       if (data.ok) {
         pollJobs();
       } else {
+        scriptDraftStatus.current = "error";
         setJobs((prev: any) => ({ ...prev, script_draft: { status: "error", log: data.error || "Draft failed to start" } }));
         alert("Draft failed: " + (data.error || "unknown error"));
       }
     } catch (e: any) {
+      scriptDraftStatus.current = "error";
       setJobs((prev: any) => ({ ...prev, script_draft: { status: "error", log: e.message || "Network error" } }));
       alert("Draft failed: " + (e.message || "Network error"));
     }
@@ -463,6 +500,7 @@ export default function WorkspacePage() {
 
   const handleScriptFromChat = async (messages: any[], beats: number | null) => {
     try {
+      scriptDraftStatus.current = "running";
       setJobs((prev: any) => ({
         ...prev,
         script_draft: { status: "running", log: "Vesper is converting your chat into a storyboard..." }
@@ -471,10 +509,12 @@ export default function WorkspacePage() {
       if (data.ok) {
         pollJobs();
       } else {
+        scriptDraftStatus.current = "error";
         setJobs((prev: any) => ({ ...prev, script_draft: { status: "error", log: data.error || "Draft failed to start" } }));
         alert("Draft failed: " + (data.error || "unknown error"));
       }
     } catch (e: any) {
+      scriptDraftStatus.current = "error";
       setJobs((prev: any) => ({ ...prev, script_draft: { status: "error", log: e.message || "Network error" } }));
       alert("Draft failed: " + (e.message || "Network error"));
     }
