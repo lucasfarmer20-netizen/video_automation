@@ -198,55 +198,86 @@ def save_current_project(sb: Storyboard):
 
 
 def _scan_projects() -> list[dict]:
-    """Discover all storyboard_manifest.json projects under WORKSPACE_ROOT and GCS."""
+    """Discover storyboard_manifest.json projects, one entry per real project.
+
+    Scans the GCS mount when it exists and the workspace otherwise — never both.
+    On Cloud Run the container also carries the repo's committed manifests
+    (storyboard_manifest.json, bestiary/, calluses/), which are seed data, not
+    projects; scanning both roots listed each of them a second time. That is what
+    produced three Manananggal entries and a stray Leshy under Calluses. The
+    previous code hid it by deleting those files on every cold start, which also
+    deleted real project state.
+    """
     active = Path(get_active_manifest_path()).resolve()
-    
-    roots = [WORKSPACE_ROOT.resolve()]
-    gcs_root = Path("/gcs").resolve()
-    if gcs_root.exists() and gcs_root not in roots:
-        roots.append(gcs_root)
-        
+
+    gcs_root = Path("/gcs")
+    roots = [gcs_root.resolve()] if gcs_root.exists() else [WORKSPACE_ROOT.resolve()]
+
     projects: list[dict] = []
+    seen: set[Path] = set()
     for root in roots:
         for dirpath, dirnames, filenames in os.walk(root):
-            # Prune assets, references, source, and hidden dirs to avoid heavy scans
-            dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and d not in ("assets", "references", "source") and not d.startswith(".")]
-            if "storyboard_manifest.json" in filenames:
-                mf = Path(dirpath) / "storyboard_manifest.json"
-                
+            here = Path(dirpath)
+            # A manifest sitting directly at a scan root is legacy seed data, not
+            # a project — real projects live in their own directory. It must not
+            # count as a project dir for pruning either, or a stray root manifest
+            # prunes the top-level assets/ tree that new_project writes into.
+            is_project_dir = (
+                "storyboard_manifest.json" in filenames and here.resolve() != root
+            )
+            # Prune heavy/irrelevant subtrees. "assets" is only pruned inside a
+            # project directory — a top-level /gcs/assets is where new_project
+            # puts things, so pruning it unconditionally hid those projects.
+            skip = set(IGNORE_DIRS) | {"references", "source"}
+            if is_project_dir:
+                skip.add("assets")
+            dirnames[:] = [d for d in dirnames if d not in skip and not d.startswith(".")]
+
+            if is_project_dir:
+                mf = here / "storyboard_manifest.json"
+                resolved = mf.resolve()
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+
                 folder_name = mf.parent.name
-                if mf.parent == root:
-                    folder_name = "Cloud GCS (root)" if root == gcs_root else "Local App (root)"
-                
+
                 name = ""
-                channel = "bestiary"
-                if "calluses" in str(mf.resolve()).lower():
-                    channel = "calluses"
+                channel = "calluses" if "calluses" in str(resolved).lower() else "bestiary"
+                beats_count = 0
+                script_locked = False
+                storyboard_approved = False
                 try:
-                    if mf.exists():
-                        manifest_data = json.loads(mf.read_text(encoding="utf-8"))
-                        name = (manifest_data.get("title") or "").strip()
-                        if "channel" in manifest_data:
-                            channel = manifest_data.get("channel") or channel
-                except Exception:
-                    pass
+                    manifest_data = json.loads(mf.read_text(encoding="utf-8"))
+                    name = (manifest_data.get("title") or "").strip()
+                    if "channel" in manifest_data:
+                        channel = manifest_data.get("channel") or channel
+                    # Read the counts straight off the manifest. Firestore may
+                    # override them later, but it is not the only source of
+                    # truth — projects that were never bootstrapped into it were
+                    # showing "0 beats" despite a full storyboard on disk.
+                    beats_count = len(manifest_data.get("shots") or [])
+                    script_locked = bool(manifest_data.get("script_locked", False))
+                    storyboard_approved = bool(manifest_data.get("storyboard_approved", False))
+                except Exception as exc:
+                    print(f"Warning: could not read {resolved}: {exc}")
                 if not name:
                     name = folder_name
 
                 try:
-                    rel_display = mf.relative_to(WORKSPACE_ROOT.resolve())
+                    rel_display = resolved.relative_to(root)
                 except ValueError:
-                    try:
-                        rel_display = mf.relative_to(gcs_root)
-                    except ValueError:
-                        rel_display = mf.name
+                    rel_display = Path(mf.name)
 
                 projects.append({
                     "name": name,
-                    "rel": str(mf.resolve()).replace("\\", "/"),
+                    "rel": str(resolved).replace("\\", "/"),
                     "rel_display": str(rel_display).replace("\\", "/"),
-                    "active": mf.resolve() == active,
+                    "active": resolved == active,
                     "channel": channel,
+                    "beats_count": beats_count,
+                    "script_locked": script_locked,
+                    "storyboard_approved": storyboard_approved,
                 })
     projects.sort(key=lambda p: p["name"].lower())
     return projects
@@ -599,17 +630,18 @@ def get_projects(channel: Optional[str] = None):
         
         res = []
         for p in scanned:
+            # _scan_projects already filled these from the manifest on disk;
+            # Firestore refines them only where it actually has a value, so an
+            # unreachable or un-bootstrapped Firestore no longer zeroes the UI.
             f_id = get_project_id_from_path(p["rel"])
-            if f_id in db_map:
-                p["name"] = db_map[f_id].get("title") or p["name"]
-                p["channel"] = db_map[f_id].get("channel") or p["channel"]
-                p["beats_count"] = db_map[f_id].get("beats_count", 0)
-                p["script_locked"] = db_map[f_id].get("script_locked", False)
-                p["storyboard_approved"] = db_map[f_id].get("storyboard_approved", False)
-            else:
-                p["beats_count"] = 0
-                p["script_locked"] = False
-                p["storyboard_approved"] = False
+            doc = db_map.get(f_id)
+            if doc:
+                p["name"] = doc.get("title") or p["name"]
+                p["channel"] = doc.get("channel") or p["channel"]
+                if doc.get("beats_count"):
+                    p["beats_count"] = doc["beats_count"]
+                p["script_locked"] = doc.get("script_locked", p["script_locked"])
+                p["storyboard_approved"] = doc.get("storyboard_approved", p["storyboard_approved"])
             res.append(p)
             
         if channel:
