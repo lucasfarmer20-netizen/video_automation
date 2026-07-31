@@ -492,11 +492,7 @@ def generate_for_shot(
     for i, url in enumerate(gen_urls):
         dest = config.ASSETS / shot.scene_id / f"var_{ts}_{i}.png"
         _download(url, dest)
-        try:
-            rel = str(dest.relative_to(config.ROOT)).replace("\\", "/")
-        except ValueError:
-            rel = str(dest).replace("\\", "/").lstrip("/")
-        rel_paths.append(rel)
+        rel_paths.append(config.rel_media_path(dest))
 
     existing = list(shot.draft_variations or [])
     new_start_idx = len(existing)

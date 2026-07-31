@@ -315,10 +315,8 @@ def _resolve_local_image_file(path_str: str | None, scene_id: str | None = None)
 
 
 def _safe_rel_path(dest: Path) -> str:
-    try:
-        return str(dest.relative_to(config.ROOT)).replace("\\", "/")
-    except ValueError:
-        return str(dest).replace("\\", "/").lstrip("/")
+    """Manifest-relative path for a file on disk. Thin alias over the shared helper."""
+    return config.rel_media_path(dest)
 
 
 CHAT_MAX_TOKENS = 8000

@@ -39,14 +39,17 @@ def set_active_manifest(path: Path | str) -> None:
     global MANIFEST_PATH, ASSETS, REFERENCES_DIR, REFERENCES_CONFIG, CHARACTERS_CONFIG
     p = Path(path).resolve()
     MANIFEST_PATH = p
-    
-    # Check if we should override assets directory based on environment variables
-    env_assets = os.environ.get("ASSETS_DIR")
-    if env_assets:
-        ASSETS = Path(env_assets).resolve()
-    else:
-        ASSETS = p.parent / "assets"
-        
+
+    # Assets are ALWAYS derived from the manifest location. There used to be an
+    # ASSETS_DIR env override here, and because it was applied unconditionally it
+    # pinned every project to one shared directory: with ASSETS_DIR=/gcs/assets
+    # deployed, all three projects wrote their beats into /gcs/assets/<scene_id>/,
+    # so s001 of the Manananggal, the Leshy and MichaelHeney all landed in the
+    # same folder. A per-project path is the whole point of set_active_manifest;
+    # a global override defeats it.
+    ASSETS = p.parent / "assets"
+
+
     REFERENCES_DIR = p.parent / "references"
     REFERENCES_CONFIG = p.parent / "references.json"
     CHARACTERS_CONFIG = p.parent / "characters.json"
@@ -198,6 +201,27 @@ def is_within_media_roots(path: Path) -> bool:
     if target.suffix.lower() not in MEDIA_SUFFIXES:
         return False
     return any(root in target.parents for root in media_roots())
+
+
+def rel_media_path(dest: Path) -> str:
+    """The path to store in a manifest for a file on disk.
+
+    Tries the active project directory first, then the repo root. Both callers
+    used to try ROOT only, which on Cloud Run (ROOT=/app, media under /gcs) fell
+    through to a bare lstrip("/") and produced references like
+    ``gcs/assets/s002/var_x.png`` -- neither project-relative nor absolute, and
+    meaningless once the project moves.
+    """
+    try:
+        target = Path(dest).resolve()
+    except OSError:
+        target = Path(dest)
+    for base in (MANIFEST_PATH.parent, ROOT):
+        try:
+            return str(target.relative_to(Path(base).resolve())).replace("\\", "/")
+        except (ValueError, OSError):
+            continue
+    return str(target).replace("\\", "/").lstrip("/")
 
 
 def resolve_media(path_str: str | None, scene_id: str | None = None) -> Path | None:

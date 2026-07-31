@@ -252,18 +252,20 @@ def _main() -> None:
     # 2. Determine base directory (Use Cloud Storage FUSE path if on Cloud Run)
     base_dir = "/gcs" if os.environ.get("K_SERVICE") else "."
     
-    # 3. isolate paths so projects never overwrite each other
-    MANIFEST_PATH = f"{base_dir}/projects/{args.channel}/{args.project}/storyboard_manifest.json"
-    ASSETS_DIR = f"{base_dir}/projects/{args.channel}/{args.project}/assets"
-    
-    # Ensure directories exist before pipeline execution
+    # 3. Isolate paths so projects never overwrite each other. This must match
+    #    where the studio puts projects (<root>/<channel>/<name>/) or the CLI and
+    #    the web UI end up looking at two different sets of projects.
+    MANIFEST_PATH = f"{base_dir}/{args.channel}/{args.project}/storyboard_manifest.json"
+    ASSETS_DIR = f"{base_dir}/{args.channel}/{args.project}/assets"
+
     os.makedirs(os.path.dirname(MANIFEST_PATH), exist_ok=True)
     os.makedirs(ASSETS_DIR, exist_ok=True)
-    
-    # Set these BEFORE any backend module is imported — backend.config reads them
-    # at import time to pick the active manifest.
+
+    # Set this BEFORE any backend module is imported — backend.config reads it at
+    # import time to pick the active manifest. ASSETS is derived from the
+    # manifest location, so there is deliberately no ASSETS_DIR env var: setting
+    # one globally is what made every project share a single asset directory.
     os.environ["MANIFEST_PATH"] = MANIFEST_PATH
-    os.environ["ASSETS_DIR"] = ASSETS_DIR
     
     # Check if we are running in a Cloud Run environment to bind to the correct host address
     target_host = "0.0.0.0" if os.environ.get("K_SERVICE") else args.host
