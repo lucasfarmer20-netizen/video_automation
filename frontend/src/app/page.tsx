@@ -139,6 +139,9 @@ export default function WorkspacePage() {
             fetchActiveProject();
             fetchProjects();
           }
+          if (prevJobs?.script_draft?.status === "running" && newJobs?.script_draft?.status === "error") {
+            alert("⚠️ Script drafting failed! Review the error log at the top of your workspace.");
+          }
           return newJobs;
         });
       }
@@ -817,6 +820,51 @@ export default function WorkspacePage() {
               {Object.entries(jobs).map(([stage, job]) => job.status === "running" && job.log && (
                 <div key={stage} className="text-[11px] font-mono text-zinc-400 truncate bg-zinc-950/60 px-3 py-1.5 rounded-lg border border-zinc-900">
                   <span className="text-amber-500 font-bold">[{stage.toUpperCase()}]</span> {job.log.trim().split("\n").pop()}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Job Failure / Error Alert Banner */}
+          {Object.entries(jobs).some(([_, j]) => j.status === "error") && (
+            <div className="bg-red-950/50 border border-red-500/50 rounded-xl p-4 mb-6 shadow-2xl backdrop-blur-md relative overflow-hidden">
+              <div className="flex items-center justify-between gap-4 mb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-red-500/20 border border-red-500/40 text-red-400 font-bold flex items-center justify-center text-sm shrink-0">
+                    ⚠️
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-red-400 font-mono tracking-wide">
+                      Pipeline Execution Warning / Failure Log
+                    </h4>
+                    <p className="text-xs text-red-300/80 font-mono">
+                      One or more background pipeline tasks encountered an error. Review details below.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setJobs(prev => {
+                    const updated = { ...prev };
+                    Object.keys(updated).forEach(k => {
+                      if (updated[k].status === "error") delete updated[k];
+                    });
+                    return updated;
+                  })}
+                  className="text-xs font-mono uppercase tracking-widest bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30 px-3 py-1.5 rounded-lg transition"
+                >
+                  Dismiss Error
+                </button>
+              </div>
+
+              {/* Log Stack Traces */}
+              {Object.entries(jobs).map(([stage, job]) => job.status === "error" && (
+                <div key={stage} className="mt-2 bg-zinc-950 p-3 rounded-lg border border-red-900/40 text-[11px] font-mono text-red-300 space-y-1 overflow-x-auto max-h-60 leading-relaxed shadow-inner">
+                  <div className="flex items-center justify-between border-b border-red-900/40 pb-1 mb-1 font-bold">
+                    <span className="text-red-400 uppercase tracking-widest">[{stage.toUpperCase()} STAGE FAILED]</span>
+                  </div>
+                  <pre className="whitespace-pre-wrap text-zinc-300 select-text font-mono">
+                    {job.log || "Stage execution failed with an unhandled exception."}
+                  </pre>
                 </div>
               ))}
             </div>
