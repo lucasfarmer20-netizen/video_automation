@@ -265,12 +265,13 @@ def normalize_claude_model(model_name: str | None) -> str:
 def _parse_json_robust(raw_text: str) -> dict:
     """Parse JSON with auto-repair for trailing truncation if needed."""
     raw_text = raw_text.strip()
-    if raw_text.startswith("```"):
-        import re
-        match = re.search(r"```(?:json)?\s*(.*?)\s*```", raw_text, re.DOTALL)
-        if match:
-            raw_text = match.group(1).strip()
-            
+    import re
+    # Strip leading markdown code blocks if present
+    raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
+    # Strip trailing markdown code blocks if present
+    raw_text = re.sub(r"\s*```$", "", raw_text)
+    raw_text = raw_text.strip()
+
     try:
         return json.loads(raw_text)
     except json.JSONDecodeError:

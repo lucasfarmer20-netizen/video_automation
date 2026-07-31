@@ -130,7 +130,7 @@ def _make_resolve_compatible(path: Path, width: int, height: int, event_name: st
             if "hero" in name.lower() or "video" in name.lower():
                 marker.set("color", "blue")
             elif "sfx" in name.lower():
-                marker.set("color", "amber")
+                marker.set("color", "orange")
             elif "vo" in name.lower():
                 marker.set("color", "green")
 

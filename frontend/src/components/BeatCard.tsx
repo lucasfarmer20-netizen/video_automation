@@ -70,8 +70,8 @@ interface BeatCardProps {
 
 export default function BeatCard({
   shot,
-  videoBackends,
-  tiers,
+  videoBackends = {},
+  tiers = {},
   onUpdateField,
   onRegenStill,
   onGenerateVideo,

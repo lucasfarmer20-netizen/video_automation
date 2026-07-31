@@ -493,7 +493,8 @@ export default function WorkspacePage() {
     );
   }
 
-  const { project, preview_url, fcpxml_ready, ep_slug, paid_count, image_backends, video_backends, Tiers } = activeProject;
+  const { project, preview_url, fcpxml_ready, ep_slug, paid_count, image_backends, video_backends, Tiers, tiers } = activeProject;
+  const effectiveTiers = Tiers || tiers || {};
 
   return (
     <div className="min-h-screen bg-zinc-950 flex flex-col overflow-hidden text-zinc-100">
@@ -797,7 +798,7 @@ export default function WorkspacePage() {
                   key={shot.scene_id}
                   shot={shot}
                   videoBackends={video_backends}
-                  tiers={activeProject.tiers}
+                  tiers={effectiveTiers}
                   onUpdateField={handleUpdateField}
                   onRegenStill={handleRegenStill}
                   onGenerateVideo={handleGenerateVideo}

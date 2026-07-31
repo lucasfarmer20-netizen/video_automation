@@ -23,7 +23,7 @@ def log_job(name: str, msg: str):
     print(line)
     with _jobs_lock:
         if name in _jobs:
-            _jobs[name]["log"] += line + "\n"
+            _jobs[name]["log"] = (_jobs[name]["log"] + line + "\n")[-10000:]
 
 
 def start_job(name: str, fn: Callable[[], None]) -> bool:
