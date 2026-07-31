@@ -45,12 +45,26 @@ export default function VoiceStudioModal({ isOpen, onClose, post, mediaUrl }: Vo
         const vId = voiceObj.generated_voice_id || voiceObj.voice_id || res.generated_voice_id || res.voice_id || null;
         if (vId) setGeneratedVoiceId(vId);
         
-        let audioSrc = voiceObj.sample_audio_base64 || voiceObj.sample_audio_url || res.sample_audio_base64 || res.sample_audio_url || null;
+        let audioSrc = 
+          voiceObj.sample_audio_base64 || 
+          voiceObj.audio_base_64 || 
+          voiceObj.audio_base64 || 
+          voiceObj.sample_audio_url || 
+          voiceObj.audio_url || 
+          voiceObj.preview_url || 
+          res.sample_audio_base64 || 
+          res.sample_audio_url || 
+          res.audio_base_64 || 
+          res.audio_url || null;
+          
         if (audioSrc) {
-          if (audioSrc.startsWith("/media/") && typeof mediaUrl === "function") {
-            audioSrc = mediaUrl(audioSrc);
+          if (audioSrc.startsWith("data:") || audioSrc.startsWith("http://") || audioSrc.startsWith("https://")) {
+            setSampleAudioUrl(audioSrc);
+          } else if (typeof mediaUrl === "function") {
+            setSampleAudioUrl(mediaUrl(audioSrc));
+          } else {
+            setSampleAudioUrl(audioSrc);
           }
-          setSampleAudioUrl(audioSrc);
           setMessage("Unique voice sample generated! Listen to preview below.");
         } else {
           setMessage("Voice design generated, but audio sample was empty. Check ELEVENLABS_API_KEY.");

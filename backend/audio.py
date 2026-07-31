@@ -338,10 +338,22 @@ def generate_voice_design_elevenlabs(gender: str, age: str, accent: str, descrip
     
     try:
         data = resp.json()
-        if not voice_id and isinstance(data, dict):
+        if not isinstance(data, dict):
+            data = {}
+        if not voice_id:
             voice_id = data.get("generated_voice_id") or data.get("voice_id") or ""
-        data["generated_voice_id"] = voice_id
-        return data
+        
+        b64 = data.get("audio_base_64") or data.get("audio_base64") or data.get("sample_base64") or data.get("base64") or ""
+        url_val = data.get("audio_url") or data.get("preview_url") or data.get("sample_url") or ""
+        
+        if b64 and not b64.startswith("data:"):
+            b64 = f"data:audio/mp3;base64,{b64}"
+            
+        return {
+            "generated_voice_id": voice_id,
+            "sample_audio_url": url_val,
+            "sample_audio_base64": b64
+        }
     except Exception:
         return {"generated_voice_id": voice_id}
 
