@@ -460,11 +460,33 @@ export default function WorkspacePage() {
     }
   };
 
-  if (loading || !activeProject) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center text-zinc-400 gap-4 font-mono select-none">
         <div className="w-10 h-10 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
         <span className="text-xs uppercase tracking-widest text-zinc-500">Loading Workspace...</span>
+      </div>
+    );
+  }
+
+  if (!activeProject || !activeProject.project) {
+    return (
+      <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center text-zinc-300 gap-4 font-mono p-6">
+        <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-8 max-w-md w-full text-center space-y-4 shadow-2xl">
+          <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-500 flex items-center justify-center mx-auto text-xl font-bold">
+            !
+          </div>
+          <h3 className="text-lg font-bold text-zinc-100">No Active Project Loaded</h3>
+          <p className="text-xs text-zinc-400 leading-relaxed">
+            The active project manifest could not be retrieved. Click below to initialize a fresh project workspace.
+          </p>
+          <button
+            onClick={() => handleCreateProject("manananggal", "bestiary")}
+            className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-xs rounded-xl shadow-lg transition"
+          >
+            Initialize Project Workspace →
+          </button>
+        </div>
       </div>
     );
   }

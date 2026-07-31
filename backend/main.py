@@ -89,24 +89,35 @@ def set_active_manifest_path(path: str):
 
 
 def get_current_project() -> Storyboard:
-    """Retrieve the currently active storyboard manifest."""
+    """Retrieve the currently active storyboard manifest with robust fallback creation."""
     active_path = get_active_manifest_path()
     f_id = get_project_id_from_path(active_path)
+    sb = None
     try:
         sb = manifest.load_project(f_id)
     except Exception as fe:
         print(f"Warning: Firestore load_project failed: {fe}")
-        sb = None
+        
     if not sb:
-        # Fallback to local file load
-        sb = manifest.load(Path(active_path))
+        p = Path(active_path)
+        if p.exists() and p.is_file():
+            try:
+                sb = manifest.load(p)
+                sb.id = f_id
+            except Exception as le:
+                print(f"Warning: Local manifest load failed: {le}")
+                
+    if not sb:
+        # Initialize default clean project manifest
+        p = Path(active_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        sb = Storyboard(title="manananggal", channel="bestiary")
         sb.id = f_id
-        # Ingest to Firestore
         try:
-            manifest.save_project(sb)
-        except Exception as fe:
-            print(f"Warning: Firestore save_project failed: {fe}")
-    # Refresh config manifest path dynamically in case it's in a subdirectory
+            manifest.save(sb, p)
+        except Exception:
+            pass
+            
     config.set_active_manifest(active_path)
     return sb
 
