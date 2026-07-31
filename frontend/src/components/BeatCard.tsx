@@ -160,7 +160,7 @@ export default function BeatCard({
             <textarea
               value={shot.narration}
               onChange={(e) => onUpdateField(shot.scene_id, "narration", e.target.value)}
-              className="w-full bg-zinc-950/60 text-zinc-200 border border-zinc-850 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition text-xs font-sans leading-relaxed resize-y"
+              className="w-full bg-zinc-950/60 text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition text-xs font-sans leading-relaxed resize-y"
             />
           </div>
 
@@ -171,7 +171,7 @@ export default function BeatCard({
             <textarea
               value={shot.prompt}
               onChange={(e) => onUpdateField(shot.scene_id, "prompt", e.target.value)}
-              className="w-full bg-zinc-950/60 text-zinc-200 border border-zinc-850 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition text-xs font-sans leading-relaxed resize-y"
+              className="w-full bg-zinc-950/60 text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition text-xs font-sans leading-relaxed resize-y"
             />
           </div>
 
@@ -184,7 +184,7 @@ export default function BeatCard({
                 type="text"
                 value={shot.style_medium}
                 onChange={(e) => onUpdateField(shot.scene_id, "style_medium", e.target.value)}
-                className="w-full bg-zinc-950/60 text-zinc-200 border border-zinc-850 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition text-xs"
+                className="w-full bg-zinc-950/60 text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition text-xs"
               />
             </div>
             <div>
@@ -195,7 +195,7 @@ export default function BeatCard({
                 type="text"
                 value={shot.motion_prompt || shot.motion_prompt_suggestion || ""}
                 onChange={(e) => onUpdateField(shot.scene_id, "motion_prompt", e.target.value)}
-                className="w-full bg-zinc-950/60 text-zinc-200 border border-zinc-850 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition text-xs"
+                className="w-full bg-zinc-950/60 text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition text-xs"
               />
             </div>
           </div>
@@ -218,7 +218,7 @@ export default function BeatCard({
               }}
               onClick={() => document.getElementById(`clipfile-${shot.scene_id}`)?.click()}
               className={`border border-dashed rounded-lg px-2.5 py-1 text-[10px] cursor-pointer transition flex items-center gap-1.5 ${
-                dragClipOver ? "border-amber-500 bg-amber-500/5 text-zinc-200" : "border-zinc-850 text-zinc-400 hover:text-zinc-200"
+                dragClipOver ? "border-amber-500 bg-amber-500/5 text-zinc-200" : "border-zinc-800 text-zinc-400 hover:text-zinc-200"
               }`}
             >
               <Film className="h-3 w-3" />
@@ -234,7 +234,7 @@ export default function BeatCard({
                 }}
               />
             </div>
-            <span className="text-[10px] text-zinc-550 font-mono">
+            <span className="text-[10px] text-zinc-500 font-mono">
               {shot.hero_clip ? "✓ hero clip imported" : `target ~${Math.round(shot.camera.duration)}s`}
             </span>
           </div>
@@ -261,7 +261,7 @@ export default function BeatCard({
             
             <div className="max-h-24 overflow-y-auto flex flex-col gap-2 mb-2 text-[10px] bg-zinc-950 p-2.5 rounded border border-zinc-900/60 font-mono">
               {shotChatHistory.length === 0 ? (
-                <div className="text-zinc-650 italic">Discuss updates to this specific beat's prompts with Vesper.</div>
+                <div className="text-zinc-600 italic">Discuss updates to this specific beat's prompts with Vesper.</div>
               ) : (
                 shotChatHistory.map((m, idx) => (
                   <div key={idx} className={m.role === "user" ? "text-zinc-300" : "text-amber-300"}>
@@ -279,7 +279,7 @@ export default function BeatCard({
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSendChat()}
                 placeholder="e.g. 'make the woods darker, add thick fog, slow down camera pan'"
-                className="flex-1 bg-zinc-950 text-zinc-200 text-xs border border-zinc-850 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition"
+                className="flex-1 bg-zinc-950 text-zinc-200 text-xs border border-zinc-800 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition"
               />
               <button
                 onClick={handleSendChat}
@@ -301,7 +301,7 @@ export default function BeatCard({
             <select
               value={shot.motion_type}
               onChange={(e) => onUpdateField(shot.scene_id, "motion_type", e.target.value)}
-              className="w-full bg-zinc-950 text-zinc-300 text-xs px-2.5 py-1.5 rounded-lg border border-zinc-850 focus:outline-none focus:border-amber-400 transition cursor-pointer font-medium"
+              className="w-full bg-zinc-950 text-zinc-300 text-xs px-2.5 py-1.5 rounded-lg border border-zinc-800 focus:outline-none focus:border-amber-400 transition cursor-pointer font-medium"
             >
               {Object.entries(tiers).map(([k, label]) => (
                 <option key={k} value={k}>
@@ -318,7 +318,7 @@ export default function BeatCard({
             <select
               value={shot.video_model || ""}
               onChange={(e) => onUpdateField(shot.scene_id, "video_model", e.target.value)}
-              className="w-full bg-zinc-950 text-amber-300/90 text-xs px-2.5 py-1.5 rounded-lg border border-zinc-850 focus:outline-none focus:border-amber-400 transition cursor-pointer"
+              className="w-full bg-zinc-950 text-amber-300/90 text-xs px-2.5 py-1.5 rounded-lg border border-zinc-800 focus:outline-none focus:border-amber-400 transition cursor-pointer"
             >
               <option value="">Use Project default</option>
               {Object.entries(videoBackends).map(([k, label]) => (
@@ -339,7 +339,7 @@ export default function BeatCard({
                 const val = e.target.value;
                 onUpdateField(shot.scene_id, "video_audio", val === "none" ? null : val === "true");
               }}
-              className="w-full bg-zinc-950 text-zinc-300 text-xs px-2.5 py-1.5 rounded-lg border border-zinc-850 focus:outline-none focus:border-amber-400 transition cursor-pointer font-medium"
+              className="w-full bg-zinc-950 text-zinc-300 text-xs px-2.5 py-1.5 rounded-lg border border-zinc-800 focus:outline-none focus:border-amber-400 transition cursor-pointer font-medium"
             >
               <option value="none">Use Global Knob</option>
               <option value="true">Enabled (Sound)</option>
@@ -352,7 +352,7 @@ export default function BeatCard({
               type="checkbox"
               checked={shot.flow_hero}
               onChange={(e) => onUpdateField(shot.scene_id, "flow_hero", e.target.checked)}
-              className="rounded bg-zinc-950 border-zinc-850 text-amber-500 focus:ring-amber-500/20"
+              className="rounded bg-zinc-950 border-zinc-800 text-amber-500 focus:ring-amber-500/20"
             />
             <span>VEO/Flow hero</span>
           </label>
@@ -416,7 +416,7 @@ export default function BeatCard({
             ))}
           </div>
         ) : (
-          <div className="text-xs text-zinc-650 italic py-2">No draft stills generated. Click "Regenerate Still" below to generate.</div>
+          <div className="text-xs text-zinc-600 italic py-2">No draft stills generated. Click "Regenerate Still" below to generate.</div>
         )}
       </div>
 
@@ -427,7 +427,7 @@ export default function BeatCard({
             🎬 Video Renders {shot.video_variations && shot.video_variations.length > 0 && `(${shot.video_variations.length})`}
           </h4>
           {shot.video_variations && shot.video_variations.length > 0 && (
-            <span className="text-[9px] text-zinc-650 font-mono select-none">Hover to preview · Click to set timeline clip</span>
+            <span className="text-[9px] text-zinc-600 font-mono select-none">Hover to preview · Click to set timeline clip</span>
           )}
         </div>
         {shot.video_variations && shot.video_variations.length > 0 ? (
@@ -473,7 +473,7 @@ export default function BeatCard({
             ))}
           </div>
         ) : (
-          <div className="text-xs text-zinc-650 italic py-1">No video renders generated.</div>
+          <div className="text-xs text-zinc-600 italic py-1">No video renders generated.</div>
         )}
       </div>
 
@@ -488,7 +488,7 @@ export default function BeatCard({
             className="w-full max-h-56 bg-black rounded border border-zinc-900"
             src={mediaUrl(shot.active_clip_url)}
           />
-          <div className="text-[10px] text-zinc-550 mt-1.5 font-mono flex items-center justify-between select-none">
+          <div className="text-[10px] text-zinc-500 mt-1.5 font-mono flex items-center justify-between select-none">
             <span>▶ Playout: {shot.hero_clip ? "imported hero clip" : shot.motion_type}</span>
           </div>
         </div>
@@ -510,11 +510,11 @@ export default function BeatCard({
           References:
         </span>
         {shot.references_resolved?.map((r, idx) => (
-          <div key={idx} className="relative w-14 h-9 border border-zinc-850 rounded overflow-hidden group bg-zinc-950" title={r.name}>
+          <div key={idx} className="relative w-14 h-9 border border-zinc-800 rounded overflow-hidden group bg-zinc-950" title={r.name}>
             {r.file ? (
               <img src={mediaUrl(r.file)} className="w-full h-full object-cover" alt="ref thumbnail" />
             ) : (
-              <div className="w-full h-full flex items-center justify-center text-[8px] text-zinc-550 p-1 text-center leading-tight truncate">
+              <div className="w-full h-full flex items-center justify-center text-[8px] text-zinc-500 p-1 text-center leading-tight truncate">
                 {r.name}
               </div>
             )}
@@ -530,7 +530,7 @@ export default function BeatCard({
         <div
           onClick={() => document.getElementById(`ref-file-${shot.scene_id}`)?.click()}
           className={`border border-dashed rounded-lg px-2.5 py-1 text-[10px] cursor-pointer transition ${
-            dragRefOver ? "border-amber-500 bg-amber-500/5 text-zinc-200" : "border-zinc-850 text-zinc-400 hover:text-zinc-200"
+            dragRefOver ? "border-amber-500 bg-amber-500/5 text-zinc-200" : "border-zinc-800 text-zinc-400 hover:text-zinc-200"
           }`}
         >
           + Add Ref
@@ -577,7 +577,7 @@ export default function BeatCard({
           }}
           onClick={() => document.getElementById(`imgfile-${shot.scene_id}`)?.click()}
           className={`drop-zone border border-dashed rounded-lg px-3 py-1.5 text-[10px] cursor-pointer transition ${
-            dragImgOver ? "border-amber-500 bg-amber-500/5 text-zinc-200" : "border-zinc-850 text-zinc-500 hover:text-zinc-350"
+            dragImgOver ? "border-amber-500 bg-amber-500/5 text-zinc-200" : "border-zinc-800 text-zinc-500 hover:text-zinc-350"
           }`}
         >
           Upload Custom Still

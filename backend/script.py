@@ -10,9 +10,16 @@ import json
 import os
 import anthropic
 
+from . import config
 from .manifest import Camera, MotionType, Shot, Storyboard
 
-DEFAULT_MODEL = os.environ.get("SCRIPT_MODEL", "claude-3-5-sonnet-20241022")
+DEFAULT_MODEL = os.environ.get("SCRIPT_MODEL", "claude-opus-5")
+
+# A 15-40 beat storyboard, each beat carrying narration + visual + motion prompt,
+# does not fit in 4k output tokens. Thinking is on by default on Opus 5 and is
+# billed against the same ceiling, so budget for both. Streaming is required
+# above ~16k or the SDK trips its own HTTP timeout guard.
+MAX_TOKENS = 32000
 
 BESTIARY_SYSTEM_PROMPT = """\
 You are Vesper — the researcher-narrator of "The Illuminated Bestiary," a folklore DOCUMENTARY channel. Vesper is an authoritative, deeply curious ethnographic researcher and academic investigator who tracks a folkloric entity the way a field anthropologist would: through the archival record and the evidence, not a campfire story. Your register is investigation, never fiction.
@@ -232,67 +239,6 @@ def _scope(num_beats: int | None) -> str:
     return "Produce as many beats as the investigation needs (typically 15-40)."
 
 
-VALID_CLAUDE_MODELS = {
-    "claude-sonnet-5",
-    "claude-opus-4-8",
-    "claude-sonnet-4-6",
-    "claude-fable-5",
-    "claude-opus-5",
-    "claude-3-5-sonnet-20241022",
-    "claude-3-5-sonnet-latest",
-    "claude-3-7-sonnet-20250219",
-}
-
-DEFAULT_CLAUDE_MODEL = "claude-sonnet-5"
-
-
-def normalize_claude_model(model_name: str | None) -> str:
-    """Normalize any Claude model string to active account model endpoints."""
-    if not model_name:
-        return DEFAULT_CLAUDE_MODEL
-
-    m = str(model_name).strip().lower()
-
-    if m in VALID_CLAUDE_MODELS:
-        return m
-
-    if "opus" in m or "4-8" in m or "4.8" in m:
-        return "claude-opus-4-8"
-    if "fable" in m:
-        return "claude-fable-5"
-    if "4-6" in m or "4.6" in m:
-        return "claude-sonnet-4-6"
-    if "sonnet-5" in m or "sonnet 5" in m:
-        return "claude-sonnet-5"
-    if "3-7" in m or "3.7" in m:
-        return "claude-3-7-sonnet-20250219"
-
-    return DEFAULT_CLAUDE_MODEL
-
-
-def _parse_json_robust(raw_text: str) -> dict:
-    """Parse JSON with auto-repair for trailing truncation if needed."""
-    raw_text = raw_text.strip()
-    import re
-    # Strip leading markdown code blocks if present
-    raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
-    # Strip trailing markdown code blocks if present
-    raw_text = re.sub(r"\s*```$", "", raw_text)
-    raw_text = raw_text.strip()
-
-    try:
-        return json.loads(raw_text)
-    except json.JSONDecodeError:
-        # Attempt simple auto-closure for truncated JSON objects
-        repaired = raw_text
-        if not repaired.endswith("}"):
-            open_braces = repaired.count("{") - repaired.count("}")
-            open_brackets = repaired.count("[") - repaired.count("]")
-            repaired += "}" * max(0, open_braces)
-            repaired += "]" * max(0, open_brackets)
-        return json.loads(repaired)
-
-
 def _log(msg: str):
     print(msg)
     try:
@@ -302,75 +248,63 @@ def _log(msg: str):
         pass
 
 
-def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anthropic, system_prompt: str) -> Storyboard:
-    from . import config
-    if not client:
-        api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_KEY") or getattr(config, "ANTHROPIC_API_KEY", None)
-        if not api_key:
-            raise RuntimeError("Missing Anthropic API Key! Please verify CLAUDE_API_KEY secret in Cloud Run.")
-        client = anthropic.Anthropic(api_key=api_key, timeout=45.0)
-    
-    norm_req = normalize_claude_model(model)
-    models_to_try = [norm_req]
-    fallbacks = [
-        "claude-sonnet-5",
-        "claude-opus-4-8",
-        "claude-sonnet-4-6",
-        "claude-fable-5",
-        "claude-3-5-sonnet-20241022",
-        "claude-3-5-sonnet-latest",
-        "claude-3-7-sonnet-20250219"
-    ]
-    for fb in fallbacks:
-        if fb not in models_to_try:
-            models_to_try.append(fb)
+def _client(client: anthropic.Anthropic | None = None) -> anthropic.Anthropic:
+    """Return a ready Anthropic client, resolving the key from the environment."""
+    if client:
+        return client
+    api_key = (
+        os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("CLAUDE_API_KEY")
+        or os.environ.get("ANTHROPIC_KEY")
+        or getattr(config, "ANTHROPIC_API_KEY", None)
+    )
+    if not api_key:
+        raise RuntimeError(
+            "Missing Anthropic API key. Set ANTHROPIC_API_KEY (or CLAUDE_API_KEY) "
+            "in your .env locally, or as a Cloud Run secret in production."
+        )
+    return anthropic.Anthropic(api_key=api_key)
 
-    first_exc = None
-    last_exc = None
-    for m in models_to_try:
-        try:
-            _log(f"Requesting script draft from Claude model: {m}...")
-            import copy
-            fallback_messages = copy.deepcopy(messages)
-            json_instruction = (
-                "\n\nIMPORTANT: You must respond ONLY with a raw, valid JSON object matching the requested schema. "
-                "Do not wrap it in any explanation, and do not use markdown code block backticks. "
-                "Start your response with { and end it with }."
-            )
-            if fallback_messages and fallback_messages[-1]["role"] == "user":
-                fallback_messages[-1]["content"] += json_instruction
 
-            response = client.messages.create(
-                model=m,
-                max_tokens=4096,
-                system=system_prompt,
-                messages=fallback_messages,
-                timeout=45.0,
-            )
-            _log(f"Received response from {m}, parsing storyboard JSON...")
-            raw_text = next((b.text for b in response.content if hasattr(b, "text") and b.text), "").strip()
-            data = _parse_json_robust(raw_text)
-            sb = _beats_to_storyboard(data)
-            _log(f"Successfully drafted storyboard '{sb.title}' with {len(sb.shots)} beats!")
-            return sb
-        except Exception as exc:
-            _log(f"Claude model {m} attempt failed: {exc}")
-            if first_exc is None:
-                first_exc = exc
-            last_exc = exc
-            continue
+def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anthropic | None,
+                        system_prompt: str) -> Storyboard:
+    """One structured-output call to Claude; returns the drafted Storyboard.
 
-    if first_exc:
-        err_msg = str(first_exc)
-        if "not_found" in err_msg.lower() or "404" in err_msg:
-            raise RuntimeError(
-                f"Anthropic API Key Error (404 Not Found): None of the standard Claude models were accessible with your current API key. "
-                f"Please verify your CLAUDE_API_KEY secret in Cloud Run or ensure your Anthropic account has access to the Claude Messages API."
-            ) from first_exc
-        raise first_exc
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("Failed to call Anthropic API models.")
+    ``SCRIPT_SCHEMA`` is enforced server-side via ``output_config.format``, so the
+    response is guaranteed to be valid JSON in the right shape — no markdown
+    fences to strip, no truncation to "repair", and no retry across models (which
+    previously re-billed a full generation on every parse failure).
+    """
+    client = _client(client)
+    _log(f"Requesting script draft from Claude ({model}) ...")
+
+    with client.messages.stream(
+        model=model,
+        max_tokens=MAX_TOKENS,
+        system=system_prompt,
+        messages=messages,
+        output_config={
+            "effort": "high",
+            "format": {"type": "json_schema", "schema": SCRIPT_SCHEMA},
+        },
+    ) as stream:
+        response = stream.get_final_message()
+
+    if response.stop_reason == "refusal":
+        raise RuntimeError(
+            "Claude declined this script request. Rephrase the topic and try again."
+        )
+    if response.stop_reason == "max_tokens":
+        raise RuntimeError(
+            f"Script draft hit the {MAX_TOKENS}-token ceiling and was cut off. "
+            "Ask for fewer beats, or raise MAX_TOKENS in backend/script.py."
+        )
+
+    _log("Received response, building storyboard ...")
+    raw_text = next(b.text for b in response.content if b.type == "text")
+    sb = _beats_to_storyboard(json.loads(raw_text))
+    _log(f"Drafted storyboard '{sb.title}' with {len(sb.shots)} beats.")
+    return sb
 
 
 def generate_script(
@@ -380,9 +314,7 @@ def generate_script(
     model: str = DEFAULT_MODEL,
     client: anthropic.Anthropic | None = None,
 ) -> Storyboard:
-    if not client:
-        api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_KEY") or getattr(config, "ANTHROPIC_API_KEY", None)
-        client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+    client = _client(client)
     system_prompt = get_system_prompt(channel)
     if channel == "calluses":
         user_prompt = (
@@ -408,9 +340,7 @@ def generate_script_from_messages(
     model: str = DEFAULT_MODEL,
     client: anthropic.Anthropic | None = None,
 ) -> Storyboard:
-    if not client:
-        api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_KEY") or getattr(config, "ANTHROPIC_API_KEY", None)
-        client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+    client = _client(client)
     if not messages:
         raise ValueError("Cannot script from an empty conversation.")
     system_prompt = get_system_prompt(channel)

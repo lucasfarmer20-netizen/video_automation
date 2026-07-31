@@ -118,14 +118,14 @@ export default function ProjectSidebar({
                       {p.storyboard_approved && <CheckCircle className="h-3 w-3 text-emerald-400" />}
                     </div>
                   </div>
-                  <div className="text-[9px] text-zinc-550 truncate font-mono mt-1 flex items-center justify-between">
+                  <div className="text-[9px] text-zinc-500 truncate font-mono mt-1 flex items-center justify-between">
                     <span>{p.rel_display}</span>
                     <span className="text-amber-500/60 font-semibold">{p.beats_count || 0} beats</span>
                   </div>
                 </div>
               ))}
               {bestiaryProjects.length === 0 && (
-                <span className="text-zinc-650 text-xs italic p-2 pl-4">No storyboards</span>
+                <span className="text-zinc-600 text-xs italic p-2 pl-4">No storyboards</span>
               )}
             </div>
           )}
@@ -165,14 +165,14 @@ export default function ProjectSidebar({
                       {p.storyboard_approved && <CheckCircle className="h-3 w-3 text-emerald-400" />}
                     </div>
                   </div>
-                  <div className="text-[9px] text-zinc-550 truncate font-mono mt-1 flex items-center justify-between">
+                  <div className="text-[9px] text-zinc-500 truncate font-mono mt-1 flex items-center justify-between">
                     <span>{p.rel_display}</span>
                     <span className="text-blue-500/60 font-semibold">{p.beats_count || 0} beats</span>
                   </div>
                 </div>
               ))}
               {callusesProjects.length === 0 && (
-                <span className="text-zinc-650 text-xs italic p-2 pl-4">No storyboards</span>
+                <span className="text-zinc-600 text-xs italic p-2 pl-4">No storyboards</span>
               )}
             </div>
           )}

@@ -81,19 +81,27 @@ export default function WorkspacePage() {
   const [activeView, setActiveView] = useState<"grid" | "canvas">("grid");
   const [rightPanel, setRightPanel] = useState<"vesper" | "knobs">("vesper");
   
-  // Background task state
+  // Background task state. `dismissedErrors` is tracked separately because
+  // pollJobs replaces `jobs` wholesale every 3s from the server, which would
+  // otherwise resurrect a banner the user just dismissed.
   const [jobs, setJobs] = useState<Record<string, Job>>({});
+  const [dismissedErrors, setDismissedErrors] = useState<Record<string, string>>({});
   const [chatHistory, setChatHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [voiceStudioOpen, setVoiceStudioOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileRightPanelOpen, setMobileRightPanelOpen] = useState(false);
 
-  // Helper: media url resolver
+  // Helper: media url resolver.
+  // The backend returns paths relative to a media root (e.g. "assets/s001/x.png",
+  // "render/<slug>/s001.mp4"), never route-prefixed — so /media/ is added exactly
+  // once here. Anything already carrying it is passed through rather than
+  // double-prefixed into /media/media/... which 404s.
   const mediaUrl = useCallback((path: string) => {
     if (!path) return "";
     if (path.startsWith("http://") || path.startsWith("https://")) return path;
-    const clean = path.replace("\\", "/").replace(/^\/+/, "");
+    const clean = path.replace(/\\/g, "/").replace(/^\/+/, "");
+    if (clean.startsWith("media/")) return `${API_BASE}/${clean}`;
     return `${API_BASE}/media/${clean}`;
   }, []);
 
@@ -160,25 +168,64 @@ export default function WorkspacePage() {
     return () => clearInterval(jobInterval);
   }, []);
 
+  // Studio key. Only needed when the backend has STUDIO_API_KEY set (which
+  // gates every mutating request, since Cloud Run runs --allow-unauthenticated).
+  // Unset backend => header is absent and ignored, so this costs nothing locally.
+  const studioKey = () =>
+    (typeof window !== "undefined" && window.localStorage.getItem("studioKey")) || "";
+
+  const authHeaders = (base: Record<string, string> = {}) => {
+    const key = studioKey();
+    return key ? { ...base, "X-Studio-Key": key } : base;
+  };
+
+  const parseError = async (res: Response) => {
+    const text = await res.text();
+    let errMsg = `Server error (${res.status} ${res.statusText})`;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed.error || parsed.detail) errMsg = parsed.error || parsed.detail;
+    } catch {
+      if (text) errMsg += `: ${text.slice(0, 150)}`;
+    }
+    if (res.status === 401 && typeof window !== "undefined") {
+      const entered = window.prompt(
+        "This studio requires an access key (STUDIO_API_KEY). Enter it to continue:"
+      );
+      if (entered) {
+        window.localStorage.setItem("studioKey", entered);
+        errMsg = "Access key saved — retry that action.";
+      }
+    }
+    return { ok: false, error: errMsg };
+  };
+
   // Post helper
   const post = async (url: string, body: any = {}) => {
     try {
       const res = await fetch(`${API_BASE}${url}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body)
       });
-      if (!res.ok) {
-        const text = await res.text();
-        let errMsg = `Server error (${res.status} ${res.statusText})`;
-        try {
-          const parsed = JSON.parse(text);
-          if (parsed.error || parsed.detail) errMsg = parsed.error || parsed.detail;
-        } catch {
-          if (text) errMsg += `: ${text.slice(0, 150)}`;
-        }
-        return { ok: false, error: errMsg };
-      }
+      if (!res.ok) return await parseError(res);
+      return await res.json();
+    } catch (err: any) {
+      return { ok: false, error: err.message || "Network request failed" };
+    }
+  };
+
+  // Multipart upload helper — same auth + error handling as `post`.
+  const postFile = async (url: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const res = await fetch(`${API_BASE}${url}`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd
+      });
+      if (!res.ok) return await parseError(res);
       return await res.json();
     } catch (err: any) {
       return { ok: false, error: err.message || "Network request failed" };
@@ -242,10 +289,7 @@ export default function WorkspacePage() {
   };
 
   const handleUploadGlobalRef = async (file: File) => {
-    const fd = new FormData();
-    fd.append("file", file);
-    const res = await fetch(`${API_BASE}/api/render/reference`, { method: "POST", body: fd });
-    const data = await res.json();
+    const data = await postFile(`/api/render/reference`, file);
     if (data.ok) {
       fetchActiveProject();
       alert("Global frame reference uploaded!");
@@ -297,10 +341,7 @@ export default function WorkspacePage() {
   };
 
   const handleUploadImage = async (sceneId: string, file: File) => {
-    const fd = new FormData();
-    fd.append("file", file);
-    const res = await fetch(`${API_BASE}/api/shot/${sceneId}/image`, { method: "POST", body: fd });
-    const data = await res.json();
+    const data = await postFile(`/api/shot/${sceneId}/image`, file);
     if (data.ok) {
       fetchActiveProject();
     } else {
@@ -309,10 +350,7 @@ export default function WorkspacePage() {
   };
 
   const handleUploadClip = async (sceneId: string, file: File) => {
-    const fd = new FormData();
-    fd.append("file", file);
-    const res = await fetch(`${API_BASE}/api/shot/${sceneId}/clip`, { method: "POST", body: fd });
-    const data = await res.json();
+    const data = await postFile(`/api/shot/${sceneId}/clip`, file);
     if (data.ok) {
       fetchActiveProject();
     } else {
@@ -321,10 +359,7 @@ export default function WorkspacePage() {
   };
 
   const handleAddReference = async (sceneId: string, file: File) => {
-    const fd = new FormData();
-    fd.append("file", file);
-    const res = await fetch(`${API_BASE}/api/shot/${sceneId}/reference`, { method: "POST", body: fd });
-    const data = await res.json();
+    const data = await postFile(`/api/shot/${sceneId}/reference`, file);
     if (data.ok) {
       fetchActiveProject();
     } else {
@@ -340,8 +375,7 @@ export default function WorkspacePage() {
   };
 
   const handleDeleteImage = async (sceneId: string, idx: number) => {
-    const res = await fetch(`${API_BASE}/api/shot/${sceneId}/delete_image/${idx}`, { method: "POST" });
-    const data = await res.json();
+    const data = await post(`/api/shot/${sceneId}/delete_image/${idx}`);
     if (data.ok) {
       fetchActiveProject();
     }
@@ -358,8 +392,7 @@ export default function WorkspacePage() {
   };
 
   const handleDeleteVideo = async (sceneId: string, idx: number) => {
-    const res = await fetch(`${API_BASE}/api/shot/${sceneId}/delete_video/${idx}`, { method: "POST" });
-    const data = await res.json();
+    const data = await post(`/api/shot/${sceneId}/delete_video/${idx}`);
     if (data.ok) {
       fetchActiveProject();
     }
@@ -507,8 +540,14 @@ export default function WorkspacePage() {
     );
   }
 
-  const { project, preview_url, fcpxml_ready, ep_slug, paid_count, image_backends, video_backends, Tiers, tiers } = activeProject;
-  const effectiveTiers = Tiers || tiers || {};
+  const { project, preview_url, fcpxml_ready, ep_slug, paid_count, image_backends, video_backends, tiers } = activeProject;
+  const effectiveTiers = tiers || {};
+
+  // An error is shown unless the user dismissed *this* log for *this* stage;
+  // a new failure produces a different log and surfaces again.
+  const erroredJobs = Object.entries(jobs).filter(
+    ([stage, j]) => j.status === "error" && dismissedErrors[stage] !== j.log
+  );
 
   return (
     <div className="min-h-screen bg-zinc-950 flex flex-col overflow-hidden text-zinc-100">
@@ -600,9 +639,9 @@ export default function WorkspacePage() {
           <div className={`hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-mono font-bold select-none ${
             project.storyboard_approved
               ? "border-emerald-500/20 bg-emerald-950/20 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.05)]"
-              : "border-zinc-800 bg-zinc-900/40 text-zinc-550"
+              : "border-zinc-800 bg-zinc-900/40 text-zinc-500"
           }`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${project.storyboard_approved ? "bg-emerald-500 shadow-[0_0_8px_#10b981]" : "bg-zinc-650"}`}></span>
+            <span className={`w-1.5 h-1.5 rounded-full ${project.storyboard_approved ? "bg-emerald-500 shadow-[0_0_8px_#10b981]" : "bg-zinc-600"}`}></span>
             {project.storyboard_approved ? "Approved ✓" : "Draft"}
           </div>
           <button
@@ -663,7 +702,7 @@ export default function WorkspacePage() {
                       <span>1 · Generate voiceover</span>
                     </button>
                     <span className={`text-xs font-mono font-semibold ${
-                      jobs["narration"]?.status === "done" ? "text-emerald-500" : "text-zinc-550"
+                      jobs["narration"]?.status === "done" ? "text-emerald-500" : "text-zinc-500"
                     }`}>
                       {jobs["narration"]?.status || "Idle"}
                     </span>
@@ -680,7 +719,7 @@ export default function WorkspacePage() {
                       <span>3 · Build preview (rough cut)</span>
                     </button>
                     <span className={`text-xs font-mono font-semibold ${
-                      jobs["preview"]?.status === "done" ? "text-emerald-500" : "text-zinc-550"
+                      jobs["preview"]?.status === "done" ? "text-emerald-500" : "text-zinc-500"
                     }`}>
                       {jobs["preview"]?.status || "Idle"}
                     </span>
@@ -697,7 +736,7 @@ export default function WorkspacePage() {
                       <span>4 · Export Resolve timeline</span>
                     </button>
                     <span className={`text-xs font-mono font-semibold ${
-                      jobs["timeline"]?.status === "done" ? "text-emerald-500" : "text-zinc-550"
+                      jobs["timeline"]?.status === "done" ? "text-emerald-500" : "text-zinc-500"
                     }`}>
                       {jobs["timeline"]?.status || "Idle"}
                     </span>
@@ -705,7 +744,7 @@ export default function WorkspacePage() {
                 </div>
 
                 <div className="bg-zinc-950/40 p-4 border border-zinc-900 rounded-lg flex flex-col gap-3">
-                  <div className="text-[10px] font-bold text-zinc-550 uppercase tracking-wider font-mono">
+                  <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider font-mono">
                     2 · Video Renders &amp; Ingest
                   </div>
                   
@@ -719,7 +758,7 @@ export default function WorkspacePage() {
                       <span>Render pipeline via fal.ai</span>
                     </button>
                     <span className={`text-xs font-mono font-semibold ${
-                      jobs["render"]?.status === "done" ? "text-emerald-500" : "text-zinc-550"
+                      jobs["render"]?.status === "done" ? "text-emerald-500" : "text-zinc-500"
                     }`}>
                       {jobs["render"]?.status || "Idle"}
                     </span>
@@ -750,7 +789,7 @@ export default function WorkspacePage() {
                           };
                           fileInput.click();
                         }}
-                        className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-bold border border-zinc-750 px-3 py-1.5 rounded"
+                        className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-bold border border-zinc-700 px-3 py-1.5 rounded"
                       >
                         Ingest File
                       </button>
@@ -759,25 +798,11 @@ export default function WorkspacePage() {
                 </div>
               </div>
 
-              {/* Job Error Log Banner */}
-              {Object.entries(jobs).some(([_, j]) => j.status === "error") && (
-                <div className="bg-red-950/40 border border-red-900/50 rounded-lg p-3.5 mt-2 flex flex-col gap-2">
-                  <div className="text-xs font-bold text-red-400 font-mono flex items-center justify-between">
-                    <span>⚠ Pipeline Execution Warning / Failure Log</span>
-                  </div>
-                  {Object.entries(jobs).map(([stage, job]) => job.status === "error" && (
-                    <div key={stage} className="bg-zinc-950 p-2.5 rounded border border-red-900/30 text-[11px] font-mono text-red-300 overflow-x-auto whitespace-pre-wrap max-h-40">
-                      <span className="font-bold uppercase text-red-400">[{stage}]</span>: {job.log || "Stage failed to execute."}
-                    </div>
-                  ))}
-                </div>
-              )}
-
               {/* Preview player */}
               {preview_url && (
                 <div className="border-t border-zinc-900 pt-4 mt-2">
                   <video controls className="w-full max-h-80 bg-black border border-zinc-900 rounded-lg shadow-2xl" src={mediaUrl(preview_url)} />
-                  <div className="text-[10px] text-zinc-550 font-mono mt-2 flex justify-between select-none">
+                  <div className="text-[10px] text-zinc-500 font-mono mt-2 flex justify-between select-none">
                     <span>Narration + Music synced Proxy track preview</span>
                     {fcpxml_ready && (
                       <span className="text-amber-500 font-semibold animate-pulse">
@@ -826,7 +851,7 @@ export default function WorkspacePage() {
           )}
 
           {/* Job Failure / Error Alert Banner */}
-          {Object.entries(jobs).some(([_, j]) => j.status === "error") && (
+          {erroredJobs.length > 0 && (
             <div className="bg-red-950/50 border border-red-500/50 rounded-xl p-4 mb-6 shadow-2xl backdrop-blur-md relative overflow-hidden">
               <div className="flex items-center justify-between gap-4 mb-3">
                 <div className="flex items-center gap-3">
@@ -843,13 +868,13 @@ export default function WorkspacePage() {
                   </div>
                 </div>
                 <button
-                  onClick={() => setJobs(prev => {
-                    const updated = { ...prev };
-                    Object.keys(updated).forEach(k => {
-                      if (updated[k].status === "error") delete updated[k];
-                    });
-                    return updated;
-                  })}
+                  onClick={() =>
+                    setDismissedErrors(prev => {
+                      const next = { ...prev };
+                      erroredJobs.forEach(([stage, job]) => { next[stage] = job.log; });
+                      return next;
+                    })
+                  }
                   className="text-xs font-mono uppercase tracking-widest bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30 px-3 py-1.5 rounded-lg transition"
                 >
                   Dismiss Error
@@ -857,7 +882,7 @@ export default function WorkspacePage() {
               </div>
 
               {/* Log Stack Traces */}
-              {Object.entries(jobs).map(([stage, job]) => job.status === "error" && (
+              {erroredJobs.map(([stage, job]) => (
                 <div key={stage} className="mt-2 bg-zinc-950 p-3 rounded-lg border border-red-900/40 text-[11px] font-mono text-red-300 space-y-1 overflow-x-auto max-h-60 leading-relaxed shadow-inner">
                   <div className="flex items-center justify-between border-b border-red-900/40 pb-1 mb-1 font-bold">
                     <span className="text-red-400 uppercase tracking-widest">[{stage.toUpperCase()} STAGE FAILED]</span>
@@ -932,7 +957,7 @@ export default function WorkspacePage() {
             <button
               onClick={() => setRightPanel("vesper")}
               className={`p-2 rounded-lg transition-all ${
-                rightPanel === "vesper" ? "bg-zinc-900 text-amber-500 border border-zinc-800" : "text-zinc-650 hover:text-zinc-400"
+                rightPanel === "vesper" ? "bg-zinc-900 text-amber-500 border border-zinc-800" : "text-zinc-600 hover:text-zinc-400"
               }`}
               title="Claude Vesper Chat"
             >
@@ -941,7 +966,7 @@ export default function WorkspacePage() {
             <button
               onClick={() => setRightPanel("knobs")}
               className={`p-2 rounded-lg transition-all ${
-                rightPanel === "knobs" ? "bg-zinc-900 text-amber-500 border border-zinc-800" : "text-zinc-650 hover:text-zinc-400"
+                rightPanel === "knobs" ? "bg-zinc-900 text-amber-500 border border-zinc-800" : "text-zinc-600 hover:text-zinc-400"
               }`}
               title="Render Parameters"
             >

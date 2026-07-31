@@ -87,6 +87,7 @@ REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
     "script": ("ANTHROPIC_API_KEY",),
     "audio": ("ELEVENLABS_API_KEY",),
     "assets": ("FAL_KEY",),
+    "image": ("FAL_KEY",),
     "video": ("FAL_KEY",),
 }
 
@@ -141,6 +142,101 @@ INTRO_VO_TEXT = ("Every creature in this book was drawn by the people who feared
                  "Open the page, and meet one.")
 OUTRO_VO_TEXT = ("The account closes here. But what it describes was never only a story. "
                  "Turn the page again soon.")
+
+
+# --- Media path resolution (single implementation, containment-checked) ------
+#
+# Manifest paths are stored relative to whichever root the file landed under, so
+# the same string has to resolve on Windows (repo-relative) and on Cloud Run
+# (under the /gcs FUSE mount). Every consumer — the API, the asset stage, and
+# the local motion renderer — must go through here, or they disagree about where
+# an image lives and the local render tier silently breaks in the cloud.
+
+
+# Only these extensions are ever served. Belt-and-braces alongside the root
+# check below — a manifest is not a media file, and neither is anything else.
+MEDIA_SUFFIXES = {
+    ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff",
+    ".mp4", ".mov", ".webm", ".mkv",
+    ".mp3", ".wav", ".m4a", ".ogg", ".flac",
+}
+
+
+def media_roots() -> list[Path]:
+    """Directories a media path is allowed to resolve into.
+
+    Deliberately excludes the project directory *itself*: when the active
+    manifest is the repo-root one, ``MANIFEST_PATH.parent`` is the repo root, and
+    allowing that would put .env and the service-account key back in reach. Only
+    the generated-media subtrees are listed.
+    """
+    project_dir = MANIFEST_PATH.parent
+    roots = [
+        ASSETS,
+        REFERENCES_DIR,
+        RENDER_DIR,
+        AUDIO_DIR,
+        project_dir / "assets",
+        project_dir / "references",
+        project_dir / "render",
+    ]
+    resolved: list[Path] = []
+    for r in roots:
+        try:
+            resolved.append(r.resolve())
+        except OSError:
+            continue
+    return resolved
+
+
+def is_within_media_roots(path: Path) -> bool:
+    """True if ``path`` resolves inside one of :func:`media_roots`."""
+    try:
+        target = path.resolve()
+    except OSError:
+        return False
+    if target.suffix.lower() not in MEDIA_SUFFIXES:
+        return False
+    return any(root in target.parents for root in media_roots())
+
+
+def resolve_media(path_str: str | None, scene_id: str | None = None) -> Path | None:
+    """Resolve a manifest media path to a real file, or None.
+
+    Rejects traversal outright (before resolution, so percent-decoded ``..``
+    can't sneak through) and then confirms the result sits inside
+    :func:`media_roots`.
+    """
+    if not path_str:
+        return None
+
+    clean = str(path_str).replace("\\", "/").strip().lstrip("/")
+    if not clean or ".." in clean.split("/"):
+        return None
+
+    parts = clean.split("/")
+    filename = parts[-1]
+    sid = scene_id or (parts[-2] if len(parts) >= 2 else None)
+    project_dir = MANIFEST_PATH.parent
+
+    candidates: list[Path] = []
+    if sid:
+        candidates.append(ASSETS / sid / filename)
+        candidates.append(project_dir / "assets" / sid / filename)
+        candidates.append(project_dir / sid / filename)
+    candidates.append(project_dir / clean)
+    candidates.append(ASSETS / clean)
+    candidates.append(REFERENCES_DIR / filename)
+    candidates.append(RENDER_DIR / clean)
+    candidates.append(ROOT / clean)
+
+    for cand in candidates:
+        try:
+            if cand.is_file() and is_within_media_roots(cand):
+                return cand.resolve()
+        except OSError:
+            continue
+    return None
 
 
 def slug(text: str) -> str:

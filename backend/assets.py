@@ -14,9 +14,9 @@ Other backends:
 - ``--backend flux``      base flux/dev + STYLE_BLOCK (legacy).
 
 CLI:
-    python -m src.assets                       # all beats, Nano Banana 2
-    python -m src.assets --scene s004          # one beat
-    python -m src.assets --backend flux-cfg    # cheaper flux fallback
+    python -m backend.assets                       # all beats, Nano Banana 2
+    python -m backend.assets --scene s004          # one beat
+    python -m backend.assets --backend flux-cfg    # cheaper flux fallback
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ import fal_client
 import requests
 
 from . import config
-from .manifest import Shot, Storyboard, load, save
+from .manifest import MotionType, Shot, Storyboard, load, save
 
 DEFAULT_VARIATIONS = 3
 DEFAULT_BACKEND = "nano2"
@@ -658,23 +658,12 @@ def generate_continuous_video_sequence(
             starting_image_path = previous_final_frame
             print(f"Chaining from previous beat's final frame: {starting_image_path.name}")
         else:
-            p_clean = str(shot.draft_image or "").replace("\\", "/").lstrip("/")
-            candidates = [
-                config.ROOT / p_clean,
-                config.ASSETS / p_clean,
-                config.ASSETS / shot.scene_id / Path(p_clean).name,
-                Path("/") / p_clean,
-            ]
-            found = None
-            for cand in candidates:
-                if cand.exists() and cand.is_file():
-                    found = cand
-                    break
+            found = config.resolve_media(shot.draft_image, shot.scene_id)
             if not found:
                 backend = getattr(storyboard.render, "backend", DEFAULT_BACKEND)
                 generate_for_shot(shot, n=1, backend=backend, render=storyboard.render)
                 shot.draft_image = shot.draft_variations[0]
-                found = config.ROOT / str(shot.draft_image).replace("\\", "/").lstrip("/")
+                found = config.resolve_media(shot.draft_image, shot.scene_id)
             starting_image_path = found
 
         if not starting_image_path or not starting_image_path.exists():

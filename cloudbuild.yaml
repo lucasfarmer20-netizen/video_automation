@@ -27,7 +27,13 @@ steps:
       - '8080'
       - '--add-volume=name=media-storage,type=cloud-storage,bucket=lucas-storyboard-vault-001-483921'
       - '--add-volume-mount=volume=media-storage,mount-path=/gcs'
-      - '--update-secrets=CLAUDE_API_KEY=CLAUDE_API_KEY:latest'
+      # Every paid stage needs its key. Without FAL_KEY the image/video stages
+      # fail with MissingKeyError; without ELEVENLABS_API_KEY so do narration
+      # and SFX. Create the matching secrets in Secret Manager first:
+      #   gcloud secrets create FAL_KEY --replication-policy=automatic
+      #   gcloud secrets create ELEVENLABS_API_KEY --replication-policy=automatic
+      #   gcloud secrets create STUDIO_API_KEY --replication-policy=automatic
+      - '--update-secrets=CLAUDE_API_KEY=CLAUDE_API_KEY:latest,FAL_KEY=FAL_KEY:latest,ELEVENLABS_API_KEY=ELEVENLABS_API_KEY:latest,STUDIO_API_KEY=STUDIO_API_KEY:latest'
 
 options:
   logging: CLOUD_LOGGING_ONLY

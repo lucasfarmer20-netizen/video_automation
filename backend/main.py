@@ -12,13 +12,14 @@ import json
 import shutil
 import subprocess
 import tempfile
+import traceback
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from dataclasses import asdict
 
 import fal_client
-import anthropic
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import unicodedata
@@ -42,16 +43,78 @@ from . import config, manifest, script, assets, audio, motion, timeline, sizzle
 from .manifest import Storyboard, Shot, MotionType, Camera, RenderConfig, db
 from .pipeline_worker import start_job, get_jobs_status
 
-app = FastAPI(title="YouTube Automation Studio API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Seed missing project manifests, then bootstrap Firestore from disk.
 
-# Enable CORS for Next.js frontend development
+    Both steps are additive — nothing here deletes or rewrites existing state,
+    because this runs on every cold start.
+    """
+    try:
+        ensure_gcs_projects()
+    except Exception:
+        print(f"Startup warning: ensure_gcs_projects failed:\n{traceback.format_exc()}")
+
+    if db is not None:
+        try:
+            for p in _scan_projects():
+                f_id = get_project_id_from_path(p["rel"])
+                if not db.collection("projects").document(f_id).get().exists:
+                    print(f"Firestore bootstrap: loading {p['name']} from disk ({f_id}) ...")
+                    sb = manifest.load(Path(p["rel"]))
+                    sb.id = f_id
+                    manifest.save_project(sb)
+        except Exception:
+            print(f"Startup warning: Firestore bootstrap failed:\n{traceback.format_exc()}")
+    else:
+        print("Startup: Firestore unavailable — running on local JSON manifests only.")
+
+    yield
+
+
+app = FastAPI(title="YouTube Automation Studio API", lifespan=lifespan)
+
+# CORS. The studio serves its own frontend from the same origin in production,
+# so the default is same-origin only; STUDIO_ALLOWED_ORIGINS opens it up for
+# local Next.js dev (e.g. "http://localhost:3000,http://localhost:5000").
+# "*" with allow_credentials=True lets any site on the internet make credentialed
+# calls to this API, so it is deliberately not the default.
+_DEV_ORIGINS = [
+    "http://localhost:3000",   # `npm run dev`
+    "http://127.0.0.1:3000",
+    "http://localhost:5000",
+    "http://127.0.0.1:5000",
+]
+_ALLOWED_ORIGINS = [
+    o.strip() for o in os.environ.get("STUDIO_ALLOWED_ORIGINS", "").split(",") if o.strip()
+] or _DEV_ORIGINS
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Optional shared-secret gate. Cloud Run is deployed --allow-unauthenticated, so
+# without this anyone with the URL can trigger paid fal.ai renders and delete
+# files. Set STUDIO_API_KEY and send it as X-Studio-Key to lock the studio down;
+# leaving it unset preserves the current open behaviour.
+STUDIO_API_KEY = os.environ.get("STUDIO_API_KEY", "")
+_PUBLIC_PATHS = ("/media/", "/assets/", "/references/", "/render/")
+
+
+@app.middleware("http")
+async def require_studio_key(request: Request, call_next):
+    if STUDIO_API_KEY and request.method not in ("GET", "HEAD", "OPTIONS"):
+        if request.headers.get("X-Studio-Key") != STUDIO_API_KEY:
+            return JSONResponse(
+                status_code=401,
+                content={"ok": False, "error": "Missing or invalid X-Studio-Key."},
+            )
+    return await call_next(request)
+
 
 WORKSPACE_ROOT = Path(config.ROOT).resolve()
 ACTIVE_PROJECT_FILE = Path("/gcs/.active_project") if Path("/gcs").exists() else Path(".active_project")
@@ -216,35 +279,8 @@ def _suggest_motion_prompt(shot) -> str:
 
 
 def _resolve_local_image_file(path_str: str | None, scene_id: str | None = None) -> Path | None:
-    if not path_str:
-        return None
-    p_raw = str(path_str).replace("\\", "/").strip()
-    p_clean = p_raw.lstrip("/")
-    active_dir = Path(get_active_manifest_path()).parent
-
-    parts = p_clean.split("/")
-    filename = parts[-1]
-    sid = scene_id or (parts[-2] if len(parts) >= 2 else None)
-
-    candidates = []
-    # 1. Project-specific scene directory (highest priority)
-    if sid:
-        candidates.append(active_dir / "assets" / sid / filename)
-        candidates.append(active_dir / sid / filename)
-        
-    # 2. General active dir / clean path
-    candidates.append(active_dir / p_clean)
-
-    allowed_roots = [WORKSPACE_ROOT.resolve(), Path("/gcs").resolve()]
-    for cand in candidates:
-        try:
-            res = cand.resolve()
-            if res.exists() and res.is_file():
-                if any(res == root or root in res.parents for root in allowed_roots):
-                    return res
-        except Exception:
-            pass
-    return None
+    """Resolve a manifest media path. Thin alias over the shared resolver."""
+    return config.resolve_media(path_str, scene_id)
 
 
 def _safe_rel_path(dest: Path) -> str:
@@ -254,88 +290,26 @@ def _safe_rel_path(dest: Path) -> str:
         return str(dest).replace("\\", "/").lstrip("/")
 
 
-VALID_CLAUDE_MODELS = {
-    "claude-sonnet-5",
-    "claude-opus-4-8",
-    "claude-sonnet-4-6",
-    "claude-fable-5",
-    "claude-opus-5",
-    "claude-3-5-sonnet-20241022",
-    "claude-3-5-sonnet-latest",
-    "claude-3-7-sonnet-20250219",
-}
-
-DEFAULT_CLAUDE_MODEL = "claude-sonnet-5"
+CHAT_MAX_TOKENS = 8000
 
 
-def normalize_claude_model(model_name: str | None) -> str:
-    """Normalize any Claude model string to active account model endpoints."""
-    if not model_name:
-        return DEFAULT_CLAUDE_MODEL
+def claude_chat(system: str, messages: list[dict]) -> str:
+    """One conversational turn with Vesper; returns the assistant's text.
 
-    m = str(model_name).strip().lower()
-
-    if m in VALID_CLAUDE_MODELS:
-        return m
-
-    if "opus" in m or "4-8" in m or "4.8" in m:
-        return "claude-opus-4-8"
-    if "fable" in m:
-        return "claude-fable-5"
-    if "4-6" in m or "4.6" in m:
-        return "claude-sonnet-4-6"
-    if "sonnet-5" in m or "sonnet 5" in m:
-        return "claude-sonnet-5"
-    if "3-7" in m or "3.7" in m:
-        return "claude-3-7-sonnet-20250219"
-
-    return DEFAULT_CLAUDE_MODEL
-
-
-def create_claude_message(client, model, max_tokens, system, messages):
-    norm_model = normalize_claude_model(model)
-    models_to_try = [norm_model]
-    fallbacks = [
-        "claude-sonnet-5",
-        "claude-opus-4-8",
-        "claude-sonnet-4-6",
-        "claude-fable-5",
-        "claude-3-5-sonnet-20241022",
-        "claude-3-5-sonnet-latest",
-        "claude-3-7-sonnet-20250219"
-    ]
-    for fb in fallbacks:
-        if fb not in models_to_try:
-            models_to_try.append(fb)
-
-    first_exc = None
-    last_exc = None
-    for m in models_to_try:
-        try:
-            print(f"Trying Claude model: {m}...")
-            return client.messages.create(
-                model=m,
-                max_tokens=max_tokens,
-                system=system,
-                messages=messages
-            )
-        except Exception as exc:
-            print(f"Claude model {m} failed: {exc}")
-            if first_exc is None:
-                first_exc = exc
-            last_exc = exc
-            continue
-
-    if first_exc:
-        err_msg = str(first_exc)
-        if "not_found" in err_msg.lower() or "404" in err_msg:
-            raise RuntimeError(
-                f"Anthropic API Key Error (404 Not Found): None of the standard Claude models were accessible with your current API key. "
-                f"Please verify your CLAUDE_API_KEY secret in Cloud Run or ensure your Anthropic account has access to the Claude Messages API."
-            ) from first_exc
-        raise first_exc
-    if last_exc:
-        raise last_exc
+    Thinking is on by default on Opus 5 and is billed against the same
+    ``max_tokens`` ceiling as the reply, so the budget covers both.
+    """
+    client = script._client()
+    response = client.messages.create(
+        model=script.DEFAULT_MODEL,
+        max_tokens=CHAT_MAX_TOKENS,
+        system=system,
+        messages=messages,
+        output_config={"effort": "medium"},
+    )
+    if response.stop_reason == "refusal":
+        raise RuntimeError("Claude declined to respond to this message.")
+    return "".join(b.text for b in response.content if b.type == "text")
 
 
 
@@ -547,102 +521,6 @@ def generate_fal_and_render(sb: Storyboard) -> None:
     print("Generation and rendering complete!")
 
 
-def migrate_assets_to_project_folders(gcs_root: Path):
-    projects = [
-        ("bestiary/manananggal", gcs_root / "bestiary" / "manananggal"),
-        ("bestiary/leshy", gcs_root / "bestiary" / "leshy")
-    ]
-    global_assets_dir = gcs_root / "assets"
-    if not global_assets_dir.exists():
-        return
-        
-    for name, p_dir in projects:
-        manifest_file = p_dir / "storyboard_manifest.json"
-        if not manifest_file.exists():
-            continue
-            
-        try:
-            data = json.loads(manifest_file.read_text(encoding="utf-8"))
-            shots = data.get("shots", [])
-            for shot in shots:
-                scene_id = shot.get("scene_id")
-                if not scene_id:
-                    continue
-                    
-                paths = []
-                if shot.get("draft_image"):
-                    paths.append(shot["draft_image"])
-                if shot.get("video_clip"):
-                    paths.append(shot["video_clip"])
-                paths.extend(shot.get("draft_variations") or [])
-                paths.extend(shot.get("video_variations") or [])
-                
-                for p_str in paths:
-                    p_clean = str(p_str).replace("\\", "/").lstrip("/")
-                    if p_clean.startswith("assets/"):
-                        sub_path = p_clean[7:]
-                    else:
-                        sub_path = p_clean
-                        
-                    src_file = global_assets_dir / sub_path
-                    if src_file.exists() and src_file.is_file():
-                        dest_file = p_dir / "assets" / sub_path
-                        dest_file.parent.mkdir(parents=True, exist_ok=True)
-                        if not dest_file.exists() or dest_file.stat().st_size != src_file.stat().st_size:
-                            shutil.copy2(src_file, dest_file)
-                            print(f"Migration: Copied {src_file.name} to {dest_file}")
-        except Exception as e:
-            print(f"Migration warning: Failed to migrate assets for {name}: {e}")
-
-
-def sanitize_manifest_image_paths(manifest_file: Path, project_dir: Path):
-    if not manifest_file.exists():
-        return
-    try:
-        data = json.loads(manifest_file.read_text(encoding="utf-8"))
-        shots = data.get("shots", [])
-        modified = False
-        for s in shots:
-            scene_id = s.get("scene_id")
-            if not scene_id:
-                continue
-            
-            # Verify draft_image
-            draft_img = s.get("draft_image")
-            if draft_img:
-                clean_path = str(draft_img).replace("\\", "/").lstrip("/")
-                sub_p = clean_path[7:] if clean_path.startswith("assets/") else clean_path
-                
-                proj_asset = project_dir / "assets" / sub_p
-                global_asset = Path("/gcs/assets") / sub_p
-                
-                # If image is a legacy generic var_X.png or missing on disk/GCS, clear it!
-                if "var_" in clean_path or not (proj_asset.exists() or global_asset.exists()):
-                    s["draft_image"] = None
-                    s["approved"] = False
-                    modified = True
-                    
-            # Verify draft_variations
-            vars_list = s.get("draft_variations") or []
-            new_vars = []
-            for v in vars_list:
-                clean_v = str(v).replace("\\", "/").lstrip("/")
-                sub_v = clean_v[7:] if clean_v.startswith("assets/") else clean_v
-                p_v = project_dir / "assets" / sub_v
-                g_v = Path("/gcs/assets") / sub_v
-                if not "var_" in clean_v and (p_v.exists() or g_v.exists()):
-                    new_vars.append(v)
-            if len(new_vars) != len(vars_list):
-                s["draft_variations"] = new_vars
-                modified = True
-                
-        if modified:
-            manifest_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            print(f"Sanitized stale manifest image paths in {manifest_file}")
-    except Exception as e:
-        print(f"Warning: Failed to sanitize manifest {manifest_file}: {e}")
-
-
 def ensure_gcs_projects():
     gcs_root = Path("/gcs").resolve()
     if not gcs_root.exists():
@@ -697,68 +575,12 @@ def ensure_gcs_projects():
             except Exception as e:
                 print(f"Failed to copy leshy manifest: {e}")
 
-    # 2. Cleanup old duplicate files to keep workspace completely clean
-    files_to_remove = [
-        gcs_root / "storyboard_manifest.json",
-        gcs_root / "bestiary" / "storyboard_manifest.json",
-        gcs_root / "calluses" / "storyboard_manifest.json",
-        WORKSPACE_ROOT / "storyboard_manifest.json",
-        WORKSPACE_ROOT / "bestiary" / "storyboard_manifest.json",
-        WORKSPACE_ROOT / "calluses" / "storyboard_manifest.json",
-    ]
-    for f in files_to_remove:
-        try:
-            if f.exists() and f.is_file():
-                f.unlink()
-                print(f"Cleanup: Removed obsolete duplicate manifest file {f}")
-        except Exception as e:
-            print(f"Cleanup warning: could not remove {f}: {e}")
-            
-    # Clean up empty calluses dir on local/GCS
-    try:
-        old_calluses_dir = gcs_root / "calluses"
-        if old_calluses_dir.exists() and old_calluses_dir.is_dir():
-            shutil.rmtree(old_calluses_dir)
-            print(f"Cleanup: Removed old calluses folder {old_calluses_dir}")
-    except Exception as e:
-        pass
-
-    # 3. Migrate assets to project subfolders
-    try:
-        migrate_assets_to_project_folders(gcs_root)
-    except Exception as e:
-        print(f"Startup Warning: migrate_assets_to_project_folders failed: {e}")
-
-    # 4. Sanitize stale manifest paths
-    try:
-        sanitize_manifest_image_paths(manananggal_manifest, manananggal_dir)
-        sanitize_manifest_image_paths(leshy_manifest, leshy_dir)
-    except Exception as e:
-        print(f"Startup Warning: sanitize_manifest_image_paths failed: {e}")
-
-
-@app.on_event("startup")
-async def startup_event():
-    # 1. Ensure GCS default files
-    try:
-        ensure_gcs_projects()
-    except Exception as e:
-        print(f"Startup Warning: ensure_gcs_projects failed: {e}")
-
-    # 2. Bootstrap Firestore from local scanned JSON manifests
-    try:
-        scanned = _scan_projects()
-        for p in scanned:
-            p_path = p["rel"]
-            f_id = get_project_id_from_path(p_path)
-            doc = db.collection("projects").document(f_id).get()
-            if not doc.exists:
-                print(f"Firestore Bootstrap: Loading {p['name']} from disk into Firestore ({f_id})...")
-                sb = manifest.load(Path(p_path))
-                sb.id = f_id
-                manifest.save_project(sb)
-    except Exception as e:
-        print(f"Startup Warning: Firestore bootstrap failed: {e}")
+    # NOTE: this seeds *missing* project manifests only. It must never delete or
+    # rewrite existing ones — this runs on every cold start, and Cloud Run scales
+    # to zero, so anything destructive here silently eats user data between
+    # sessions. (An earlier version unlinked six manifest paths, rmtree'd
+    # calluses/, and nulled every draft_image whose filename contained "var_" —
+    # which is every image assets.py generates.)
 
 
 # --- API ENDPOINTS ---
@@ -812,16 +634,19 @@ def get_active_project():
                 {"name": n, "file": _ref_file(n, reg)} for n in s.references
             ]
             s_dict["motion_prompt_suggestion"] = _suggest_motion_prompt(s)
-            # Clip resolution path
+            # Clip path, relative to a media root. The frontend prefixes /media/
+            # exactly once, so nothing here may carry a leading route segment.
             shot_paths = config.episode_paths(sb.title)
             dest_clip = shot_paths["render"] / f"{s.scene_id}.mp4"
-            s_dict["active_clip_url"] = f"/render/{s.scene_id}.mp4" if dest_clip.exists() else None
+            s_dict["active_clip_url"] = (
+                f"render/{shot_paths['slug']}/{s.scene_id}.mp4" if dest_clip.exists() else None
+            )
             shots_payload.append(s_dict)
-            
+
         # Preview track resolution
         ep = config.episode_paths(sb.title)
         preview_file = ep["render"] / "_preview.mp4"
-        preview_url = f"/media/{_safe_rel_path(preview_file)}" if preview_file.exists() else None
+        preview_url = f"render/{ep['slug']}/_preview.mp4" if preview_file.exists() else None
         
         fcpxml_file = config.ROOT / f"{ep['slug']}.fcpxml"
         fcpxml_ready = fcpxml_file.exists()
@@ -878,12 +703,20 @@ async def select_project(request: Request):
         rel_path = data.get("rel")
         if not rel_path:
             raise HTTPException(status_code=400, detail="Missing relative path")
-        
-        p = Path(rel_path)
-        if not p.exists():
+
+        p = Path(rel_path).resolve()
+        # Only a manifest inside a known workspace root may be activated —
+        # otherwise this endpoint points the studio at arbitrary paths on disk.
+        roots = [WORKSPACE_ROOT.resolve()]
+        gcs_root = Path("/gcs")
+        if gcs_root.exists():
+            roots.append(gcs_root.resolve())
+        if not any(root in p.parents for root in roots):
+            raise HTTPException(status_code=400, detail="Project path is outside the workspace")
+        if p.name != "storyboard_manifest.json" or not p.is_file():
             raise HTTPException(status_code=404, detail="Project file not found on disk")
-        
-        set_active_manifest_path(rel_path)
+
+        set_active_manifest_path(str(p))
         return {"ok": True}
     except HTTPException as he:
         raise he
@@ -1412,16 +1245,8 @@ async def shot_chat(scene_id: str, request: Request):
             f"\"refined_prompt\" and/or \"refined_motion_prompt\"."
         )
         
-        client = anthropic.Anthropic()
-        resp = create_claude_message(
-            client=client,
-            model=script.DEFAULT_MODEL,
-            max_tokens=1500,
-            system=system_prompt,
-            messages=messages
-        )
-        reply = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
-        
+        reply = claude_chat(system_prompt, messages)
+
         # Look for refined prompts in JSON format inside the response
         refined_prompt = None
         refined_motion_prompt = None
@@ -1478,10 +1303,13 @@ def delete_image_variation(scene_id: str, var_idx: int):
             raise HTTPException(status_code=400, detail="Invalid variation index")
             
         rel_path = shot.draft_variations.pop(var_idx)
-        abs_path = WORKSPACE_ROOT / rel_path
-        if abs_path.exists() and abs_path.is_file():
+        # Resolve through the shared resolver so a doctored manifest path cannot
+        # make this unlink an arbitrary file.
+        abs_path = config.resolve_media(rel_path, scene_id)
+        if abs_path is not None:
             abs_path.unlink()
-            
+
+
         # Reset chosen variation
         if shot.chosen_variation == var_idx:
             shot.chosen_variation = 0 if shot.draft_variations else None
@@ -1510,10 +1338,11 @@ def delete_video_variation(scene_id: str, var_idx: int):
             raise HTTPException(status_code=400, detail="Invalid video variation index")
             
         rel_path = video_vars.pop(var_idx)
-        abs_path = WORKSPACE_ROOT / rel_path
-        if abs_path.exists() and abs_path.is_file():
+        abs_path = config.resolve_media(rel_path, scene_id)
+        if abs_path is not None:
             abs_path.unlink()
-            
+
+
         if shot.video_clip == rel_path:
             shot.video_clip = video_vars[0] if video_vars else None
             
@@ -1604,16 +1433,7 @@ async def chat_develop(request: Request):
         channel = data.get("channel") or "bestiary"
         
         system_prompt = script.get_system_prompt(channel)
-        client = anthropic.Anthropic()
-        
-        resp = create_claude_message(
-            client=client,
-            model=script.DEFAULT_MODEL,
-            max_tokens=2000,
-            system=system_prompt,
-            messages=messages
-        )
-        reply = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+        reply = claude_chat(system_prompt, messages)
         return {"ok": True, "reply": reply}
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
@@ -1759,34 +1579,18 @@ def get_assemble_status():
 
 @app.get("/media/{filepath:path}")
 def serve_media_files(filepath: str):
-    clean = filepath.replace("\\", "/").lstrip("/")
-    active_dir = Path(get_active_manifest_path()).parent
+    """Serve a generated asset.
 
-    # Enforce strict project-isolated lookups
-    candidates = [
-        active_dir / clean,
-        active_dir / "assets" / clean,
-        config.REFERENCES_DIR / clean,
-    ]
-
-    parts = clean.split("/")
-    filename = parts[-1]
-    if len(parts) >= 2:
-        scene_id = parts[-2]
-        candidates.append(active_dir / "assets" / scene_id / filename)
-        candidates.append(active_dir / scene_id / filename)
-
-    allowed_roots = [WORKSPACE_ROOT.resolve(), Path("/gcs").resolve()]
-    for cand in candidates:
-        try:
-            res = cand.resolve()
-            if res.exists() and res.is_file():
-                if any(res == root or root in res.parents for root in allowed_roots):
-                    return FileResponse(res, headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"})
-        except Exception:
-            pass
-
-    raise HTTPException(status_code=404, detail=f"Media not found: {filepath}")
+    Resolution and containment both live in ``config.resolve_media``, which
+    refuses traversal and confines the result to the project's media roots — so
+    this endpoint cannot be walked back up to .env or the service-account key.
+    """
+    resolved = config.resolve_media(filepath)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail=f"Media not found: {filepath}")
+    return FileResponse(
+        resolved, headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"}
+    )
 
 
 @app.get("/assets/{filepath:path}")

@@ -14,9 +14,9 @@ imageio-ffmpeg (system ffmpeg). Silent clips; ``audio.py`` / ``timeline.py`` own
 sound and assembly.
 
 CLI:
-    python -m src.motion                 # render every non-paid approved shot
-    python -m src.motion --scene s001    # one shot
-    python -m src.motion --fps 30 --height 1080
+    python -m backend.motion                 # render every non-paid approved shot
+    python -m backend.motion --scene s001    # one shot
+    python -m backend.motion --fps 30 --height 1080
 """
 
 from __future__ import annotations
@@ -177,7 +177,14 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
     """
     if not shot.draft_image:
         raise ValueError(f"{shot.scene_id}: no chosen draft_image to render.")
-    src = config.ROOT / shot.draft_image
+    # Go through the shared resolver: manifest paths are repo-relative locally
+    # but land under /gcs on Cloud Run, so `config.ROOT / draft_image` misses
+    # there and the whole free render tier silently fails.
+    src = config.resolve_media(shot.draft_image, shot.scene_id)
+    if src is None:
+        raise FileNotFoundError(
+            f"{shot.scene_id}: draft image not found on disk: {shot.draft_image}"
+        )
     out_w, out_h = height * 16 // 9, height
     duration = float(shot.camera.duration) if shot.camera else 6.0
     move = shot.camera.move if shot.camera else "static"

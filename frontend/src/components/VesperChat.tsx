@@ -121,12 +121,12 @@ export default function VesperChat({
             onKeyDown={(e) => e.key === "Enter" && handleSend()}
             placeholder={loading ? "Vesper is typing..." : "Ask Vesper to refine concept..."}
             disabled={loading}
-            className="flex-1 bg-zinc-900 text-zinc-200 placeholder-zinc-650 border border-zinc-800 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-amber-400 transition"
+            className="flex-1 bg-zinc-900 text-zinc-200 placeholder-zinc-600 border border-zinc-800 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-amber-400 transition"
           />
           <button
             onClick={handleSend}
             disabled={loading || !inputText.trim()}
-            className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-3 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center border border-zinc-750 disabled:opacity-50"
+            className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-3 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center border border-zinc-700 disabled:opacity-50"
           >
             <Send className="h-3.5 w-3.5" />
           </button>
@@ -143,7 +143,7 @@ export default function VesperChat({
               value={topicText}
               onChange={(e) => setTopicText(e.target.value)}
               placeholder="e.g. 'The Leshy of Bialowieza'"
-              className="w-full bg-zinc-900 text-zinc-200 placeholder-zinc-650 border border-zinc-800 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-amber-400 transition"
+              className="w-full bg-zinc-900 text-zinc-200 placeholder-zinc-600 border border-zinc-800 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-amber-400 transition"
             />
             <div className="flex gap-2">
               <input
@@ -151,7 +151,7 @@ export default function VesperChat({
                 value={beatsCount}
                 onChange={(e) => setBeatsCount(e.target.value === "" ? "" : Number(e.target.value))}
                 placeholder="Beats count"
-                className="w-1/2 bg-zinc-900 text-zinc-200 placeholder-zinc-650 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-center focus:outline-none focus:border-amber-400 transition"
+                className="w-1/2 bg-zinc-900 text-zinc-200 placeholder-zinc-600 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-center focus:outline-none focus:border-amber-400 transition"
                 min="1"
               />
               <button

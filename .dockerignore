@@ -18,8 +18,19 @@ __pycache__/
 .devcontainer/
 .vscode/
 
-# Ignore local configuration files containing secrets
+# Ignore local configuration files containing secrets.
+# The Dockerfile does `COPY . .`, so anything not listed here ends up in the
+# published image. Service-account keys must never be baked in — Cloud Run
+# provides credentials via the attached service account.
 .env
+*.json.key
+lucas-pipeline-*.json
+**/service-account*.json
+**/*-credentials.json
+
+# Scratch/dev-only material
+scratch/
+scripts/
 
 # Ignore large generated assets and audio directories
 assets/
