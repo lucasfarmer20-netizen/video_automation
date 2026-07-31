@@ -12,8 +12,8 @@ Flow:
     3. ``--compose``  build the final segment(s) from whatever clips are present.
 
 CLI:
-    python -m src.bookends --vo
-    python -m src.bookends --compose
+    python -m backend.bookends --vo
+    python -m backend.bookends --compose
 """
 
 from __future__ import annotations

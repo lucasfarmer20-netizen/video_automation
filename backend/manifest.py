@@ -10,12 +10,16 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, List, Optional
+# Firestore uses Application Default Credentials: the attached service account on
+# Cloud Run, or GOOGLE_APPLICATION_CREDENTIALS locally. Never hardcode a key
+# filename here — the Dockerfile does `COPY . .`, so a key sitting in the repo
+# gets baked into the published image.
 try:
     from google.cloud import firestore
-    if os.path.exists("lucas-pipeline-2026-v1-ec3e767f8c46.json"):
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "lucas-pipeline-2026-v1-ec3e767f8c46.json"
+
     db = firestore.Client()
-except Exception:
+except Exception as exc:  # noqa: BLE001 — the app still runs on local JSON manifests
+    print(f"Firestore unavailable ({exc.__class__.__name__}: {exc}); using local manifests.")
     db = None
 
 MANIFEST_VERSION = 1
@@ -204,9 +208,17 @@ def list_projects(channel: Optional[str] = None) -> List[dict]:
     return res
 
 
-def load(path: Path) -> Storyboard:
-    """Load the manifest from local JSON path. For compatibility with backend modules."""
+def load(path: Path | None = None) -> Storyboard:
+    """Load the manifest from a local JSON path.
+
+    ``path`` defaults to the active manifest (``config.MANIFEST_PATH``) so the
+    module CLIs and every ``load()`` call site keep working. An empty or absent
+    file yields a fresh Storyboard.
+    """
     import json
+    from . import config
+
+    path = Path(path) if path is not None else config.MANIFEST_PATH
     if not path.exists():
         return Storyboard()
     text = path.read_text(encoding="utf-8").strip()
@@ -224,9 +236,16 @@ def load(path: Path) -> Storyboard:
     return Storyboard.from_dict(project_id, data, shots_list)
 
 
-def save(storyboard: Storyboard, path: Path) -> None:
-    """Persist the manifest atomically as pretty JSON on local disk. For compatibility."""
+def save(storyboard: Storyboard, path: Path | None = None) -> None:
+    """Persist the manifest atomically as pretty JSON on local disk.
+
+    ``path`` defaults to the active manifest (``config.MANIFEST_PATH``).
+    """
     import json
+    from . import config
+
+    path = Path(path) if path is not None else config.MANIFEST_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     
     # Convert storyboard to dict

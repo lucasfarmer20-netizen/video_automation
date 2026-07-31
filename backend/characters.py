@@ -21,9 +21,9 @@ Registry — ``characters.json`` (repo root):
               "structural_anchor": "..."}, ... }
 
 CLI:
-    python -m src.characters --anchors             # draft anchors, all characters
-    python -m src.characters --anchors --name man  # one character
-    python -m src.characters --sheets --name man   # optional neutral visual sheet
+    python -m backend.characters --anchors             # draft anchors, all characters
+    python -m backend.characters --anchors --name man  # one character
+    python -m backend.characters --sheets --name man   # optional neutral visual sheet
 """
 
 from __future__ import annotations

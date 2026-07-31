@@ -23,12 +23,12 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-# Make the repo root importable so `from src import config` works.
+# Make the repo root importable so `from backend import config` works.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import fal_client  # noqa: E402
 
-from src import config  # noqa: E402
+from backend import config  # noqa: E402
 
 TRAINING_ENDPOINT = "fal-ai/flux-lora-fast-training"
 TRIGGER_WORD = "DEEPROOTLORE"

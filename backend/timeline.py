@@ -17,7 +17,7 @@ Emits ``<slug>.otio`` (native, Resolve imports it directly) and ``<slug>.fcpxml`
 Resolve.
 
 CLI:
-    python -m src.timeline
+    python -m backend.timeline
 """
 
 from __future__ import annotations
@@ -312,10 +312,6 @@ def _main() -> None:
     if args.preview:
         out, _ = build_preview()
         print(f"preview: {out}")
-
-
-if __name__ == "__main__":
-    _main()
 
 
 if __name__ == "__main__":

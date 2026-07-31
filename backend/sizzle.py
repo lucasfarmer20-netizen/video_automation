@@ -13,8 +13,8 @@ accents, depth-parallax motion, no gore (monetization-safe).
 Pipeline per reel: fal Flux stills -> depth+parallax render -> Vesper TTS +
 ElevenLabs ambience/SFX -> ffmpeg mux. Outputs sizzle/<reel>.mp4.
 
-    python -m src.sizzle              # both reels
-    python -m src.sizzle --reel A     # one
+    python -m backend.sizzle              # both reels
+    python -m backend.sizzle --reel A     # one
 """
 
 from __future__ import annotations

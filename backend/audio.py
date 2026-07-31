@@ -14,10 +14,10 @@ Generation (TTS / SFX) calls a paid API, so ``config.require_for("audio")`` gate
 each. Music analysis is local and free.
 
 CLI:
-    python -m src.audio --music                 # analyse the selected track
-    python -m src.audio --narration             # TTS every locked beat
-    python -m src.audio --sfx --scene s001 s006 # SFX for specific beats
-    python -m src.audio --sfx-test "eerie wind" # one-off SFX probe
+    python -m backend.audio --music                 # analyse the selected track
+    python -m backend.audio --narration             # TTS every locked beat
+    python -m backend.audio --sfx --scene s001 s006 # SFX for specific beats
+    python -m backend.audio --sfx-test "eerie wind" # one-off SFX probe
 """
 
 from __future__ import annotations

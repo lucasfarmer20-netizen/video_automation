@@ -1,12 +1,12 @@
 """Single orchestrator entrypoint.
 
-Routes to modular code in ``src/`` and enforces the hard human-approval gates:
+Routes to modular code in ``backend/`` and enforces the hard human-approval gates:
 the script gate (a human locks the narration before any paid stage runs) and the
-storyboard/budget gate (the pipeline pauses after draft-image generation,
-launches the Flask dashboard, and refuses to call any paid video API until an
-approved ``storyboard_manifest.json`` has been written).
+storyboard/budget gate (the pipeline pauses after draft-image generation and
+refuses to call any paid video API until an approved
+``storyboard_manifest.json`` has been written via the studio UI).
 
-This file *orchestrates only* — all domain logic lives in ``src/`` (see
+This file *orchestrates only* — all domain logic lives in ``backend/`` (see
 CLAUDE.md). The run is a resumable state machine driven by the manifest flags:
 each invocation advances as far as it can, then **pauses at the next human gate**
 and exits. Re-run to continue once the human has acted.
@@ -20,18 +20,20 @@ from __future__ import annotations
 
 import argparse
 import os
+from typing import TYPE_CHECKING
 
-from src import config
-from src.manifest import Shot, Storyboard, load, save
+if TYPE_CHECKING:  # import-time-safe: annotations are lazy under `annotations`
+    from backend.manifest import Shot, Storyboard
+
+# NOTE: `backend.config` resolves the active manifest path at import time, so the
+# CLI flags must be translated into MANIFEST_PATH / ASSETS_DIR *before* it is
+# imported. Everything below therefore imports backend modules lazily, inside the
+# functions that use them — importing them at module scope silently pinned every
+# run to the default manifest and made --channel/--project do nothing.
 
 DRAFTS_PER_SHOT = 3
 DEFAULT_SHOT_SECONDS = 6.0  # fallback when a shot carries no camera duration
 
-
-# --------------------------------------------------------------------------- #
-# Cloud-Native Path Setup & Directory Assurance
-# --------------------------------------------------------------------------- #
-# These will be set dynamically inside _main() based on your CLI flags
 CHANNEL_TITLE = "The Illuminated Bestiary"
 MANIFEST_PATH = "./storyboard_manifest.json"
 ASSETS_DIR = "./static/assets"
@@ -40,8 +42,10 @@ ASSETS_DIR = "./static/assets"
 # --------------------------------------------------------------------------- #
 # init
 # --------------------------------------------------------------------------- #
-def _init_storyboard() -> Storyboard:
+def _init_storyboard():
     """Load the manifest, or start a fresh Storyboard for the channel."""
+    from backend.manifest import load, save
+
     sb = load()
     if not sb.shots and not sb.title:
         sb.title = CHANNEL_TITLE
@@ -55,7 +59,8 @@ def _init_storyboard() -> Storyboard:
 # --------------------------------------------------------------------------- #
 def stage_script(sb: Storyboard, topic: str | None, num_beats: int | None) -> None:
     """Draft the narration/beats if needed, then pause for the human to lock."""
-    from src import script
+    from backend import script
+    from backend.manifest import save
 
     if not sb.shots:
         if not topic:
@@ -75,7 +80,7 @@ def stage_script(sb: Storyboard, topic: str | None, num_beats: int | None) -> No
 
     print("\n== SCRIPT GATE ==")
     print("Refine the narration/visuals in the manifest, then lock the script:")
-    print("    python -m src.script --lock")
+    print("    python -m backend.script --lock")
     print("Re-run the pipeline once the script is locked to continue.")
 
 
@@ -84,7 +89,7 @@ def stage_script(sb: Storyboard, topic: str | None, num_beats: int | None) -> No
 # --------------------------------------------------------------------------- #
 def _landmarks(track: str) -> list[float]:
     """Sorted, de-duplicated cut candidates from beats + percussive transients."""
-    from src import audio
+    from backend import audio
 
     analysis = audio.analyze_music(track)
     transients = audio.detect_transients(track)
@@ -118,7 +123,8 @@ def _map_anchors(shots: list[Shot], landmarks: list[float]) -> int:
 
 def stage_audio(sb: Storyboard) -> Storyboard:
     """Synthesize narration, then anchor each cut to a music landmark."""
-    from src import audio
+    from backend import audio
+    from backend.manifest import save
 
     print("\n== AUDIO & LANDMARK STAGE ==")
     clips = audio.synthesize_narration(sb)  # paid; enforces the script gate itself
@@ -143,7 +149,8 @@ def stage_audio(sb: Storyboard) -> Storyboard:
 # --------------------------------------------------------------------------- #
 def stage_drafts(sb: Storyboard) -> Storyboard:
     """Generate draft image variations for every beat (default backend)."""
-    from src import assets
+    from backend import assets
+    from backend.manifest import save
 
     print("\n== VISUAL DRAFT STAGE ==")
     assets.generate_drafts(
@@ -161,25 +168,21 @@ def stage_drafts(sb: Storyboard) -> Storyboard:
 # stage 4 — human-approval gate (Gate 1)
 # --------------------------------------------------------------------------- #
 def stage_gate(sb: Storyboard, host: str, port: int) -> Storyboard | None:
-    """Launch the storyboard/budget dashboard and block until the gate clears."""
-    from src import dashboard
+    """Check the storyboard/budget gate, pointing the human at the studio UI."""
+    from backend.manifest import load
 
     if sb.gate_cleared():
         print("\nGate already cleared.")
         return sb
 
     print("\n== HUMAN-APPROVAL GATE (Gate 1) ==")
-    print("Launching the storyboard / budget dashboard. In the browser:")
-    print(f"  1. Open http://{host}:{port}")
-    print("  2. For each beat: pick a draft image and set its motion tier.")
-    print("  3. Click Approve to write the approved manifest.")
-    print("  4. Then stop this server (Ctrl+C) to resume the pipeline.")
+    print("The storyboard is not approved yet. In a second terminal, run:")
+    print("    python run_studio.py")
+    print(f"then open http://{host}:{port} and:")
+    print("  1. For each beat: pick a draft image and set its motion tier.")
+    print("  2. Click Approve to write the approved manifest.")
+    print("  3. Re-run this pipeline to continue.")
     print("No paid video API will run until the gate is cleared.\n")
-
-    try:
-        dashboard.run(host=host, port=port)
-    except KeyboardInterrupt:
-        print("\nDashboard stopped — checking the gate ...")
 
     sb = load()  # reload whatever the human approved in the UI
     if not sb.gate_cleared():
@@ -257,7 +260,8 @@ def _main() -> None:
     os.makedirs(os.path.dirname(MANIFEST_PATH), exist_ok=True)
     os.makedirs(ASSETS_DIR, exist_ok=True)
     
-    # Set environment variables so internal modules (src/) read the isolated paths
+    # Set these BEFORE any backend module is imported — backend.config reads them
+    # at import time to pick the active manifest.
     os.environ["MANIFEST_PATH"] = MANIFEST_PATH
     os.environ["ASSETS_DIR"] = ASSETS_DIR
     
