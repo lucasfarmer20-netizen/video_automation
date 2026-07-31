@@ -321,7 +321,7 @@ def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anth
 
             response = client.messages.create(
                 model=m,
-                max_tokens=8192,
+                max_tokens=4096,
                 system=system_prompt,
                 messages=fallback_messages,
             )

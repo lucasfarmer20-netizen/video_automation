@@ -152,12 +152,27 @@ export default function WorkspacePage() {
 
   // Post helper
   const post = async (url: string, body: any = {}) => {
-    const res = await fetch(`${API_BASE}${url}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    return res.json();
+    try {
+      const res = await fetch(`${API_BASE}${url}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        let errMsg = `Server error (${res.status} ${res.statusText})`;
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed.error || parsed.detail) errMsg = parsed.error || parsed.detail;
+        } catch {
+          if (text) errMsg += `: ${text.slice(0, 150)}`;
+        }
+        return { ok: false, error: errMsg };
+      }
+      return await res.json();
+    } catch (err: any) {
+      return { ok: false, error: err.message || "Network request failed" };
+    }
   };
 
   // Action handlers
