@@ -133,7 +133,14 @@ export default function WorkspacePage() {
       const res = await fetch(`${API_BASE}/api/assemble/status`);
       const data = await res.json();
       if (data.ok) {
-        setJobs(data.jobs);
+        setJobs((prevJobs: any) => {
+          const newJobs = data.jobs;
+          if (prevJobs?.script_draft?.status === "running" && newJobs?.script_draft?.status === "done") {
+            fetchActiveProject();
+            fetchProjects();
+          }
+          return newJobs;
+        });
       }
     } catch (e) {
       console.error("Failed to poll background jobs", e);
@@ -400,34 +407,29 @@ export default function WorkspacePage() {
   };
 
   const handleDraftStoryboard = async (topic: string, beats: number | null) => {
-    setLoading(true);
     try {
       const data = await post("/api/script/generate", { topic, beats, channel: activeChannel });
       if (data.ok) {
-        await fetchActiveProject();
+        // Poll loop will automatically refresh project when script_draft completes
+        pollJobs();
       } else {
         alert("Draft failed: " + (data.error || "unknown error"));
       }
     } catch (e: any) {
       alert("Draft failed: " + (e.message || "Network error"));
-    } finally {
-      setLoading(false);
     }
   };
 
   const handleScriptFromChat = async (messages: any[], beats: number | null) => {
-    setLoading(true);
     try {
       const data = await post("/api/script/from_chat", { messages, beats, channel: activeChannel });
       if (data.ok) {
-        await fetchActiveProject();
+        pollJobs();
       } else {
-        alert("Scripting failed: " + (data.error || "unknown error"));
+        alert("Draft failed: " + (data.error || "unknown error"));
       }
     } catch (e: any) {
-      alert("Scripting failed: " + (e.message || "Network error"));
-    } finally {
-      setLoading(false);
+      alert("Draft failed: " + (e.message || "Network error"));
     }
   };
 

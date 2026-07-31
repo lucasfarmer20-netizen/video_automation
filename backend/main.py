@@ -1536,13 +1536,18 @@ async def generate_script_endpoint(request: Request):
         
         if not topic:
             raise HTTPException(status_code=400, detail="Topic is required")
-            
-        new_sb = script.generate_script(topic, num_beats=beats, channel=channel)
-        new_sb.id = sb.id
-        new_sb.title = sb.title
-        
-        save_current_project(new_sb)
-        return {"ok": True, "shots": len(new_sb.shots)}
+
+        def run_draft():
+            new_sb = script.generate_script(topic, num_beats=beats, channel=channel)
+            new_sb.id = sb.id
+            new_sb.title = sb.title
+            save_current_project(new_sb)
+
+        started = start_job("script_draft", run_draft)
+        if not started:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "A script drafting job is already in progress."})
+
+        return {"ok": True, "job_id": "script_draft", "status": "running"}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -1557,13 +1562,18 @@ async def script_from_chat_endpoint(request: Request):
         messages = data.get("messages", [])
         beats = data.get("beats")
         channel = data.get("channel") or sb.channel or "bestiary"
-        
-        new_sb = script.generate_script_from_messages(messages, num_beats=beats, channel=channel)
-        new_sb.id = sb.id
-        new_sb.title = sb.title
-        
-        save_current_project(new_sb)
-        return {"ok": True, "shots": len(new_sb.shots)}
+
+        def run_chat_draft():
+            new_sb = script.generate_script_from_messages(messages, num_beats=beats, channel=channel)
+            new_sb.id = sb.id
+            new_sb.title = sb.title
+            save_current_project(new_sb)
+
+        started = start_job("script_draft", run_chat_draft)
+        if not started:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "A script drafting job is already in progress."})
+
+        return {"ok": True, "job_id": "script_draft", "status": "running"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
