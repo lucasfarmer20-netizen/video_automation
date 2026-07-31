@@ -174,10 +174,18 @@ SCRIPT_SCHEMA = {
 }
 
 
-def _beats_to_storyboard(data: dict) -> Storyboard:
-    if not isinstance(data, dict):
-        data = {}
-    beats_list = data.get("beats") or data.get("shots") or data.get("scenes") or []
+def _beats_to_storyboard(data: Any) -> Storyboard:
+    title = "Untitled Storyboard"
+    cultural_origin = ""
+    beats_list = []
+    
+    if isinstance(data, list):
+        beats_list = data
+    elif isinstance(data, dict):
+        title = str(data.get("title") or data.get("topic") or "Untitled Storyboard")
+        cultural_origin = str(data.get("cultural_origin") or "")
+        beats_list = data.get("beats") or data.get("shots") or data.get("scenes") or []
+        
     if not isinstance(beats_list, list):
         beats_list = []
 
@@ -211,8 +219,8 @@ def _beats_to_storyboard(data: dict) -> Storyboard:
             )
         )
     return Storyboard(
-        title=str(data.get("title") or "Untitled Storyboard"),
-        cultural_origin=str(data.get("cultural_origin") or ""),
+        title=title,
+        cultural_origin=cultural_origin,
         script_locked=False,
         shots=shots,
     )
@@ -287,8 +295,11 @@ def _parse_json_robust(raw_text: str) -> dict:
 
 def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anthropic, system_prompt: str) -> Storyboard:
     from . import config
-    config.require_for("script")
-    client = client or anthropic.Anthropic()
+    if not client:
+        api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_KEY") or getattr(config, "ANTHROPIC_API_KEY", None)
+        if not api_key:
+            raise RuntimeError("Missing Anthropic API Key! Please verify CLAUDE_API_KEY secret in Cloud Run.")
+        client = anthropic.Anthropic(api_key=api_key)
     
     norm_req = normalize_claude_model(model)
     models_to_try = [norm_req]
@@ -356,7 +367,9 @@ def generate_script(
     model: str = DEFAULT_MODEL,
     client: anthropic.Anthropic | None = None,
 ) -> Storyboard:
-    client = client or anthropic.Anthropic()
+    if not client:
+        api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_KEY") or getattr(config, "ANTHROPIC_API_KEY", None)
+        client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
     system_prompt = get_system_prompt(channel)
     if channel == "calluses":
         user_prompt = (
@@ -382,7 +395,9 @@ def generate_script_from_messages(
     model: str = DEFAULT_MODEL,
     client: anthropic.Anthropic | None = None,
 ) -> Storyboard:
-    client = client or anthropic.Anthropic()
+    if not client:
+        api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_KEY") or getattr(config, "ANTHROPIC_API_KEY", None)
+        client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
     if not messages:
         raise ValueError("Cannot script from an empty conversation.")
     system_prompt = get_system_prompt(channel)
