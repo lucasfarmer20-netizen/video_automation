@@ -1,3 +1,12 @@
+# Node dependencies and build output. These MUST be excluded: stage 1 runs
+# `npm ci` and then `COPY frontend/ ./`, so a host node_modules copied in on top
+# overwrites the container's install with Windows-built binaries that carry no
+# executable bit -- `npm run build` then dies with "sh: next: Permission denied".
+node_modules/
+**/node_modules/
+frontend/.next/
+frontend/out/
+
 # Ignore git repository history
 .git
 .github

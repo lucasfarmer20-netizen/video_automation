@@ -1,0 +1,66 @@
+# What `gcloud builds submit` uploads as the build source.
+#
+# Without this file gcloud derives its ignore list from the ROOT .gitignore
+# only, which does not mention node_modules -- so a 493 MB frontend/node_modules
+# was being packed into a 448 MiB tarball on every deploy. Docker then had to
+# be told to ignore it again via .dockerignore. Keep the two roughly in sync:
+# this controls what leaves the machine, .dockerignore controls what the build
+# context sees.
+
+# Version control
+.git/
+.github/
+.gitignore
+
+# Node dependencies + build output (reinstalled/rebuilt inside the image)
+node_modules/
+**/node_modules/
+frontend/.next/
+frontend/out/
+
+# Python virtualenv + bytecode
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Secrets. Also covered by .gitignore, repeated here because this file
+# replaces it entirely once present.
+.env
+lucas-pipeline-*.json
+**/service-account*.json
+**/*-credentials.json
+
+# Generated media and large binaries (regenerated at runtime, or live in GCS)
+assets/
+audio/
+audio_pool/
+render/
+sizzle/
+intro/
+models/
+lora_training/
+references/
+references.json
+
+# Local dev + scratch
+.devcontainer/
+.vscode/
+scratch/
+scripts/
+*.otio
+*.fcpxml
+tmp/
+temp/
+output/
+cache/
+.cache/
+*.tmp
+
+# NOTE: deliberately NOT ignored, the running app needs them --
+#   storyboard_manifest.bestiary.json / .calluses.json  (seed data for
+#   ensure_gcs_projects), characters.json, lora_config.json, requirements.txt,
+#   Dockerfile, cloudbuild.yaml, backend/, frontend/ source.
