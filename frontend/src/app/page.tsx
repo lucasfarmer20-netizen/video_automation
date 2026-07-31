@@ -987,6 +987,7 @@ export default function WorkspacePage() {
         isOpen={voiceStudioOpen}
         onClose={() => setVoiceStudioOpen(false)}
         post={post}
+        mediaUrl={mediaUrl}
       />
     </div>
   );

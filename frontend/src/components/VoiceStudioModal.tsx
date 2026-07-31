@@ -7,9 +7,10 @@ interface VoiceStudioModalProps {
   isOpen: boolean;
   onClose: () => void;
   post: (url: string, body?: any) => Promise<any>;
+  mediaUrl?: (path: string) => string;
 }
 
-export default function VoiceStudioModal({ isOpen, onClose, post }: VoiceStudioModalProps) {
+export default function VoiceStudioModal({ isOpen, onClose, post, mediaUrl }: VoiceStudioModalProps) {
   const [gender, setGender] = useState("male");
   const [age, setAge] = useState("middle_aged");
   const [accent, setAccent] = useState("american");
@@ -30,6 +31,7 @@ export default function VoiceStudioModal({ isOpen, onClose, post }: VoiceStudioM
   const handleGenerateVoice = async () => {
     setLoading(true);
     setMessage("");
+    setSampleAudioUrl(null);
     try {
       const res = await post("/api/voice/design", {
         gender,
@@ -37,19 +39,24 @@ export default function VoiceStudioModal({ isOpen, onClose, post }: VoiceStudioM
         accent,
         description
       });
-      if (res.ok && res.voice) {
-        const vId = res.voice.generated_voice_id || res.voice.voice_id || null;
+      
+      const voiceObj = res.voice || res;
+      if (res.ok && voiceObj) {
+        const vId = voiceObj.generated_voice_id || voiceObj.voice_id || res.generated_voice_id || res.voice_id || null;
         if (vId) setGeneratedVoiceId(vId);
         
-        const audioSrc = res.voice.sample_audio_base64 || res.voice.sample_audio_url || null;
+        let audioSrc = voiceObj.sample_audio_base64 || voiceObj.sample_audio_url || res.sample_audio_base64 || res.sample_audio_url || null;
         if (audioSrc) {
+          if (audioSrc.startsWith("/media/") && typeof mediaUrl === "function") {
+            audioSrc = mediaUrl(audioSrc);
+          }
           setSampleAudioUrl(audioSrc);
           setMessage("Unique voice sample generated! Listen to preview below.");
         } else {
-          setMessage("Voice design generated.");
+          setMessage("Voice design generated, but audio sample was empty. Check ELEVENLABS_API_KEY.");
         }
       } else {
-        setMessage("Voice design generated preview.");
+        setMessage(`Voice generation error: ${res.error || "Unknown API error"}`);
       }
     } catch (e: any) {
       setMessage(`Error: ${e.message}`);
