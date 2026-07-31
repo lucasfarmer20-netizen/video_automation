@@ -542,6 +542,7 @@ export default function WorkspacePage() {
 
   const { project, preview_url, fcpxml_ready, ep_slug, paid_count, image_backends, video_backends, tiers } = activeProject;
   const effectiveTiers = tiers || {};
+  const canAssemble = Boolean(project.storyboard_approved);
 
   // An error is shown unless the user dismissed *this* log for *this* stage;
   // a new failure produces a different log and surfaces again.
@@ -685,17 +686,31 @@ export default function WorkspacePage() {
         {/* Central timeline editor */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 flex flex-col gap-6 w-full">
           
-          {/* Assemble control board */}
-          {project.storyboard_approved && (
-            <section className="glass-panel rounded-xl p-5 border border-zinc-900 flex flex-col gap-4">
-              <h3 className="text-emerald-400 font-bold text-sm mb-1">🎬 Assembling Timeline Proxy</h3>
+          {/* Assemble control board. Always rendered: it used to disappear
+              entirely when the storyboard wasn't approved, which reads as "my
+              automation controls vanished" — especially after switching to a
+              new, empty project. Now it stays put and says why it's inert. */}
+          <section className="glass-panel rounded-xl p-5 border border-zinc-900 flex flex-col gap-4">
+              <h3 className={`font-bold text-sm mb-1 ${canAssemble ? "text-emerald-400" : "text-zinc-500"}`}>
+                🎬 Assembling Timeline Proxy
+              </h3>
+
+              {!canAssemble && (
+                <div className="bg-amber-950/25 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-200/90 font-mono leading-relaxed">
+                  <span className="font-bold text-amber-400">Locked.</span>{" "}
+                  {project.shots?.length
+                    ? <>Approve this storyboard to unlock the assembly pipeline — use <span className="text-amber-400 font-bold">Approve →</span> in the header.</>
+                    : <>This project has no beats yet. Draft a storyboard with Vesper, or pick another project in the left sidebar.</>}
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                 <div className="flex flex-col gap-3">
                   {/* Step 1: Voiceover */}
                   <div className="flex items-center justify-between bg-zinc-950/50 p-3 rounded-lg border border-zinc-900">
                     <button
                       onClick={() => handleAssemble("narration")}
-                      disabled={jobs["narration"]?.status === "running"}
+                      disabled={!canAssemble || jobs["narration"]?.status === "running"}
                       className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
                     >
                       <Volume2 className="h-4 w-4 text-amber-500" />
@@ -712,7 +727,7 @@ export default function WorkspacePage() {
                   <div className="flex items-center justify-between bg-zinc-950/50 p-3 rounded-lg border border-zinc-900">
                     <button
                       onClick={() => handleAssemble("preview")}
-                      disabled={jobs["preview"]?.status === "running"}
+                      disabled={!canAssemble || jobs["preview"]?.status === "running"}
                       className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
                     >
                       <Tv className="h-4 w-4 text-amber-500" />
@@ -729,7 +744,7 @@ export default function WorkspacePage() {
                   <div className="flex items-center justify-between bg-zinc-950/50 p-3 rounded-lg border border-zinc-900">
                     <button
                       onClick={() => handleAssemble("timeline")}
-                      disabled={jobs["timeline"]?.status === "running"}
+                      disabled={!canAssemble || jobs["timeline"]?.status === "running"}
                       className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
                     >
                       <CheckCircle className="h-4 w-4 text-amber-500" />
@@ -751,7 +766,7 @@ export default function WorkspacePage() {
                   <div className="flex items-center justify-between bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-900">
                     <button
                       onClick={() => handleAssemble("render")}
-                      disabled={jobs["render"]?.status === "running"}
+                      disabled={!canAssemble || jobs["render"]?.status === "running"}
                       className="bg-amber-500 hover:bg-amber-600 text-zinc-950 px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
                     >
                       <Play className="h-3.5 w-3.5 fill-current" />
@@ -812,8 +827,7 @@ export default function WorkspacePage() {
                   </div>
                 </div>
               )}
-            </section>
-          )}
+          </section>
 
           {/* Active Running Job Progress Banner */}
           {Object.entries(jobs).some(([_, j]) => j.status === "running") && (
