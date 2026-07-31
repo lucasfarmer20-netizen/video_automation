@@ -408,27 +408,38 @@ export default function WorkspacePage() {
 
   const handleDraftStoryboard = async (topic: string, beats: number | null) => {
     try {
+      setJobs((prev: any) => ({
+        ...prev,
+        script_draft: { status: "running", log: "Vesper is starting your documentary script draft..." }
+      }));
       const data = await post("/api/script/generate", { topic, beats, channel: activeChannel });
       if (data.ok) {
-        // Poll loop will automatically refresh project when script_draft completes
         pollJobs();
       } else {
+        setJobs((prev: any) => ({ ...prev, script_draft: { status: "error", log: data.error || "Draft failed to start" } }));
         alert("Draft failed: " + (data.error || "unknown error"));
       }
     } catch (e: any) {
+      setJobs((prev: any) => ({ ...prev, script_draft: { status: "error", log: e.message || "Network error" } }));
       alert("Draft failed: " + (e.message || "Network error"));
     }
   };
 
   const handleScriptFromChat = async (messages: any[], beats: number | null) => {
     try {
+      setJobs((prev: any) => ({
+        ...prev,
+        script_draft: { status: "running", log: "Vesper is converting your chat into a storyboard..." }
+      }));
       const data = await post("/api/script/from_chat", { messages, beats, channel: activeChannel });
       if (data.ok) {
         pollJobs();
       } else {
+        setJobs((prev: any) => ({ ...prev, script_draft: { status: "error", log: data.error || "Draft failed to start" } }));
         alert("Draft failed: " + (data.error || "unknown error"));
       }
     } catch (e: any) {
+      setJobs((prev: any) => ({ ...prev, script_draft: { status: "error", log: e.message || "Network error" } }));
       alert("Draft failed: " + (e.message || "Network error"));
     }
   };
@@ -774,6 +785,41 @@ export default function WorkspacePage() {
                 </div>
               )}
             </section>
+          )}
+
+          {/* Active Running Job Progress Banner */}
+          {Object.entries(jobs).some(([_, j]) => j.status === "running") && (
+            <div className="bg-amber-950/30 border border-amber-500/30 rounded-xl p-4 mb-6 shadow-xl backdrop-blur-md relative overflow-hidden animate-pulse">
+              <div className="flex items-center justify-between gap-4 mb-2">
+                <div className="flex items-center gap-3">
+                  <div className="w-4 h-4 border-2 border-amber-500 border-t-transparent rounded-full animate-spin shrink-0"></div>
+                  <span className="text-sm font-bold text-amber-400 font-mono tracking-wide">
+                    {jobs.script_draft?.status === "running"
+                      ? "✨ Vesper AI is drafting your documentary storyboard..."
+                      : jobs.render?.status === "running"
+                      ? "🎨 Rendering stills & motion clips in background..."
+                      : jobs.narration?.status === "running"
+                      ? "🎙 Synthesizing AI narration audio tracks..."
+                      : "⚙ Processing pipeline background job..."}
+                  </span>
+                </div>
+                <span className="text-[10px] font-mono uppercase tracking-widest bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded-full">
+                  Active Process
+                </span>
+              </div>
+              
+              {/* Animated Indeterminate Progress Bar */}
+              <div className="w-full bg-zinc-900 rounded-full h-2 overflow-hidden border border-amber-500/20 mb-2">
+                <div className="bg-gradient-to-r from-amber-500 via-amber-400 to-amber-600 h-full rounded-full animate-pulse w-full"></div>
+              </div>
+
+              {/* Live Log Snippet */}
+              {Object.entries(jobs).map(([stage, job]) => job.status === "running" && job.log && (
+                <div key={stage} className="text-[11px] font-mono text-zinc-400 truncate bg-zinc-950/60 px-3 py-1.5 rounded-lg border border-zinc-900">
+                  <span className="text-amber-500 font-bold">[{stage.toUpperCase()}]</span> {job.log.trim().split("\n").pop()}
+                </div>
+              ))}
+            </div>
           )}
 
           {/* Workflow Graph View (React Flow) */}
