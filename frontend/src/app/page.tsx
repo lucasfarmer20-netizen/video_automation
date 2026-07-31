@@ -583,6 +583,29 @@ export default function WorkspacePage() {
   const { project, preview_url, fcpxml_ready, ep_slug, paid_count, image_backends, video_backends, tiers } = activeProject;
   const effectiveTiers = tiers || {};
   const canAssemble = Boolean(project.storyboard_approved);
+  // Approval refuses unless every beat has a chosen image, so this is what
+  // stands between a drafted script and the rest of the pipeline.
+  const missingStills = (project.shots || []).filter((s: any) => !s.draft_image);
+
+  // Bulk still generation is the single largest paid action in the studio, so
+  // the confirm quotes the actual scope rather than a generic "this costs money".
+  // 3 variations per beat at roughly $0.15 an image on the nano2 backend.
+  const handleGenerateAllStills = async () => {
+    const beats = missingStills.length;
+    const estimate = (beats * 3 * 0.15).toFixed(2);
+    if (!confirm(
+      `PAID: generate 3 draft variations for ${beats} beat${beats === 1 ? "" : "s"} ` +
+      `(${beats * 3} images, roughly $${estimate} on fal.ai).\n\n` +
+      `Beats that already have drafts are skipped, and progress is saved after ` +
+      `each beat, so this is safe to re-run.\n\nContinue?`
+    )) return;
+    const data = await post("/api/assemble/drafts");
+    if (data.ok) {
+      pollJobs();
+    } else {
+      alert("Could not start still generation: " + (data.error || "unknown error"));
+    }
+  };
 
   // An error is shown unless the user dismissed *this* log for *this* stage;
   // a new failure produces a different log and surfaces again.
@@ -736,11 +759,33 @@ export default function WorkspacePage() {
               </h3>
 
               {!canAssemble && (
-                <div className="bg-amber-950/25 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-200/90 font-mono leading-relaxed">
-                  <span className="font-bold text-amber-400">Locked.</span>{" "}
-                  {project.shots?.length
-                    ? <>Approve this storyboard to unlock the assembly pipeline — use <span className="text-amber-400 font-bold">Approve →</span> in the header.</>
-                    : <>This project has no beats yet. Draft a storyboard with Vesper, or pick another project in the left sidebar.</>}
+                <div className="bg-amber-950/25 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-200/90 font-mono leading-relaxed flex flex-col gap-3">
+                  <div>
+                    <span className="font-bold text-amber-400">Locked.</span>{" "}
+                    {!project.shots?.length
+                      ? <>This project has no beats yet. Draft a storyboard with Vesper, or pick another project in the left sidebar.</>
+                      : missingStills.length
+                      ? <><span className="text-amber-400 font-bold">{missingStills.length}</span> of {project.shots.length} beats have no draft image. Approval needs every beat illustrated — generate them in one pass below, then <span className="text-amber-400 font-bold">Approve →</span>.</>
+                      : <>All {project.shots.length} beats are illustrated. Use <span className="text-amber-400 font-bold">Approve →</span> in the header to unlock the assembly pipeline.</>}
+                  </div>
+
+                  {missingStills.length > 0 && (
+                    <div className="flex items-center justify-between gap-3 border-t border-amber-500/20 pt-3">
+                      <button
+                        onClick={handleGenerateAllStills}
+                        disabled={jobs["drafts"]?.status === "running"}
+                        className="bg-amber-500 hover:bg-amber-400 text-zinc-950 px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50 shrink-0"
+                      >
+                        <Sparkles className="h-3.5 w-3.5" />
+                        <span>0 · Generate {missingStills.length} draft still{missingStills.length === 1 ? "" : "s"}</span>
+                      </button>
+                      <span className={`text-xs font-mono font-semibold ${
+                        jobs["drafts"]?.status === "done" ? "text-emerald-500" : "text-zinc-500"
+                      }`}>
+                        {jobs["drafts"]?.status || "Idle"}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -878,6 +923,8 @@ export default function WorkspacePage() {
                   <span className="text-sm font-bold text-amber-400 font-mono tracking-wide">
                     {jobs.script_draft?.status === "running"
                       ? "✨ Vesper AI is drafting your documentary storyboard..."
+                      : jobs.drafts?.status === "running"
+                      ? "🖼 Generating draft stills for every beat..."
                       : jobs.render?.status === "running"
                       ? "🎨 Rendering stills & motion clips in background..."
                       : jobs.narration?.status === "running"

@@ -515,15 +515,23 @@ def generate_drafts(
     backend: str = DEFAULT_BACKEND,
     skip_existing: bool = True,
     save_after_each: bool = False,
+    save_fn=None,
+    log=print,
 ) -> Storyboard:
     """Generate draft variations for some or all beats. Mutates the storyboard.
 
     Resilient for long batches: skips beats that already have drafts, tolerates a
     single beat failing, and can persist after each beat. Per-project generation
     knobs are read from ``storyboard.render``.
+
+    ``save_fn`` overrides how the storyboard is persisted between beats — the API
+    passes ``save_current_project`` so Firestore stays in step with the JSON, and
+    so a batch that dies halfway keeps the beats it already paid for. ``log``
+    routes progress into the job log the UI polls.
     """
     config.require_for("assets")
     render = getattr(storyboard, "render", None)
+    persist = save_fn or (lambda sb: save(sb))
 
     shots = storyboard.shots
     if only:
@@ -531,23 +539,26 @@ def generate_drafts(
     if limit:
         shots = shots[:limit]
 
+    pending = [s for s in shots if not (skip_existing and s.draft_variations)]
+    log(f"{len(pending)} beat(s) to generate, {len(shots) - len(pending)} already drafted.")
+
     failures: list[str] = []
-    for shot in shots:
+    for i, shot in enumerate(shots, start=1):
         if skip_existing and shot.draft_variations:
-            print(f"{shot.scene_id}: already has {len(shot.draft_variations)} drafts — skipping.")
+            log(f"{shot.scene_id}: already has {len(shot.draft_variations)} drafts — skipping.")
             continue
         try:
-            print(f"Generating {n} drafts for {shot.scene_id} ({backend}) ...")
+            log(f"[{i}/{len(shots)}] Generating {n} drafts for {shot.scene_id} ({backend}) ...")
             paths = generate_for_shot(shot, n, backend=backend, render=render)
-            print(f"  -> {len(paths)} images")
+            log(f"  -> {len(paths)} image(s) for {shot.scene_id}")
         except Exception as exc:
-            print(f"  !! {shot.scene_id} FAILED: {exc}")
+            log(f"  !! {shot.scene_id} FAILED: {exc}")
             failures.append(shot.scene_id)
         if save_after_each:
-            save(storyboard)
+            persist(storyboard)
 
     if failures:
-        print(f"\nFailed beats ({len(failures)}): {failures} — re-run to retry just these.")
+        log(f"Failed beats ({len(failures)}): {failures} — re-run to retry just these.")
     return storyboard
 
 

@@ -1497,7 +1497,37 @@ def run_assemble_endpoint(stage: str):
     try:
         sb = get_current_project()
         
-        if stage == "narration":
+        if stage == "drafts":
+            # Bulk draft-image generation. This is the step CLAUDE.md places
+            # before Gate 1: the storyboard cannot be approved until every beat
+            # has a chosen image, and until now the only way to get one from the
+            # studio was to regenerate each beat by hand. The bulk generator
+            # existed (assets.generate_drafts) but was reachable only from
+            # pipeline.py, so the web flow deadlocked -- approval needed images,
+            # and the other bulk path lives inside the render stage, which is
+            # itself gated behind approval.
+            if not sb.shots:
+                return JSONResponse(status_code=400, content={"ok": False, "error": "No beats to illustrate. Draft a script first."})
+            config.require_for("assets")
+
+            def fn():
+                assets.generate_drafts(
+                    sb,
+                    n=3,
+                    backend=getattr(sb.render, "backend", assets.DEFAULT_BACKEND),
+                    skip_existing=True,      # never re-pay for a beat that has drafts
+                    save_after_each=True,    # a crash keeps the beats already bought
+                    save_fn=save_current_project,
+                    log=lambda m: log_job("drafts", m),
+                )
+                save_current_project(sb)
+                missing = [s.scene_id for s in sb.shots if not s.draft_image]
+                if missing:
+                    log_job("drafts", f"Still missing images: {missing}")
+                else:
+                    log_job("drafts", "Every beat has a draft image — ready to approve.")
+
+        elif stage == "narration":
             if not sb.script_locked:
                 if sb.storyboard_approved:
                     sb.script_locked = True
