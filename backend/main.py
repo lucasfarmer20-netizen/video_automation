@@ -780,24 +780,24 @@ async def new_project(request: Request):
         name = (data.get("name") or "").strip()
         channel = (data.get("channel") or "bestiary").strip()
         
-        gcs_root = Path("/gcs/assets").resolve()
-        if gcs_root.exists():
-            scan_root = gcs_root / channel
-            scan_root.mkdir(parents=True, exist_ok=True)
-        else:
-            scan_root = WORKSPACE_ROOT
-            
+        # Projects live at <root>/<channel>/<name>/, matching where
+        # ensure_gcs_projects seeds them. They used to be written under
+        # <root>/assets/<channel>/<name>/ instead, which is both a second
+        # convention for the same thing and a directory the project scan prunes
+        # -- so every project created here was invisible in the sidebar while
+        # still being set as the active project.
+        root = Path("/gcs") if Path("/gcs").exists() else WORKSPACE_ROOT
+        channel_dir = root / channel
+        channel_dir.mkdir(parents=True, exist_ok=True)
+
+        name = secure_filename(name) if name else ""
         if not name:
             n = 1
-            while (scan_root / f"project_{n}").exists():
+            while (channel_dir / f"project_{n}").exists():
                 n += 1
             name = f"project_{n}"
-            
-        name = secure_filename(name)
-        if not name:
-            name = "untitled_project"
-            
-        proj_dir = scan_root / name
+
+        proj_dir = channel_dir / name
         proj_dir.mkdir(parents=True, exist_ok=True)
         
         manifest_file = proj_dir / "storyboard_manifest.json"
