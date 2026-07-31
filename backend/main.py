@@ -41,7 +41,7 @@ def secure_filename(filename: str) -> str:
 # Submodule imports
 from . import config, manifest, script, assets, audio, motion, timeline, sizzle
 from .manifest import Storyboard, Shot, MotionType, Camera, RenderConfig, db
-from .pipeline_worker import start_job, get_jobs_status
+from .pipeline_worker import start_job, get_jobs_status, log_job
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1395,7 +1395,7 @@ async def script_from_chat_endpoint(request: Request):
         channel = data.get("channel") or sb.channel or "bestiary"
 
         def run_chat_draft():
-            log_job("script_draft", f"Generating AI script from chat conversation...")
+            log_job("script_draft", "Generating AI script from chat conversation...")
             new_sb = script.generate_script_from_messages(messages, num_beats=beats, channel=channel)
             new_sb.id = sb.id
             new_sb.title = sb.title
