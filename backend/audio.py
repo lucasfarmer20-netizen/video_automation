@@ -242,6 +242,85 @@ def generate_sfx(prompt: str, dest: Path, duration_seconds: float | None = None,
     return _write_stream(stream, Path(dest))
 
 
+# --- Music bed generation ---------------------------------------------------
+#
+# Every endpoint and limit below was read from fal's OpenAPI registry, not
+# assumed. None reaches a typical 5-6 minute episode runtime, which is fine:
+# timeline.build and build_preview both loop the bed to cover the full runtime,
+# so a good 2-4 minute loop is the target rather than a one-shot full-length cue.
+#
+# Argument shapes genuinely differ per model — ace-step wants "tags" rather than
+# a prompt, elevenlabs takes milliseconds — so each entry carries its own builder.
+MUSIC_BACKENDS: dict[str, dict] = {
+    "elevenlabs_music": {
+        "label": "ElevenLabs Music",
+        "endpoint": "fal-ai/elevenlabs/music",
+        "max_seconds": 300,
+        "build": lambda p, s: {"prompt": p, "music_length_ms": int(s * 1000)},
+    },
+    "ace_step": {
+        "label": "ACE-Step",
+        "endpoint": "fal-ai/ace-step",
+        "max_seconds": 240,
+        "build": lambda p, s: {"tags": p, "duration": float(s), "lyrics": ""},
+    },
+    "stable_audio_25": {
+        "label": "Stable Audio 2.5",
+        "endpoint": "fal-ai/stable-audio-25/text-to-audio",
+        "max_seconds": 190,
+        "build": lambda p, s: {"prompt": p, "seconds_total": int(s)},
+    },
+    "cassette": {
+        "label": "Cassette Music Generator",
+        "endpoint": "cassetteai/music-generator",
+        "max_seconds": 180,
+        "build": lambda p, s: {"prompt": p, "duration": int(s)},
+    },
+}
+
+MUSIC_BACKEND_KEYS: list[str] = list(MUSIC_BACKENDS)
+DEFAULT_MUSIC_BACKEND = "elevenlabs_music"
+
+
+def generate_music(prompt: str, dest: Path, duration_seconds: float = 180.0,
+                   backend: str = DEFAULT_MUSIC_BACKEND, log=print) -> Path:
+    """Generate a music bed into ``dest``. Returns the written path.
+
+    Unlike generate_sfx_fal this deliberately does NOT swallow failures into an
+    empty file — a zero-byte music bed breaks the ffmpeg mix downstream and looks
+    like a rendering bug rather than a generation one.
+    """
+    import fal_client
+    import requests
+
+    config.require_for("assets")
+    spec = MUSIC_BACKENDS.get(backend) or MUSIC_BACKENDS[DEFAULT_MUSIC_BACKEND]
+    secs = max(10.0, min(float(duration_seconds), float(spec["max_seconds"])))
+    if secs < duration_seconds:
+        log(f"Clamped to {spec['label']}'s {spec['max_seconds']}s limit; the timeline loops the bed to cover the full runtime.")
+
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    log(f"Generating {secs:.0f}s music bed via {spec['endpoint']}: {prompt[:80]}")
+
+    result = fal_client.subscribe(spec["endpoint"], arguments=spec["build"](prompt, secs), with_logs=False)
+    url = ""
+    for key in ("audio", "audio_file", "output", "audio_url"):
+        node = result.get(key)
+        if isinstance(node, dict) and node.get("url"):
+            url = node["url"]; break
+        if isinstance(node, str) and node.startswith("http"):
+            url = node; break
+    if not url:
+        raise RuntimeError(f"{spec['label']} returned no audio URL. Response keys: {sorted(result)}")
+
+    r = requests.get(url, timeout=300)
+    r.raise_for_status()
+    dest.write_bytes(r.content)
+    log(f"Wrote music bed {dest.name} ({dest.stat().st_size:,} bytes)")
+    return dest
+
+
 def generate_sfx_fal(prompt: str, dest: Path, duration_seconds: float | None = None) -> Path:
     """Generate ambient sound effects using Fal.ai (fal-ai/stable-audio)."""
     import fal_client

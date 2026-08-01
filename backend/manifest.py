@@ -92,6 +92,10 @@ class Storyboard:
     script_locked: bool = False
     storyboard_approved: bool = False
     music_track: Optional[str] = None
+    # Score direction for this episode, written by the script stage and used as
+    # the default prompt when generating a bed. Kept separate from music_track
+    # (the chosen file) so regenerating never loses the creative intent.
+    music_prompt: str = ""
     # ElevenLabs voice for this episode's narration. Persisted here because the
     # manifest is the only store that survives a restart -- /api/voice/settings
     # used to assign to a module global in config, so a designed Vesper voice was
@@ -155,6 +159,7 @@ class Storyboard:
             script_locked=data.get("script_locked", False),
             storyboard_approved=data.get("storyboard_approved", False),
             music_track=data.get("music_track"),
+            music_prompt=data.get("music_prompt", "") or "",
             voice_id=data.get("voice_id", "") or "",
             render=render,
             shots=shots,

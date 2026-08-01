@@ -912,6 +912,59 @@ async def upload_music(file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 
+@app.post("/api/music/generate")
+async def generate_music_endpoint(request: Request):
+    """Generate a music bed into the shared pool. Paid (fal.ai).
+
+    Defaults to the episode's own music_prompt written by the script stage, and
+    to roughly the episode runtime — clamped per model, since the timeline loops
+    the bed anyway. Runs in the background: the longer models take minutes.
+    """
+    try:
+        config.require_for("assets")
+        sb = get_current_project()
+        data = await request.json()
+
+        prompt = (data.get("prompt") or getattr(sb, "music_prompt", "") or "").strip()
+        if not prompt:
+            raise HTTPException(
+                status_code=400,
+                detail="No music prompt. Pass one, or redraft the script so Vesper writes music_prompt.",
+            )
+        backend = (data.get("backend") or audio.DEFAULT_MUSIC_BACKEND).strip()
+        if backend not in audio.MUSIC_BACKENDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown music backend. Choose from: {', '.join(audio.MUSIC_BACKEND_KEYS)}",
+            )
+        runtime = sum(float(s.camera.duration) for s in sb.shots if s.camera) or 180.0
+        seconds = float(data.get("duration_seconds") or runtime)
+        select = bool(data.get("select", True))
+        name = secure_filename(data.get("name") or f"{config.episode_paths(sb.title)['slug'][:40]}_bed.mp3")
+        if Path(name).suffix.lower() not in MUSIC_SUFFIXES:
+            name += ".mp3"
+
+        def fn():
+            dest = audio.generate_music(
+                prompt, config.AUDIO_POOL / name, duration_seconds=seconds,
+                backend=backend, log=lambda m: log_job("music", m),
+            )
+            if select:
+                current = get_current_project()
+                current.music_track = dest.name
+                save_current_project(current)
+                log_job("music", f"Selected {dest.name} as this episode's bed.")
+
+        if start_job("music", fn):
+            return {"ok": True, "stage": "music", "name": name, "backend": backend,
+                    "duration_seconds": seconds}
+        return JSONResponse(status_code=409, content={"ok": False, "error": "music generation already running"})
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
 @app.post("/api/music/select")
 async def select_music(request: Request):
     """Set (or clear, with an empty name) this episode's music bed."""

@@ -76,9 +76,19 @@ Every shot carries a `motion_type`. Reserve the paid tier for ~8–12 hero shots
    `storyboard_manifest.json` is written — with per-shot approval *and* each
    shot's `motion_type` set (this is where the human allocates the render budget).
    The Tier-C stage is unreachable until the gate is cleared.
-3. **DaVinci assembly gate (Gate 2).** `timeline.py` emits an FCPXML for DaVinci
-   Resolve; the human finishes the cut there. The pipeline never auto-renders a
-   final master.
+3. **Assembly gate (Gate 2).** The human reviews the assembled cut before it
+   ships. Two finishing routes, both available from the same approved manifest:
+   - **In-studio master.** The web studio is the editor: trim, reorder, choose
+     takes, set the music bed and SFX in the browser, then render the finished
+     master server-side. The browser is the control surface; **rendering always
+     happens on the server** from the manifest — there is deliberately no second
+     compositor in the browser, because it would drift from the real renderer and
+     cannot reproduce the depth-warp parallax.
+   - **FCPXML export.** `timeline.py` still emits OTIO + FCPXML so the cut can be
+     finished in DaVinci Resolve instead. Downloadable from `/api/export/{kind}`.
+
+   What remains hard: **nothing renders or publishes without an approved
+   storyboard**, and publishing to YouTube is not part of this pipeline.
 
 ## Style consistency
 
@@ -107,8 +117,19 @@ Every shot carries a `motion_type`. Reserve the paid tier for ~8–12 hero shots
 ## Audio
 
 - Music is **source-agnostic**: the pipeline consumes whatever WAV/MP3 sits in
-  `audio_pool/` (Pixabay / Suno / Epidemic Sound — user-curated, monetization-safe,
-  fully owned or licensed). librosa analyzes the selected track.
+  the shared pool (`audio_pool/` locally, `/gcs/audio_pool/` deployed) — uploaded
+  via `POST /api/music`, or **generated** via `POST /api/music/generate`.
+  User-supplied tracks must be monetization-safe and fully owned or licensed.
+  librosa analyzes the selected track.
+- **Generated music** uses the registry in `audio.MUSIC_BACKENDS` (ElevenLabs
+  Music, ACE-Step, Stable Audio 2.5, Cassette). None reaches a full episode
+  runtime, which is fine — `timeline.py` loops the bed. Aim for a 2–4 minute
+  loopable underscore, not a one-shot cue. The script stage writes the episode's
+  `music_prompt`: sparse, instrumental, no percussion where a pulse would fight
+  the narration.
+- **SFX** are per-beat ambience (`Shot.sfx`) generated from the script stage's
+  prompts via `fal-ai/stable-audio`. Environment only — room tone, weather,
+  fire, water — never melody or instruments; the music bed is layered separately.
 
 ## fal.ai model IDs
 

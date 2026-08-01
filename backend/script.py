@@ -60,6 +60,8 @@ For each beat, "style_medium" is a concrete HISTORICAL ART MEDIUM authentic to t
 
 "visual" describes ONLY the static scene subject and composition for that beat (what you see in the still image) — subject details, framing, composition, lighting, chiaroscuro, deep shadow, cinematic 16:9. Do NOT restate the medium, and do NOT include any camera movements, pans, zooms, or timing details here. CRITICAL: the visual must never contradict the medium's palette. If "style_medium" says monochrome, sepia, two-tone or a limited mineral palette, the visual may not introduce colours that medium cannot physically produce — do not write "deep indigo-inked sky" for a monochrome sepia-and-charcoal woodcut. When the medium is colour-limited, carry the scene on value, contrast, density of hatching and texture instead of hue. Read your own "style_medium" back before writing the visual and make sure every colour word in the visual is one that medium could actually make. For s001 the visual is the manuscript cold open itself (the hand, the illuminated book, the entity's chapter, the push into the first illustration). Favor shadow-play / silhouette for the scariest reveals.
 
+"music_prompt" (top level, ONE for the episode) is the score direction for a text-to-music model. Describe an instrumental underscore that sits beneath narration: instrumentation, tempo, mood, and the tradition it draws on. Keep it sparse and unresolved - a documentary bed, not a theme. Name real instruments appropriate to the culture where that is honest, and say "no drums" or "no percussion" if a pulse would fight the narration. It must be instrumental: no vocals, no lyrics, no choir. One or two sentences. Example: "Sparse instrumental underscore. Low sustained strings and a single bowed metal tone, slow and unresolved, long silences between phrases. No percussion, no vocals."
+
 "sfx" is a short ambient-sound prompt for THIS beat, sent to a text-to-audio model to generate a bed that plays under the narration. Describe the environment, not music and not speech: the room tone, weather, insects, fire, distant water, cloth, wood. Two to eight words, concrete and physical - "humid night jungle, cicadas, distant thunder", "dry wind over grass, loose timber creaking", "low fire crackle, still interior". It must match the beat's place and time of day, and it must contain no melody, score, instruments or musical terms; a separate music bed is layered independently. Leave it an empty string only when true silence is the intent.
 
 "motion_prompt" describes ONLY the dynamic motion, camera actions, panning, zooming, speed, and timing details (how the still image animates into a video). E.g. "slow cinematic camera pan left, drifting candle flicker, smoke rising softly from the hearth."
@@ -129,6 +131,8 @@ For each beat, "style_medium" is a concrete VINTAGE PHOTOGRAPHY/DOCUMENT MEDIUM 
 
 "visual" describes ONLY the static scene subject and composition for that beat (what you see in the still image) — subject details, framing, composition, lighting, chiaroscuro, deep shadow, cinematic 16:9. Do NOT restate the medium, and do NOT include any camera movements, pans, zooms, or timing details here. CRITICAL: the visual must never contradict the medium's palette. If "style_medium" says monochrome, sepia, two-tone or a limited mineral palette, the visual may not introduce colours that medium cannot physically produce — do not write "deep indigo-inked sky" for a monochrome sepia-and-charcoal woodcut. When the medium is colour-limited, carry the scene on value, contrast, density of hatching and texture instead of hue. Read your own "style_medium" back before writing the visual and make sure every colour word in the visual is one that medium could actually make. For s001 the visual is the archival cold open itself (the hand, the folder, the vintage photo, the push past margins).
 
+"music_prompt" (top level, ONE for the episode) is the score direction for a text-to-music model. Describe an instrumental underscore that sits beneath narration: instrumentation, tempo, mood, and the tradition it draws on. Keep it sparse and unresolved - a documentary bed, not a theme. Name real instruments appropriate to the culture where that is honest, and say "no drums" or "no percussion" if a pulse would fight the narration. It must be instrumental: no vocals, no lyrics, no choir. One or two sentences. Example: "Sparse instrumental underscore. Low sustained strings and a single bowed metal tone, slow and unresolved, long silences between phrases. No percussion, no vocals."
+
 "sfx" is a short ambient-sound prompt for THIS beat, sent to a text-to-audio model to generate a bed that plays under the narration. Describe the environment, not music and not speech: the room tone, weather, insects, fire, distant water, cloth, wood. Two to eight words, concrete and physical - "humid night jungle, cicadas, distant thunder", "dry wind over grass, loose timber creaking", "low fire crackle, still interior". It must match the beat's place and time of day, and it must contain no melody, score, instruments or musical terms; a separate music bed is layered independently. Leave it an empty string only when true silence is the intent.
 
 "motion_prompt" describes ONLY the dynamic motion, camera actions, panning, zooming, speed, and timing details (how the still image animates into a video). E.g. "slow cinematic camera pan left, coal dust drifting, lens flare, steam rising softly."
@@ -183,6 +187,8 @@ SCRIPT_SCHEMA = {
         # be a hand-written list of three flux variants that did not include the
         # default backend, so Claude could never recommend it.
         "image_model": {"type": "string", "enum": IMAGE_BACKEND_KEYS},
+        # Score direction for the whole episode, fed to a text-to-music model.
+        "music_prompt": {"type": "string"},
         "beats": {
             "type": "array",
             "items": {
@@ -235,7 +241,7 @@ SCRIPT_SCHEMA = {
             },
         },
     },
-    "required": ["title", "cultural_origin", "image_model", "beats"],
+    "required": ["title", "cultural_origin", "image_model", "music_prompt", "beats"],
     "additionalProperties": False,
 }
 
@@ -290,7 +296,13 @@ def _beats_to_storyboard(data: Any) -> Storyboard:
             )
         )
 
+    if isinstance(data, dict):
+        sb_music_prompt = (data.get("music_prompt") or "").strip()
+    else:
+        sb_music_prompt = ""
+
     sb = Storyboard(
+        music_prompt=sb_music_prompt,
         title=title,
         cultural_origin=cultural_origin,
         script_locked=False,
