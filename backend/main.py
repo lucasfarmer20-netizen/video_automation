@@ -367,17 +367,29 @@ def resolve_video_model_endpoint(key: str | None) -> str:
 
 
 def set_active_video_clip(sb: Storyboard, shot: Shot, video_rel_path: str, out_dir: Path):
+    """Promote a generated video variation to be this beat's clip in the cut.
+
+    The source used to be resolved as WORKSPACE_ROOT / video_rel_path — /app on
+    Cloud Run, while the file actually lands under /gcs. The path never existed,
+    and because the copy sat behind `if src_path.exists()` it was skipped in
+    silence: a paid Kling clip was generated, downloaded and billed, then never
+    reached render/<scene>.mp4, so the timeline treated the beat as a gap.
+    """
     shot.video_clip = video_rel_path
-    src_path = WORKSPACE_ROOT / video_rel_path
+    src_path = config.resolve_media(video_rel_path, shot.scene_id)
     dest_path = out_dir / f"{shot.scene_id}.mp4"
-    if src_path.exists():
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src_path, dest_path)
-        try:
-            frame_out_path = config.ASSETS / shot.scene_id / f"final_frame_{shot.scene_id}.png"
-            assets.extract_final_frame(dest_path, frame_out_path)
-        except Exception as e:
-            print(f"Error extracting final frame for {shot.scene_id}: {e}")
+    if src_path is None:
+        log_job("render", f"  !! {shot.scene_id}: generated video not found at {video_rel_path} — clip NOT placed in the cut.")
+        return
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_path, dest_path)
+    log_job("render", f"  {shot.scene_id}: clip placed ({dest_path.stat().st_size:,} bytes)")
+    try:
+        frame_out_path = config.ASSETS / shot.scene_id / f"final_frame_{shot.scene_id}.png"
+        assets.extract_final_frame(dest_path, frame_out_path)
+    except Exception as e:
+        print(f"Error extracting final frame for {shot.scene_id}: {e}")
 
 
 def generate_fal_and_render(sb: Storyboard) -> None:
