@@ -1675,7 +1675,10 @@ def run_assemble_endpoint(stage: str):
             def fn():
                 generate_fal_and_render(sb)
                 # Auto-generate ambient SFX for all beats in the batch render pass
-                sfx_dir = config.ASSETS / "sfx"
+                # Must match where timeline.build and build_preview read SFX
+                # from (episode_paths["sfx"]). These wrote to assets/sfx,
+                # so every generated bed was invisible to the assembly.
+                sfx_dir = config.episode_paths(sb.title)["sfx"]
                 sfx_dir.mkdir(parents=True, exist_ok=True)
                 for shot in sb.shots:
                     if shot.sfx:
@@ -1815,7 +1818,7 @@ async def single_sfx_endpoint(scene_id: str):
         if not shot.sfx:
             raise HTTPException(status_code=400, detail="No SFX prompt set for this scene")
             
-        sfx_dir = config.ASSETS / "sfx"
+        sfx_dir = config.episode_paths(sb.title)["sfx"]
         sfx_dir.mkdir(parents=True, exist_ok=True)
         dest = sfx_dir / f"{scene_id}.mp3"
         
