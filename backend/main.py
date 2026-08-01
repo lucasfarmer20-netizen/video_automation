@@ -435,9 +435,15 @@ def set_active_video_clip(sb: Storyboard, shot: Shot, video_rel_path: str, out_d
         print(f"Error extracting final frame for {shot.scene_id}: {e}")
 
 
-def generate_fal_and_render(sb: Storyboard) -> None:
+def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
+    """Render every beat. Local tiers are free and always redone; paid ai_video
+    beats that already have a placed clip are kept unless ``force_paid``.
+
+    Without that guard, any re-run — a camera tweak, a fixed FX, a retry after
+    one beat failed — silently re-billed every ai_video beat through fal.
+    """
     config.require_for("assets")
-    
+
     out_dir = config.episode_paths(sb.title)["render"]
     out_dir.mkdir(parents=True, exist_ok=True)
     
@@ -469,7 +475,19 @@ def generate_fal_and_render(sb: Storyboard) -> None:
                 save_current_project(sb)
             
             is_ai = (shot.motion_type == MotionType.AI_VIDEO)
-        
+
+            if is_ai and not force_paid and (shot.video_clip or shot.video_variations):
+                placed = out_dir / f"{shot.scene_id}.mp4"
+                if placed.exists():
+                    log_job(
+                        "render",
+                        f"[{idx}/{total}] {shot.scene_id}: paid clip already rendered — "
+                        f"keeping it (re-run with force_paid=true to re-bill).",
+                    )
+                    prev_extracted_frame = None
+                    prev_video_dest_path = placed
+                    continue
+
             if is_ai:
                 video_key = getattr(shot, "video_model", None) or getattr(sb.render, "video_model", "seedance_2_0")
                 model_endpoint = resolve_video_model_endpoint(video_key)
@@ -1710,7 +1728,7 @@ def approve_endpoint():
 
 
 @app.post("/api/assemble/{stage}")
-def run_assemble_endpoint(stage: str):
+def run_assemble_endpoint(stage: str, force_paid: bool = False):
     try:
         sb = get_current_project()
         
@@ -1770,7 +1788,7 @@ def run_assemble_endpoint(stage: str):
             if not sb.storyboard_approved:
                 return JSONResponse(status_code=400, content={"ok": False, "error": "Approve the storyboard first."})
             def fn():
-                generate_fal_and_render(sb)
+                generate_fal_and_render(sb, force_paid=force_paid)
                 # Auto-generate ambient SFX for all beats in the batch render pass
                 # Must match where timeline.build and build_preview read SFX
                 # from (episode_paths["sfx"]). These wrote to assets/sfx,
