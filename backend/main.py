@@ -708,6 +708,8 @@ def get_active_project():
                 "cultural_origin": sb.cultural_origin,
                 "script_locked": sb.script_locked,
                 "storyboard_approved": sb.storyboard_approved,
+                "voice_id": getattr(sb, "voice_id", "") or "",
+                "music_track": sb.music_track or "",
                 "render": asdict(sb.render),
                 "shots": shots_payload,
             },
@@ -1613,15 +1615,25 @@ async def voice_design_endpoint(request: Request):
 async def voice_settings_endpoint(request: Request):
     try:
         data = await request.json()
+        # voice_id persists on the manifest; a designed voice used to be assigned
+        # to a config module global and lost on the next container restart.
         if "voice_id" in data:
-            config.ELEVENLABS_VOICE_ID = str(data["voice_id"]).strip()
+            sb = get_current_project()
+            sb.voice_id = str(data["voice_id"]).strip()
+            save_current_project(sb)
+            voice_id = sb.voice_id
+        else:
+            voice_id = (getattr(get_current_project(), "voice_id", "") or "").strip()
+
+        # Stability/style remain process-level tuning knobs, not episode state.
         if "stability" in data:
             config.ELEVENLABS_STABILITY = float(data["stability"])
         if "style_exaggeration" in data:
             config.ELEVENLABS_STYLE_EXAGGERATION = float(data["style_exaggeration"])
         return {
             "ok": True,
-            "voice_id": config.ELEVENLABS_VOICE_ID,
+            "voice_id": voice_id or config.VESPER_VOICE_ID or config.ELEVENLABS_VOICE_ID,
+            "persisted": bool(voice_id),
             "stability": config.ELEVENLABS_STABILITY,
             "style_exaggeration": config.ELEVENLABS_STYLE_EXAGGERATION
         }

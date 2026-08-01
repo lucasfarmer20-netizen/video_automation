@@ -92,6 +92,12 @@ class Storyboard:
     script_locked: bool = False
     storyboard_approved: bool = False
     music_track: Optional[str] = None
+    # ElevenLabs voice for this episode's narration. Persisted here because the
+    # manifest is the only store that survives a restart -- /api/voice/settings
+    # used to assign to a module global in config, so a designed Vesper voice was
+    # silently lost on the next cold start and narration fell back to the stock
+    # default. Empty means "use VESPER_VOICE_ID / ELEVENLABS_VOICE_ID".
+    voice_id: str = ""
     render: RenderConfig = field(default_factory=RenderConfig)
     shots: List[Shot] = field(default_factory=list)
 
@@ -145,6 +151,7 @@ class Storyboard:
             script_locked=data.get("script_locked", False),
             storyboard_approved=data.get("storyboard_approved", False),
             music_track=data.get("music_track"),
+            voice_id=data.get("voice_id", "") or "",
             render=render,
             shots=shots,
         )

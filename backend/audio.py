@@ -73,7 +73,14 @@ def synthesize_narration(storyboard: Storyboard | None = None,
             "(set script_locked=true once the narration is approved)."
         )
     client = _client()
-    voice = voice_id or config.VESPER_VOICE_ID or config.ELEVENLABS_VOICE_ID
+    # Explicit argument, then the episode's own saved voice, then env defaults.
+    voice = (
+        voice_id
+        or (getattr(sb, "voice_id", "") or "").strip()
+        or config.VESPER_VOICE_ID
+        or config.ELEVENLABS_VOICE_ID
+    )
+    print(f"Narrating with ElevenLabs voice {voice}")
     narr_dir = config.episode_paths(sb.title)["narration"]
     out: list[Path] = []
     for shot in sb.shots:
