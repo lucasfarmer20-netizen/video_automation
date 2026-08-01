@@ -177,11 +177,14 @@ def media_roots() -> list[Path]:
     roots = [
         ASSETS,
         REFERENCES_DIR,
-        RENDER_DIR,
-        AUDIO_DIR,
         project_dir / "assets",
         project_dir / "references",
         project_dir / "render",
+        project_dir / "audio",
+        # Legacy local-run locations, kept so a workstation checkout still serves
+        # media generated before episode_paths moved into the project directory.
+        RENDER_DIR,
+        AUDIO_DIR,
     ]
     resolved: list[Path] = []
     for r in roots:
@@ -269,12 +272,23 @@ def slug(text: str) -> str:
 
 
 def episode_paths(title: str) -> dict:
-    """Per-episode output dirs, namespaced by the title slug, so two episodes
-    never clobber each other's narration / sfx / render clips."""
-    s = slug(title)
+    """Per-episode output dirs, inside the active project's directory.
+
+    These used to hang off ROOT/audio and ROOT/render — i.e. /app inside the
+    container, which on Cloud Run is ephemeral in-memory storage. Narration,
+    SFX and every rendered clip were written somewhere that does not survive the
+    container, so a completed narration run left nothing on the bucket and the
+    timeline referenced media that no longer existed.
+
+    Living under the manifest's directory means they land on the GCS mount and
+    are namespaced by project for free — the slug subdirectory is redundant now
+    that each project owns a directory, and is kept only in the return value
+    because the timeline filenames use it.
+    """
+    base = MANIFEST_PATH.parent
     return {
-        "slug": s,
-        "narration": AUDIO_DIR / s / "narration",
-        "sfx": AUDIO_DIR / s / "sfx",
-        "render": RENDER_DIR / s,
+        "slug": slug(title),
+        "narration": base / "audio" / "narration",
+        "sfx": base / "audio" / "sfx",
+        "render": base / "render",
     }

@@ -681,15 +681,18 @@ def get_active_project():
             # exactly once, so nothing here may carry a leading route segment.
             shot_paths = config.episode_paths(sb.title)
             dest_clip = shot_paths["render"] / f"{s.scene_id}.mp4"
+            # Paths are relative to a media root; the frontend prefixes /media/
+            # exactly once. episode_paths now lives inside the project directory,
+            # so there is no slug segment.
             s_dict["active_clip_url"] = (
-                f"render/{shot_paths['slug']}/{s.scene_id}.mp4" if dest_clip.exists() else None
+                config.rel_media_path(dest_clip) if dest_clip.exists() else None
             )
             shots_payload.append(s_dict)
 
         # Preview track resolution
         ep = config.episode_paths(sb.title)
         preview_file = ep["render"] / "_preview.mp4"
-        preview_url = f"render/{ep['slug']}/_preview.mp4" if preview_file.exists() else None
+        preview_url = config.rel_media_path(preview_file) if preview_file.exists() else None
         
         # Same location timeline.build writes to: the project directory.
         fcpxml_file = config.MANIFEST_PATH.parent / f"{ep['slug']}.fcpxml"
@@ -1558,10 +1561,18 @@ def run_assemble_endpoint(stage: str):
                     return JSONResponse(status_code=400, content={"ok": False, "error": "Lock the script first."})
             
             def fn():
-                audio.synthesize_narration(sb)
+                voice = (getattr(sb, "voice_id", "") or "").strip() or config.VESPER_VOICE_ID or config.ELEVENLABS_VOICE_ID
+                log_job("narration", f"Synthesizing {len(sb.shots)} beat(s) with voice {voice} ...")
+                clips = audio.synthesize_narration(sb)
+                log_job("narration", f"{len(clips)} narration clip(s) written.")
                 changed = audio.sync_durations(sb)
                 save_current_project(sb)
-                print(f"Voiceover generated; synced {changed} shot duration(s) to audio.")
+                total = sum(float(s.camera.duration) for s in sb.shots if s.camera)
+                log_job(
+                    "narration",
+                    f"Synced {changed} shot duration(s) to audio; runtime now "
+                    f"{total:.1f}s (~{total/60:.1f} min).",
+                )
                 
         elif stage == "render":
             if not sb.storyboard_approved:
