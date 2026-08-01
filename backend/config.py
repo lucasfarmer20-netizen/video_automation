@@ -226,7 +226,12 @@ def rel_media_path(dest: Path) -> str:
         target = Path(dest).resolve()
     except OSError:
         target = Path(dest)
-    for base in (MANIFEST_PATH.parent, ROOT):
+    # The shared music pool sits at the storage root, under neither the project
+    # directory nor ROOT, so it needs its own base — otherwise a bed resolved to
+    # "gcs/audio_pool/x.wav", which is neither project-relative nor absolute and
+    # cannot be served.
+    bases = [MANIFEST_PATH.parent, AUDIO_POOL.parent, ROOT]
+    for base in bases:
         try:
             return str(target.relative_to(Path(base).resolve())).replace("\\", "/")
         except (ValueError, OSError):
@@ -263,6 +268,9 @@ def resolve_media(path_str: str | None, scene_id: str | None = None) -> Path | N
     candidates.append(REFERENCES_DIR / filename)
     candidates.append(RENDER_DIR / clean)
     candidates.append(ROOT / clean)
+    # Shared music pool: reachable as "audio_pool/<file>" or by bare filename.
+    candidates.append(AUDIO_POOL.parent / clean)
+    candidates.append(AUDIO_POOL / filename)
 
     for cand in candidates:
         try:

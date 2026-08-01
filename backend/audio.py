@@ -316,7 +316,27 @@ def generate_music(prompt: str, dest: Path, duration_seconds: float = 180.0,
 
     r = requests.get(url, timeout=300)
     r.raise_for_status()
-    dest.write_bytes(r.content)
+    data = r.content
+
+    # Name the file after what actually arrived. Models differ: ACE-Step returns
+    # RIFF/WAV even when the request looks like it should yield mp3, and a WAV
+    # sitting behind a .mp3 name is both misleading and ~10x the bytes. ffmpeg and
+    # librosa sniff content so playback survives the mismatch, but anything doing
+    # extension-based filtering does not.
+    ext = ".mp3"
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        ext = ".wav"
+    elif data[:4] == b"fLaC":
+        ext = ".flac"
+    elif data[:4] == b"OggS":
+        ext = ".ogg"
+    elif data[4:8] == b"ftyp":
+        ext = ".m4a"
+    if dest.suffix.lower() != ext:
+        log(f"Response is {ext[1:].upper()}, not {dest.suffix[1:].upper() or 'unknown'} — saving as {dest.stem}{ext}")
+        dest = dest.with_suffix(ext)
+
+    dest.write_bytes(data)
     log(f"Wrote music bed {dest.name} ({dest.stat().st_size:,} bytes)")
     return dest
 
