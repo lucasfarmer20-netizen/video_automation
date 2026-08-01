@@ -266,17 +266,24 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
         if end > start:
             mix[start:end] += seg[: end - start]
 
+    # Levels come from the manifest (Storyboard.mix) so they are tunable per
+    # episode instead of being frozen into the renderer.
+    mix_cfg = getattr(sb, "mix", None)
+    lvl_narr = float(getattr(mix_cfg, "narration", 1.0))
+    lvl_sfx = float(getattr(mix_cfg, "sfx", 0.15))
+    lvl_music = float(getattr(mix_cfg, "music", 0.20))
+
     for shot, off in zip(sb.shots, offsets):
         nf = narr_dir / f"{shot.scene_id}.mp3"
         if nf.exists():
-            _place(nf, off, 1.0)
+            _place(nf, off, lvl_narr)
         xf = sfx_dir / f"{shot.scene_id}.mp3"
         if (shot.sfx or "").strip() and xf.exists():
-            _place(xf, off, 0.55)
+            _place(xf, off, lvl_sfx)
     if sb.music_track:
         mp = config.AUDIO_POOL / sb.music_track
         if mp.exists():
-            bed = _load_stereo(mp, 0.22)
+            bed = _load_stereo(mp, lvl_music)
             pos = 0
             while pos < total:
                 seg = bed[: min(bed.shape[0], total - pos)]

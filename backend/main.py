@@ -43,6 +43,10 @@ from . import config, manifest, script, assets, audio, motion, timeline, sizzle
 from .manifest import Storyboard, Shot, MotionType, Camera, RenderConfig, db
 from .pipeline_worker import start_job, get_jobs_status, log_job
 
+# The moves motion._camera() actually implements; anything else renders as a
+# frozen plate, so reject it at the API rather than silently producing a still.
+CAMERA_MOVES = {"static", "push_in", "push_out", "pan_left", "pan_right"}
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Seed missing project manifests, then bootstrap Firestore from disk.
@@ -889,6 +893,28 @@ async def update_render_knobs(request: Request):
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 
+@app.get("/api/mix")
+def get_mix():
+    """Audio mix levels for the active episode (linear gain, 1.0 = unity)."""
+    sb = get_current_project()
+    return {"ok": True, "mix": asdict(sb.mix)}
+
+
+@app.post("/api/mix")
+async def update_mix(request: Request):
+    """Set narration / sfx / music levels. Re-run the preview to hear them."""
+    try:
+        sb = get_current_project()
+        data = await request.json()
+        for key in ("narration", "sfx", "music"):
+            if key in data and data[key] is not None:
+                setattr(sb.mix, key, max(0.0, min(2.0, float(data[key]))))
+        save_current_project(sb)
+        return {"ok": True, "mix": asdict(sb.mix)}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
 @app.post("/api/render/reference")
 async def set_global_reference(file: UploadFile = File(...)):
     try:
@@ -1088,9 +1114,29 @@ async def update_shot(scene_id: str, request: Request):
             shot.motion_prompt = data["motion_prompt"]
         if "flow_hero" in data:
             shot.flow_hero = bool(data["flow_hero"])
-            
+        if "sfx" in data:
+            shot.sfx = str(data["sfx"] or "")
+        if "camera" in data and isinstance(data["camera"], dict):
+            # FlowCanvas has been PATCHing `camera` all along; without this the
+            # write was accepted and silently discarded, so no camera edit ever
+            # reached the renderer.
+            cam = data["camera"]
+            if "move" in cam:
+                move = str(cam["move"] or "static")
+                if move not in CAMERA_MOVES:
+                    raise HTTPException(status_code=400, detail=f"Unknown camera move: {move}")
+                shot.camera.move = move
+            if "speed" in cam and cam["speed"] is not None:
+                shot.camera.speed = max(0.1, min(4.0, float(cam["speed"])))
+            if "amount" in cam and cam["amount"] is not None:
+                # 0 = auto (derive from beat duration); otherwise total travel,
+                # e.g. 0.15 == a 100% -> 115% push across the beat.
+                shot.camera.amount = max(0.0, min(0.60, float(cam["amount"])))
+            if "duration" in cam and cam["duration"] is not None:
+                shot.camera.duration = max(0.2, float(cam["duration"]))
+
         save_current_project(sb)
-        return {"ok": True, "paid_count": len(sb.paid_shots())}
+        return {"ok": True, "paid_count": len(sb.paid_shots()), "camera": asdict(shot.camera)}
     except HTTPException as he:
         raise he
     except Exception as e:

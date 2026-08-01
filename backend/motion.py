@@ -42,12 +42,52 @@ DEFAULT_HEIGHT = 720            # 16:9 -> 1280x720; bump to 1080 for finals
 # --------------------------------------------------------------------------- #
 # easing + camera
 # --------------------------------------------------------------------------- #
-def _ease(t: float) -> float:
-    """Smoothstep — slow in, slow out, for unhurried cinematic moves."""
-    return t * t * (3.0 - 2.0 * t)
+# A camera move is perceptible by its *rate*, not its total travel. The old
+# constants (5% zoom / 4% pan across the whole shot) were tuned when beats ran
+# ~6s; narration-led beats now run 19-25s, so the same totals spread out to
+# ~0.2%/s — well under the ~0.7%/s where slow motion stops reading as motion at
+# all. Amounts are therefore derived from the beat duration and capped, so a 6s
+# beat and a 24s beat drift at the same speed on screen.
+ZOOM_RATE = 0.011      # extra magnification per second
+PAN_RATE = 0.009       # fraction of frame width per second
+ZOOM_MAX = 0.22        # total travel ceiling (a 24s push tops out at +22%)
+PAN_MAX = 0.18
+EASE_EDGE = 0.15       # fraction of the beat spent easing in / out
 
 
-def _camera(move: str, t: float) -> tuple[float, float, float]:
+def _ease(t: float, edge: float = EASE_EDGE) -> float:
+    """Constant-velocity ramp with smoothstep shoulders.
+
+    Pure smoothstep across a 24s beat leaves the first and last several seconds
+    essentially frozen, which is most of what read as "no motion". Easing only
+    the outer ``edge`` fraction keeps the move gentle at the cut points while
+    holding a steady, visible drift through the body of the shot.
+    """
+    edge = min(max(edge, 1e-3), 0.49)
+    t = min(max(t, 0.0), 1.0)
+    if t < edge:
+        u = t / edge
+        return 0.5 * edge * u * u * (3.0 - 2.0 * u) / (1.0 - edge)
+    if t > 1.0 - edge:
+        u = (1.0 - t) / edge
+        return 1.0 - 0.5 * edge * u * u * (3.0 - 2.0 * u) / (1.0 - edge)
+    return (t - 0.5 * edge) / (1.0 - edge)
+
+
+def camera_amounts(duration: float, amount: float = 0.0) -> tuple[float, float]:
+    """Total (zoom, pan) travel for a beat of ``duration`` seconds.
+
+    ``amount`` (``Camera.amount``) overrides the rate-derived default when
+    non-zero — that is the per-beat "end scale 115%" control.
+    """
+    if amount and amount > 0:
+        return float(amount), float(amount)
+    d = max(0.1, float(duration))
+    return min(ZOOM_RATE * d, ZOOM_MAX), min(PAN_RATE * d, PAN_MAX)
+
+
+def _camera(move: str, t: float, zoom_amt: float = 0.066,
+            pan_amt: float = 0.054) -> tuple[float, float, float]:
     """Return (zoom, dx, dy) for the *camera* at eased time ``t`` in [0, 1].
 
     dx/dy are fractions of frame size; zoom is an extra magnification. Depth
@@ -55,13 +95,13 @@ def _camera(move: str, t: float) -> tuple[float, float, float]:
     """
     e = _ease(t)
     if move == "push_in":
-        return 0.05 * e, 0.0, 0.0
+        return zoom_amt * e, 0.0, 0.0
     if move == "push_out":
-        return 0.05 * (1.0 - e), 0.0, 0.0
+        return zoom_amt * (1.0 - e), 0.0, 0.0
     if move == "pan_left":
-        return 0.0, (0.04 * (0.5 - e)), 0.0
+        return 0.0, (pan_amt * (0.5 - e)), 0.0
     if move == "pan_right":
-        return 0.0, (0.04 * (e - 0.5)), 0.0
+        return 0.0, (pan_amt * (e - 0.5)), 0.0
     return 0.0, 0.0, 0.0  # static
 
 
@@ -75,9 +115,10 @@ def _camera(move: str, t: float) -> tuple[float, float, float]:
 # a push-in reads as the whole frame breathing, nearer faster.
 def _warp_frame(src: np.ndarray, disp: np.ndarray, base_y: np.ndarray,
                 base_x: np.ndarray, move: str, t: float, speed: float,
-                out_w: int, out_h: int) -> np.ndarray:
+                out_w: int, out_h: int,
+                zoom_amt: float = 0.066, pan_amt: float = 0.054) -> np.ndarray:
     """Inverse-warp the source by the per-pixel depth displacement at time ``t``."""
-    zoom, dx, dy = _camera(move, t)
+    zoom, dx, dy = _camera(move, t, zoom_amt, pan_amt)
     zoom, dx, dy = zoom * speed, dx * speed, dy * speed
     cx, cy = out_w / 2.0, out_h / 2.0
     scale = 1.0 + zoom * disp                    # nearer pixels magnify more
@@ -189,6 +230,8 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
     duration = float(shot.camera.duration) if shot.camera else 6.0
     move = shot.camera.move if shot.camera else "static"
     speed = float(shot.camera.speed) if shot.camera else 1.0
+    amount = float(getattr(shot.camera, "amount", 0.0) or 0.0) if shot.camera else 0.0
+    zoom_amt, pan_amt = camera_amounts(duration, amount)
     n_frames = max(1, int(round(duration * fps)))
 
     img = depthmod.load_rgb(src)
@@ -201,7 +244,10 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
                            dtype=np.float32)
         depth = ndimage.gaussian_filter(depth, sigma=3.0)   # gentler disparity edges
         depth = (depth - depth.min()) / (depth.max() - depth.min() + 1e-6)
-        disp = (0.25 + 0.75 * depth).astype(np.float32)     # even far pixels move a little
+        # Far pixels still move a little (the whole frame breathes), but a wider
+        # spread means near/far separate visibly instead of the plate sliding as
+        # one flat card.
+        disp = (0.15 + 0.85 * depth).astype(np.float32)
         base_y, base_x = (a.astype(np.float32) for a in np.mgrid[0:out_h, 0:out_w])
 
     # stable per-shot seed (avoids hash randomization across runs)
@@ -219,7 +265,8 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
         for i in range(n_frames):
             t = i / max(1, n_frames - 1)
             if is_parallax:
-                frame = _warp_frame(src_rgb, disp, base_y, base_x, move, t, speed, out_w, out_h)
+                frame = _warp_frame(src_rgb, disp, base_y, base_x, move, t, speed,
+                                    out_w, out_h, zoom_amt, pan_amt)
             else:
                 frame = src_rgb.copy()   # static plate; FX only
             frame = fx.apply(frame, t, i)

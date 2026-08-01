@@ -36,6 +36,23 @@ class Camera:
     move: str = "push_in"
     duration: float = 6.0
     speed: float = 1.0
+    # Total travel for the move across the whole beat, as a fraction (0.15 = a
+    # push from 100% to 115% scale). 0 means "auto": motion.camera_amounts()
+    # derives it from `duration` so long and short beats drift at the same rate.
+    amount: float = 0.0
+
+
+@dataclass
+class MixConfig:
+    """Per-episode audio mix levels (linear gain, 1.0 = unity).
+
+    Defaults put SFX and the music bed where documentary ambience normally sits
+    (roughly -16 dB under narration). The old hardcoded 0.55 was only ~5 dB down,
+    which is why foley sat on top of Vesper instead of behind her.
+    """
+    narration: float = 1.0
+    sfx: float = 0.15
+    music: float = 0.20
 
 
 @dataclass
@@ -103,6 +120,7 @@ class Storyboard:
     # default. Empty means "use VESPER_VOICE_ID / ELEVENLABS_VOICE_ID".
     voice_id: str = ""
     render: RenderConfig = field(default_factory=RenderConfig)
+    mix: MixConfig = field(default_factory=MixConfig)
     shots: List[Shot] = field(default_factory=list)
 
     def gate_cleared(self) -> bool:
@@ -142,13 +160,22 @@ class Storyboard:
                 if extra:
                     print(f"manifest: ignoring unknown shot field(s) {sorted(extra)} on {shot.get('scene_id')}")
                 fields["motion_type"] = MotionType(shot.get("motion_type", "parallax"))
+                # Filter camera keys for the same reason as the shot keys above:
+                # one unrecognised field must never cost the whole storyboard.
+                raw_cam = shot.get("camera")
                 fields["camera"] = (
-                    Camera(**shot["camera"]) if isinstance(shot.get("camera"), dict) else Camera()
+                    Camera(**{k: v for k, v in raw_cam.items()
+                              if k in Camera.__dataclass_fields__})
+                    if isinstance(raw_cam, dict) else Camera()
                 )
                 shots.append(Shot(**fields))
         raw_render = data.get("render") or {}
         render = RenderConfig(
             **{k: raw_render[k] for k in raw_render if k in RenderConfig.__dataclass_fields__}
+        )
+        raw_mix = data.get("mix") or {}
+        mix = MixConfig(
+            **{k: raw_mix[k] for k in raw_mix if k in MixConfig.__dataclass_fields__}
         )
         return cls(
             id=project_id,
@@ -162,6 +189,7 @@ class Storyboard:
             music_prompt=data.get("music_prompt", "") or "",
             voice_id=data.get("voice_id", "") or "",
             render=render,
+            mix=mix,
             shots=shots,
         )
 
