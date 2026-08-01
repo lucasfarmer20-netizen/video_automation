@@ -356,60 +356,14 @@ def claude_chat(system: str, messages: list[dict]) -> str:
 
 
 def resolve_video_model_endpoint(key: str | None) -> str:
-    if not key:
-        return "bytedance/seedance-2.0/image-to-video"
+    """Map a stored video-model string to a fal endpoint.
 
-    k = str(key).strip().lower()
-    MAP = {
-        "seedance_2_0": "bytedance/seedance-2.0/image-to-video",
-        "seedance": "bytedance/seedance-2.0/image-to-video",
-        "seedance-2.0": "bytedance/seedance-2.0/image-to-video",
-        "seedance-2.0/image-to-video": "bytedance/seedance-2.0/image-to-video",
-        "bytedance/seedance-2.0": "bytedance/seedance-2.0/image-to-video",
-        "bytedance/seedance-2.0/image-to-video": "bytedance/seedance-2.0/image-to-video",
-        "fal-ai/bytedance/seedance-2.0": "bytedance/seedance-2.0/image-to-video",
-        "fal-ai/bytedance/seedance-2.0/image-to-video": "bytedance/seedance-2.0/image-to-video",
-
-        "veo_3_1": "fal-ai/veo3.1/image-to-video",
-        "veo": "fal-ai/veo3.1/image-to-video",
-        "veo_3": "fal-ai/veo3.1/image-to-video",
-        "veo-video": "fal-ai/veo3.1/image-to-video",
-
-        "kling_2_5_turbo_pro": "fal-ai/kling-video/v3/image-to-video",
-        "kling": "fal-ai/kling-video/v3/image-to-video",
-        "kling_v3": "fal-ai/kling-video/v3/image-to-video",
-        "kling-video": "fal-ai/kling-video/v3/image-to-video",
-
-        "wan_2_7": "fal-ai/wan/v2.7/image-to-video",
-        "wan": "fal-ai/wan/v2.7/image-to-video",
-        "wan-video": "fal-ai/wan/v2.7/image-to-video",
-
-        "hunyuan_video": "fal-ai/hunyuan-video/image-to-video",
-        "hunyuan": "fal-ai/hunyuan-video/image-to-video",
-
-        "luma_dream_machine": "fal-ai/luma-dream-machine/ray-2/image-to-video",
-        "luma": "fal-ai/luma-dream-machine/ray-2/image-to-video",
-    }
-
-    if k in MAP:
-        return MAP[k]
-
-    if "seedance" in k:
-        return "bytedance/seedance-2.0/image-to-video"
-    if "veo" in k:
-        return "fal-ai/veo3.1/image-to-video"
-    if "kling" in k:
-        return "fal-ai/kling-video/v3/image-to-video"
-    if "wan" in k:
-        return "fal-ai/wan/v2.7/image-to-video"
-    if "hunyuan" in k:
-        return "fal-ai/hunyuan-video/image-to-video"
-    if "luma" in k:
-        return "fal-ai/luma-dream-machine/ray-2/image-to-video"
-
-    if k.startswith("fal-ai/"):
-        return k
-    return f"fal-ai/{k.lstrip('/')}"
+    Delegates to the registry in assets.py, whose endpoints are verified against
+    fal's OpenAPI listing. The hand-maintained map this replaced sent every Kling
+    request to "fal-ai/kling-video/v3/image-to-video" — an endpoint fal has never
+    served. It 404s, and it killed a render batch ten minutes in.
+    """
+    return assets.resolve_video_backend(key)["endpoint"]
 
 
 def set_active_video_clip(sb: Storyboard, shot: Shot, video_rel_path: str, out_dir: Path):
@@ -436,131 +390,147 @@ def generate_fal_and_render(sb: Storyboard) -> None:
     prev_video_dest_path: Path | None = None
     chaining_mode = getattr(sb.render, "video_chaining", "native_extend")
 
-    for shot in sb.shots:
-        if getattr(shot, "hero_clip", False):
-            print(f"{shot.scene_id}: Already has imported hero clip - keeping it, not re-rendering.")
-            prev_extracted_frame = None
-            prev_video_dest_path = None
-            continue
-            
-        # Ensure still image draft is generated
-        if not shot.draft_image:
-            backend = getattr(shot, "image_model", None) or getattr(sb.render, "backend", None) or "nano2"
-            print(f"Generating drafts for {shot.scene_id} using {backend}...")
-            assets.generate_for_shot(shot, n=3, backend=backend, render=sb.render)
-            shot.chosen_variation = 0
-            shot.draft_image = shot.draft_variations[0]
-            save_current_project(sb)
-            
-        is_ai = (shot.motion_type == MotionType.AI_VIDEO)
-        
-        if is_ai:
-            video_key = getattr(shot, "video_model", None) or getattr(sb.render, "video_model", "seedance_2_0")
-            model_endpoint = resolve_video_model_endpoint(video_key)
-            print(f"Generating paid video for {shot.scene_id} using {model_endpoint} (chaining: {chaining_mode})...")
-            target_dur = float(getattr(shot.camera, "duration", 6.0))
-            dur_int = max(3, min(10, int(round(target_dur))))
+    # One failing beat must not abandon the rest. A bad fal endpoint used to
+    # raise straight out of this loop, so a batch died at beat 6 and the nine
+    # remaining beats -- all local and free -- were never rendered at all.
+    failures: list[str] = []
+    total = len(sb.shots)
 
-            gen_audio = shot.video_audio
-            if gen_audio is None:
-                gen_audio = getattr(sb.render, "video_audio", True)
-
-            motion_prompt = shot.motion_prompt or f"Cinematic motion, high-quality, authentic detail, {shot.prompt}"
-            if f"{dur_int}s" not in motion_prompt and "second" not in motion_prompt:
-                motion_prompt = f"{motion_prompt} (duration: ~{dur_int} seconds)"
-
-            arguments = {
-                "prompt": motion_prompt,
-                "duration": str(dur_int),
-                "generate_audio": gen_audio,
-            }
-            if "veo" in model_endpoint:
-                if dur_int <= 5:
-                    arguments["duration"] = "4s"
-                elif dur_int <= 7:
-                    arguments["duration"] = "6s"
-                else:
-                    arguments["duration"] = "8s"
-            elif "seedance" not in model_endpoint:
-                arguments.pop("duration", None)
-                arguments.pop("generate_audio", None)
-
-            # Native Video Extend
-            if (chaining_mode == "native_extend" and prev_video_dest_path and prev_video_dest_path.exists()
-                    and video_key in ("seedance_2_0", "luma_dream_machine", "hunyuan_video")):
-                print(f"Native Video Extend: extending from previous segment {prev_video_dest_path.name}...")
-                public_video_url = fal_client.upload_file(str(prev_video_dest_path))
-                arguments["video_url"] = public_video_url
-            else:
-                # OpenCV final frame or initial still
-                if chaining_mode != "independent" and prev_extracted_frame and prev_extracted_frame.exists():
-                    local_image_path = prev_extracted_frame
-                    print(f"Continuous flow: chaining from final frame -> {local_image_path.name}")
-                else:
-                    local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
-                    if not local_image_path or not local_image_path.exists():
-                        print(f"Still image draft not found for {shot.scene_id}, generating still drafts...")
-                        try:
-                            assets.generate_for_shot(shot, n=3, backend=sb.render.backend, render=sb.render)
-                            shot.chosen_variation = 0
-                            shot.draft_image = shot.draft_variations[0]
-                            save_current_project(sb)
-                            local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
-                        except Exception as exc:
-                            print(f"  !! Failed to generate still draft for {shot.scene_id}: {exc}")
-                            continue
-
-                if not local_image_path or not local_image_path.exists():
-                    print(f"  !! Still image draft file missing on disk for {shot.scene_id}: {shot.draft_image}")
-                    continue
-                    
-                print(f"Uploading starting image {local_image_path.name}...")
-                public_image_url = fal_client.upload_file(str(local_image_path))
-                arguments["image_url"] = public_image_url
-            
-            print(f"Triggering fal.ai API with prompt: {motion_prompt[:80]}...")
-            result = fal_client.subscribe(model_endpoint, arguments=arguments, with_logs=True)
-            video_url = result.get("video", {}).get("url") or result.get("file", {}).get("url")
-            if not video_url:
-                raise RuntimeError(f"No video URL returned from fal.ai for {shot.scene_id}")
-
-            import time
-            shot_assets_dir = config.ASSETS / shot.scene_id
-            shot_assets_dir.mkdir(parents=True, exist_ok=True)
-
-            timestamp = int(time.time())
-            var_count = len(getattr(shot, "video_variations", []))
-            local_video_name = f"video_{timestamp}_{var_count}.mp4"
-            local_video_path = shot_assets_dir / local_video_name
-
-            print(f"Downloading generated video from {video_url} to {local_video_path}...")
-            assets._download(video_url, local_video_path)
-
-            video_rel_path = f"assets/{shot.scene_id}/{local_video_name}"
-            if not hasattr(shot, "video_variations") or shot.video_variations is None:
-                shot.video_variations = []
-            shot.video_variations.append(video_rel_path)
-
-            set_active_video_clip(sb, shot, video_rel_path, out_dir)
-            save_current_project(sb)
-
-            dest_video_path = out_dir / f"{shot.scene_id}.mp4"
-            prev_video_dest_path = dest_video_path
-            print(f"Successfully generated video for {shot.scene_id}")
-
-            try:
-                frame_out_path = config.ASSETS / shot.scene_id / f"final_frame_{shot.scene_id}.png"
-                prev_extracted_frame = assets.extract_final_frame(dest_video_path, frame_out_path)
-            except Exception as exc:
-                print(f"Warning: Failed to extract final frame for continuous chaining on {shot.scene_id}: {exc}")
+    for idx, shot in enumerate(sb.shots, start=1):
+        try:
+            if getattr(shot, "hero_clip", False):
+                log_job("render", f"{shot.scene_id}: Already has imported hero clip - keeping it, not re-rendering.")
                 prev_extracted_frame = None
-        else:
-            print(f"Rendering local video for {shot.scene_id} ({shot.motion_type.value})...")
-            motion.render_shot(shot, fps=motion.DEFAULT_FPS, height=motion.DEFAULT_HEIGHT, out_dir=out_dir, placeholder=False)
+                prev_video_dest_path = None
+                continue
+            
+            # Ensure still image draft is generated
+            if not shot.draft_image:
+                backend = getattr(shot, "image_model", None) or getattr(sb.render, "backend", None) or "nano2"
+                log_job("render", f"Generating drafts for {shot.scene_id} using {backend}...")
+                assets.generate_for_shot(shot, n=3, backend=backend, render=sb.render)
+                shot.chosen_variation = 0
+                shot.draft_image = shot.draft_variations[0]
+                save_current_project(sb)
+            
+            is_ai = (shot.motion_type == MotionType.AI_VIDEO)
+        
+            if is_ai:
+                video_key = getattr(shot, "video_model", None) or getattr(sb.render, "video_model", "seedance_2_0")
+                model_endpoint = resolve_video_model_endpoint(video_key)
+                log_job("render", f"[{idx}/{total}] PAID video for {shot.scene_id} via {model_endpoint} (chaining: {chaining_mode}) ...")
+                target_dur = float(getattr(shot.camera, "duration", 6.0))
+                dur_int = max(3, min(10, int(round(target_dur))))
+
+                gen_audio = shot.video_audio
+                if gen_audio is None:
+                    gen_audio = getattr(sb.render, "video_audio", True)
+
+                motion_prompt = shot.motion_prompt or f"Cinematic motion, high-quality, authentic detail, {shot.prompt}"
+                if f"{dur_int}s" not in motion_prompt and "second" not in motion_prompt:
+                    motion_prompt = f"{motion_prompt} (duration: ~{dur_int} seconds)"
+
+                arguments = {
+                    "prompt": motion_prompt,
+                    "duration": str(dur_int),
+                    "generate_audio": gen_audio,
+                }
+                if "veo" in model_endpoint:
+                    if dur_int <= 5:
+                        arguments["duration"] = "4s"
+                    elif dur_int <= 7:
+                        arguments["duration"] = "6s"
+                    else:
+                        arguments["duration"] = "8s"
+                elif "seedance" not in model_endpoint:
+                    arguments.pop("duration", None)
+                    arguments.pop("generate_audio", None)
+
+                # Native Video Extend
+                if (chaining_mode == "native_extend" and prev_video_dest_path and prev_video_dest_path.exists()
+                        and video_key in ("seedance_2_0", "luma_dream_machine", "hunyuan_video")):
+                    log_job("render", f"Native Video Extend: extending from previous segment {prev_video_dest_path.name}...")
+                    public_video_url = fal_client.upload_file(str(prev_video_dest_path))
+                    arguments["video_url"] = public_video_url
+                else:
+                    # OpenCV final frame or initial still
+                    if chaining_mode != "independent" and prev_extracted_frame and prev_extracted_frame.exists():
+                        local_image_path = prev_extracted_frame
+                        log_job("render", f"Continuous flow: chaining from final frame -> {local_image_path.name}")
+                    else:
+                        local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
+                        if not local_image_path or not local_image_path.exists():
+                            log_job("render", f"Still image draft not found for {shot.scene_id}, generating still drafts...")
+                            try:
+                                assets.generate_for_shot(shot, n=3, backend=sb.render.backend, render=sb.render)
+                                shot.chosen_variation = 0
+                                shot.draft_image = shot.draft_variations[0]
+                                save_current_project(sb)
+                                local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
+                            except Exception as exc:
+                                log_job("render", f"  !! Failed to generate still draft for {shot.scene_id}: {exc}")
+                                continue
+
+                    if not local_image_path or not local_image_path.exists():
+                        log_job("render", f"  !! Still image draft file missing on disk for {shot.scene_id}: {shot.draft_image}")
+                        continue
+                    
+                    log_job("render", f"Uploading starting image {local_image_path.name}...")
+                    public_image_url = fal_client.upload_file(str(local_image_path))
+                    arguments["image_url"] = public_image_url
+            
+                log_job("render", f"Triggering fal.ai API with prompt: {motion_prompt[:80]}...")
+                result = fal_client.subscribe(model_endpoint, arguments=arguments, with_logs=True)
+                video_url = result.get("video", {}).get("url") or result.get("file", {}).get("url")
+                if not video_url:
+                    raise RuntimeError(f"No video URL returned from fal.ai for {shot.scene_id}")
+
+                import time
+                shot_assets_dir = config.ASSETS / shot.scene_id
+                shot_assets_dir.mkdir(parents=True, exist_ok=True)
+
+                timestamp = int(time.time())
+                var_count = len(getattr(shot, "video_variations", []))
+                local_video_name = f"video_{timestamp}_{var_count}.mp4"
+                local_video_path = shot_assets_dir / local_video_name
+
+                log_job("render", f"Downloading generated video from {video_url} to {local_video_path}...")
+                assets._download(video_url, local_video_path)
+
+                video_rel_path = f"assets/{shot.scene_id}/{local_video_name}"
+                if not hasattr(shot, "video_variations") or shot.video_variations is None:
+                    shot.video_variations = []
+                shot.video_variations.append(video_rel_path)
+
+                set_active_video_clip(sb, shot, video_rel_path, out_dir)
+                save_current_project(sb)
+
+                dest_video_path = out_dir / f"{shot.scene_id}.mp4"
+                prev_video_dest_path = dest_video_path
+                log_job("render", f"Successfully generated video for {shot.scene_id}")
+
+                try:
+                    frame_out_path = config.ASSETS / shot.scene_id / f"final_frame_{shot.scene_id}.png"
+                    prev_extracted_frame = assets.extract_final_frame(dest_video_path, frame_out_path)
+                except Exception as exc:
+                    log_job("render", f"Warning: Failed to extract final frame for continuous chaining on {shot.scene_id}: {exc}")
+                    prev_extracted_frame = None
+            else:
+                log_job("render", f"[{idx}/{total}] Rendering {shot.scene_id} locally ({shot.motion_type.value}) ...")
+                motion.render_shot(shot, fps=motion.DEFAULT_FPS, height=motion.DEFAULT_HEIGHT, out_dir=out_dir, placeholder=False)
+                prev_extracted_frame = None
+                prev_video_dest_path = None
+            
+        except Exception as exc:  # noqa: BLE001 -- resilient batch
+            failures.append(shot.scene_id)
+            log_job("render", f"  !! {shot.scene_id} FAILED: {exc.__class__.__name__}: {exc}")
             prev_extracted_frame = None
             prev_video_dest_path = None
-            
-    print("Generation and rendering complete!")
+
+    if failures:
+        log_job("render", f"Finished with {len(failures)} failed beat(s): {failures} -- re-run to retry just these.")
+    else:
+        log_job("render", f"All {total} beat(s) rendered.")
 
 
 def ensure_gcs_projects():

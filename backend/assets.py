@@ -116,6 +116,96 @@ IMAGE_BACKENDS: dict[str, dict] = {
 #: Keys offered to the script stage and the studio, in display order.
 IMAGE_BACKEND_KEYS: list[str] = list(IMAGE_BACKENDS)
 
+
+# --- Video backend registry ------------------------------------------------
+#
+# Same drift problem the image backends had: the endpoint map lived in main.py,
+# a duplicate lived in this module, the script schema had its own enum, and the
+# studio dropdown had a fourth list. They disagreed, and one disagreement was
+# fatal — every Kling request resolved to "fal-ai/kling-video/v3/image-to-video",
+# which fal returns 404 for. A render batch died on it after ten minutes.
+#
+# Every endpoint below was verified against fal's OpenAPI registry. Note that
+# seedance is genuinely NOT under the fal-ai/ namespace; that is not a typo.
+VIDEO_BACKENDS: dict[str, dict] = {
+    "seedance_2_0": {
+        "label": "Seedance 2.0 (image-to-video)",
+        "endpoint": "bytedance/seedance-2.0/image-to-video",
+        "supports_extend": True,
+        "note": "Default. Supports native video extension for continuous chaining.",
+    },
+    "veo_3_1": {
+        "label": "Google Veo 3.1 (image-to-video)",
+        "endpoint": "fal-ai/veo3.1/image-to-video",
+        "supports_extend": False,
+        "note": "Strong motion realism. Duration must be 4s/6s/8s.",
+    },
+    "kling_2_1_standard": {
+        "label": "Kling 2.1 Standard (image-to-video)",
+        "endpoint": "fal-ai/kling-video/v2.1/standard/image-to-video",
+        "supports_extend": False,
+        "note": "Cheaper Kling tier.",
+    },
+    "kling_2_master": {
+        "label": "Kling 2 Master (image-to-video)",
+        "endpoint": "fal-ai/kling-video/v2/master/image-to-video",
+        "supports_extend": False,
+        "note": "Higher-quality, pricier Kling tier.",
+    },
+    "wan_2_7": {
+        "label": "Wan 2.7 (image-to-video)",
+        "endpoint": "fal-ai/wan/v2.7/image-to-video",
+        "supports_extend": False,
+        "note": "Good for subtle drift and b-roll motion.",
+    },
+    "luma_dream_machine": {
+        "label": "Luma Dream Machine Ray-2",
+        "endpoint": "fal-ai/luma-dream-machine/ray-2/image-to-video",
+        "supports_extend": True,
+        "note": "Alternative look.",
+    },
+}
+
+VIDEO_BACKEND_KEYS: list[str] = list(VIDEO_BACKENDS)
+
+# Legacy keys and raw endpoint strings already sitting in manifests. Kling v3 was
+# never a real endpoint, so anything pointing at it is remapped to the closest
+# tier that exists rather than left to 404.
+VIDEO_BACKEND_ALIASES: dict[str, str] = {
+    "kling": "kling_2_1_standard",
+    "kling_v3": "kling_2_1_standard",
+    "kling-video": "kling_2_1_standard",
+    "kling_2_5_turbo_pro": "kling_2_1_standard",
+    "fal-ai/kling-video/v3/image-to-video": "kling_2_1_standard",
+    "seedance": "seedance_2_0",
+    "seedance-2.0": "seedance_2_0",
+    "bytedance/seedance-2.0": "seedance_2_0",
+    "fal-ai/bytedance/seedance-2.0": "seedance_2_0",
+    "veo": "veo_3_1",
+    "veo_3": "veo_3_1",
+    "wan": "wan_2_7",
+    "luma": "luma_dream_machine",
+    "hunyuan_video": "wan_2_7",
+    "hunyuan": "wan_2_7",
+}
+
+
+def resolve_video_backend(key: str | None) -> dict:
+    """Map any stored video-model string to a registry entry. Never returns None."""
+    k = (key or "").strip()
+    if k in VIDEO_BACKENDS:
+        return VIDEO_BACKENDS[k]
+    alias = VIDEO_BACKEND_ALIASES.get(k) or VIDEO_BACKEND_ALIASES.get(k.lower())
+    if alias:
+        return VIDEO_BACKENDS[alias]
+    low = k.lower()
+    for token, target in (("seedance", "seedance_2_0"), ("veo", "veo_3_1"),
+                          ("kling", "kling_2_1_standard"), ("wan", "wan_2_7"),
+                          ("luma", "luma_dream_machine")):
+        if token in low:
+            return VIDEO_BACKENDS[target]
+    return VIDEO_BACKENDS["seedance_2_0"]
+
 # flux-general knobs. Negative prompts are applied via NAG (Normalized Attention
 # Guidance) on this guidance-distilled model — NOT real CFG. (`use_real_cfg` + a
 # negative prompt currently 422s the endpoint: "Could not load pipeline". NAG needs
