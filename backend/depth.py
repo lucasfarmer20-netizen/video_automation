@@ -75,6 +75,31 @@ def _round14(n: float, lo: int = 14) -> int:
     return max(lo, int(round(n / 14.0)) * 14)
 
 
+def _stage_model(path: Path) -> Path:
+    """Copy a model off a network mount to local disk, once per container.
+
+    The deployed studio keeps the weights on the GCS FUSE mount so they are not
+    baked into every image (101 MB) and can be swapped without a rebuild. But
+    onnxruntime memory-maps the model file, and mmap over FUSE is slow and not
+    reliably supported — so copy it to the container's own filesystem first and
+    load from there. Local paths are returned untouched.
+    """
+    if not str(path).replace("\\", "/").startswith("/gcs/"):
+        return path
+    import shutil
+    import tempfile
+
+    dest = Path(tempfile.gettempdir()) / path.name
+    try:
+        if not dest.exists() or dest.stat().st_size != path.stat().st_size:
+            print(f"Staging depth model {path.name} to local disk ...")
+            shutil.copy2(path, dest)
+        return dest
+    except Exception as exc:  # noqa: BLE001 — fall back to loading in place
+        print(f"Could not stage depth model locally ({exc}); loading from {path}.")
+        return path
+
+
 def _get_session():
     """Lazily build (and cache) the ONNX session; return None if unavailable."""
     global _SESSION, _SESSION_TRIED
@@ -88,7 +113,9 @@ def _get_session():
 
     model_path = getattr(config, "DEPTH_MODEL", None)
     if not model_path or not Path(model_path).exists():
+        print(f"Depth model unavailable at {model_path!r}; using heuristic depth.")
         return None
+    model_path = _stage_model(Path(model_path))
     try:
         import onnxruntime as ort
     except Exception:

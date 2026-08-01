@@ -38,6 +38,13 @@ steps:
       - '2'
       - '--memory'
       - '4Gi'
+      # Depth-Anything V2 weights live on the bucket rather than in the image:
+      # 101 MB in every build/push for a file that changes ~never. depth.py
+      # stages it to local disk on first use (mmap over FUSE is unreliable).
+      # Without this, parallax silently falls back to heuristic depth.
+      # --update-env-vars is additive; --set-env-vars would clear the others.
+      - '--update-env-vars'
+      - 'DEPTH_MODEL=/gcs/models/depth_anything_v2_vits.onnx'
       - '--add-volume=name=media-storage,type=cloud-storage,bucket=lucas-storyboard-vault-001-483921'
       - '--add-volume-mount=volume=media-storage,mount-path=/gcs'
       # Every paid stage needs its key. Without FAL_KEY the image/video stages
