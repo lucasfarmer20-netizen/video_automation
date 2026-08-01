@@ -678,7 +678,8 @@ def get_active_project():
         preview_file = ep["render"] / "_preview.mp4"
         preview_url = f"render/{ep['slug']}/_preview.mp4" if preview_file.exists() else None
         
-        fcpxml_file = config.ROOT / f"{ep['slug']}.fcpxml"
+        # Same location timeline.build writes to: the project directory.
+        fcpxml_file = config.MANIFEST_PATH.parent / f"{ep['slug']}.fcpxml"
         fcpxml_ready = fcpxml_file.exists()
         
         # Count paid video shots
@@ -1562,11 +1563,24 @@ def run_assemble_endpoint(stage: str):
                             audio.generate_sfx_fal(shot.sfx, dest, duration_seconds=shot.camera.duration)
             
         elif stage == "preview":
-            fn = lambda: timeline.build_preview(sb)
-            
+            def fn():
+                out, runtime = timeline.build_preview(sb)
+                log_job("preview", f"Preview written: {_safe_rel_path(out)} ({runtime:.1f}s runtime)")
+
         elif stage == "timeline":
-            fn = lambda: timeline.build(sb)
-            
+            def fn():
+                # These stages used bare `print`, which goes to stdout and never
+                # reaches the job log the UI polls — so a completed export said
+                # nothing about what it produced or where.
+                otio_path, fcpxml_path, runtime = timeline.build(sb)
+                log_job("timeline", f"Runtime {runtime:.1f}s (~{runtime/60:.1f} min)")
+                log_job("timeline", f"Wrote {otio_path.name}")
+                if fcpxml_path:
+                    log_job("timeline", f"Wrote {fcpxml_path.name} — download via /api/export/fcpxml")
+                else:
+                    log_job("timeline", "FCPXML export failed; the .otio is still valid.")
+
+
         else:
             raise HTTPException(status_code=404, detail="Assembly stage not found")
             
@@ -1644,6 +1658,36 @@ def get_assemble_status():
 
 
 # --- MEDIA SERVING ENDPOINTS ---
+
+@app.get("/api/export/{kind}")
+def download_timeline_export(kind: str):
+    """Download this episode's Resolve timeline (Gate 2's actual deliverable).
+
+    Deliberately not routed through /media/: those paths are restricted to
+    generated media (image/video/audio suffixes) inside the asset subtrees, and
+    widening that allowlist to serve XML from the project directory would undo
+    the containment that keeps .env and credentials out of reach. A dedicated
+    route with a fixed filename is both safer and gives the browser a real
+    download rather than an inline render.
+    """
+    kind = kind.lower().lstrip(".")
+    if kind not in ("fcpxml", "otio"):
+        raise HTTPException(status_code=404, detail="Unknown export type")
+
+    sb = get_current_project()
+    slug = config.episode_paths(sb.title)["slug"]
+    path = (config.MANIFEST_PATH.parent / f"{slug}.{kind}").resolve()
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No {kind} yet — run the timeline stage first.",
+        )
+    return FileResponse(
+        path,
+        media_type="application/xml" if kind == "fcpxml" else "application/octet-stream",
+        filename=f"{slug}.{kind}",
+    )
+
 
 @app.get("/media/{filepath:path}")
 def serve_media_files(filepath: str):

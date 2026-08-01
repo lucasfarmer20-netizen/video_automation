@@ -202,8 +202,14 @@ def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
     tl.tracks.extend([V, A_narr, A_sfx, A_music])
 
     slug = re.sub(r"[^a-z0-9]+", "_", (out_stem or sb.title or "deep_root_lore").lower()).strip("_") or "timeline"
-    otio_path = config.ROOT / f"{slug}.otio"
-    fcpxml_path: Path | None = config.ROOT / f"{slug}.fcpxml"
+    # Write next to the manifest, i.e. into the project directory on the GCS
+    # mount. These used to go to config.ROOT — /app inside the container, which
+    # is ephemeral in-memory storage: the export was unreachable by any route and
+    # evaporated on the next cold start, while the UI reported it as ready.
+    out_dir_root = config.MANIFEST_PATH.parent
+    out_dir_root.mkdir(parents=True, exist_ok=True)
+    otio_path = out_dir_root / f"{slug}.otio"
+    fcpxml_path: Path | None = out_dir_root / f"{slug}.fcpxml"
     otio.adapters.write_to_file(tl, str(otio_path))
     try:
         otio.adapters.write_to_file(tl, str(fcpxml_path), adapter_name="fcpx_xml")
