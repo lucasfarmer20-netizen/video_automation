@@ -126,18 +126,22 @@ class Storyboard:
     def from_dict(cls, project_id: str, data: dict, shots_list: List[dict] = None) -> Storyboard:
         shots = []
         if shots_list:
+            known = set(Shot.__dataclass_fields__)
             for shot in shots_list:
-                shots.append(
-                    Shot(
-                        **{
-                            **shot,
-                            "motion_type": MotionType(shot.get("motion_type", "parallax")),
-                            "camera": Camera(**shot["camera"])
-                            if isinstance(shot.get("camera"), dict)
-                            else Camera(),
-                        }
-                    )
+                # Drop unknown keys rather than raising. Shot(**shot) used to
+                # explode on any extra field, and because get_current_project
+                # catches that and falls through to "create a fresh project",
+                # one stray key was enough to overwrite a whole storyboard with
+                # an empty one. RenderConfig already filters this way.
+                fields = {k: v for k, v in shot.items() if k in known}
+                extra = set(shot) - known
+                if extra:
+                    print(f"manifest: ignoring unknown shot field(s) {sorted(extra)} on {shot.get('scene_id')}")
+                fields["motion_type"] = MotionType(shot.get("motion_type", "parallax"))
+                fields["camera"] = (
+                    Camera(**shot["camera"]) if isinstance(shot.get("camera"), dict) else Camera()
                 )
+                shots.append(Shot(**fields))
         raw_render = data.get("render") or {}
         render = RenderConfig(
             **{k: raw_render[k] for k in raw_render if k in RenderConfig.__dataclass_fields__}

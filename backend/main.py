@@ -171,16 +171,29 @@ def get_current_project() -> Storyboard:
                 print(f"Warning: Local manifest load failed: {le}")
                 
     if not sb:
-        # Initialize default clean project manifest
         p = Path(active_path)
+        # NEVER overwrite a manifest that exists but failed to parse. This branch
+        # used to save a fresh empty Storyboard unconditionally, so any load
+        # error -- a stray field, a truncated write, a transient read -- silently
+        # replaced a whole storyboard with an empty one. Seeding is only correct
+        # when there is genuinely nothing there.
+        if p.exists():
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Manifest at {p} exists but could not be loaded. Refusing to "
+                    f"overwrite it — inspect the file or restore from _backup/."
+                ),
+            )
         p.parent.mkdir(parents=True, exist_ok=True)
-        sb = Storyboard(title="manananggal", channel="bestiary")
+        sb = Storyboard(title=p.parent.name or "untitled", channel="bestiary")
         sb.id = f_id
         try:
             manifest.save(sb, p)
-        except Exception:
-            pass
-            
+        except Exception as exc:
+            print(f"Warning: could not seed new manifest at {p}: {exc}")
+
+
     config.set_active_manifest(active_path)
     return sb
 
