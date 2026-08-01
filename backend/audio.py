@@ -381,67 +381,112 @@ def generate_shot_sfx(storyboard: Storyboard | None = None,
     return out
 
 
-def generate_voice_design_elevenlabs(gender: str, age: str, accent: str, description: str, sample_text: str = "") -> dict:
-    """Generate a unique synthetic voice using ElevenLabs Voice Design API and return sample audio preview."""
-    import base64
-    import requests
+def _voice_headers() -> dict:
     config.require_for("audio")
-    
-    url = "https://api.elevenlabs.io/v1/voice-generation/generate-voice"
-    headers = {
-        "xi-api-key": config.ELEVENLABS_API_KEY,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "gender": gender,
-        "age": age,
-        "accent": accent,
-        "accent_strength": 1.0,
-        "text": sample_text or "In the central islands of the Philippines, the historical field reports don't vary.",
-        "voice_description": description
-    }
-    
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    return {"xi-api-key": config.ELEVENLABS_API_KEY, "Content-Type": "application/json"}
+
+
+def compose_voice_description(description: str, gender: str = "", age: str = "",
+                              accent: str = "") -> str:
+    """Fold the old structured fields into one natural-language description.
+
+    The current API takes prose only — gender/age/accent are no longer separate
+    parameters — but the studio still offers them as selects, so they are merged
+    rather than dropped.
+    """
+    bits = [(description or "").strip()]
+    traits = [t.replace("_", " ").strip() for t in (gender, age, accent) if (t or "").strip()]
+    if traits:
+        bits.append(f"The voice is {', '.join(traits)}.")
+    return " ".join(b for b in bits if b).strip()
+
+
+def design_voice(description: str, sample_text: str = "", gender: str = "",
+                 age: str = "", accent: str = "") -> dict:
+    """Generate candidate voices from a description. Returns previews to audition.
+
+    Uses POST /v1/text-to-voice/design. The old /v1/voice-generation/generate-voice
+    endpoint this replaced now returns 404 — ElevenLabs retired it, which is why
+    the Voice Studio failed with "404 Client Error: Not Found".
+
+    The new flow is two-step and returns THREE candidates rather than one: design
+    previews here, then promote the chosen one with save_designed_voice(). A
+    preview is not a usable voice — its generated_voice_id cannot be passed to
+    text-to-speech until it has been saved.
+    """
+    import requests
+
+    full = compose_voice_description(description, gender, age, accent)
+    if not full:
+        raise ValueError("A voice description is required.")
+
+    payload: dict = {"voice_description": full}
+    if (sample_text or "").strip():
+        payload["text"] = sample_text.strip()
+        payload["auto_generate_text"] = False
+    else:
+        payload["auto_generate_text"] = True
+
+    resp = requests.post(
+        "https://api.elevenlabs.io/v1/text-to-voice/design",
+        headers=_voice_headers(), json=payload, timeout=180,
+    )
     resp.raise_for_status()
-    
-    voice_id = resp.headers.get("generated_voice_id") or resp.headers.get("generated-voice-id") or ""
-    
-    # Check if response returned binary audio or JSON
-    content_type = resp.headers.get("content-type", "")
-    if "audio/" in content_type or (resp.content and not resp.content.startswith(b"{")):
-        sample_dir = config.ASSETS / "voice_samples"
-        sample_dir.mkdir(parents=True, exist_ok=True)
-        file_name = f"sample_{voice_id or 'preview'}.mp3"
-        dest_path = sample_dir / file_name
-        dest_path.write_bytes(resp.content)
-        
-        audio_b64 = base64.b64encode(resp.content).decode("utf-8")
-        return {
-            "generated_voice_id": voice_id,
-            "sample_audio_url": f"/media/assets/voice_samples/{file_name}",
-            "sample_audio_base64": f"data:audio/mp3;base64,{audio_b64}"
-        }
-    
-    try:
-        data = resp.json()
-        if not isinstance(data, dict):
-            data = {}
-        if not voice_id:
-            voice_id = data.get("generated_voice_id") or data.get("voice_id") or ""
-        
-        b64 = data.get("audio_base_64") or data.get("audio_base64") or data.get("sample_base64") or data.get("base64") or ""
-        url_val = data.get("audio_url") or data.get("preview_url") or data.get("sample_url") or ""
-        
-        if b64 and not b64.startswith("data:"):
-            b64 = f"data:audio/mp3;base64,{b64}"
-            
-        return {
-            "generated_voice_id": voice_id,
-            "sample_audio_url": url_val,
-            "sample_audio_base64": b64
-        }
-    except Exception:
-        return {"generated_voice_id": voice_id}
+    data = resp.json()
+
+    previews = []
+    for pv in data.get("previews") or []:
+        b64 = pv.get("audio_base_64") or ""
+        media = pv.get("media_type") or "audio/mpeg"
+        previews.append({
+            "generated_voice_id": pv.get("generated_voice_id", ""),
+            "duration_secs": pv.get("duration_secs"),
+            "audio_data_uri": f"data:{media};base64,{b64}" if b64 else "",
+        })
+    return {"previews": previews, "text": data.get("text", ""), "voice_description": full}
+
+
+def save_designed_voice(voice_name: str, voice_description: str,
+                        generated_voice_id: str) -> dict:
+    """Promote an audition preview into a real, reusable voice.
+
+    Until this runs the preview is throwaway — only the voice_id returned here
+    can be used for narration.
+    """
+    import requests
+
+    if not (voice_name or "").strip():
+        raise ValueError("A voice name is required.")
+    if not (generated_voice_id or "").strip():
+        raise ValueError("A generated_voice_id from a preview is required.")
+
+    resp = requests.post(
+        "https://api.elevenlabs.io/v1/text-to-voice/create-voice-from-preview",
+        headers=_voice_headers(),
+        json={
+            "voice_name": voice_name.strip(),
+            "voice_description": (voice_description or "").strip() or voice_name.strip(),
+            "generated_voice_id": generated_voice_id.strip(),
+        },
+        timeout=180,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return {"voice_id": data.get("voice_id", ""), "name": data.get("name", voice_name)}
+
+
+def list_voices() -> list[dict]:
+    """Voices available on the account, for the studio's picker."""
+    import requests
+
+    resp = requests.get("https://api.elevenlabs.io/v1/voices",
+                        headers={"xi-api-key": config.ELEVENLABS_API_KEY}, timeout=60)
+    resp.raise_for_status()
+    return [
+        {"voice_id": v.get("voice_id", ""), "name": v.get("name", ""),
+         "category": v.get("category", "")}
+        for v in resp.json().get("voices", [])
+    ]
 
 
 # --------------------------------------------------------------------------- #

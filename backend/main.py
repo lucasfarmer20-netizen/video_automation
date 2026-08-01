@@ -1724,8 +1724,53 @@ async def voice_design_endpoint(request: Request):
         description = data.get("description", "A low-pitched raspy documentary narrator")
         sample_text = data.get("sample_text", "")
         
-        res = audio.generate_voice_design_elevenlabs(gender, age, accent, description, sample_text)
-        return {"ok": True, "voice": res}
+        res = audio.design_voice(description, sample_text, gender, age, accent)
+        # Previews are auditions, not voices: each generated_voice_id must be
+        # promoted via /api/voice/save before narration can use it.
+        return {"ok": True, **res}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.get("/api/voice/list")
+def list_voices_endpoint():
+    """Voices on the ElevenLabs account, plus which one this episode uses."""
+    try:
+        sb = get_current_project()
+        return {
+            "ok": True,
+            "voices": audio.list_voices(),
+            "selected": (getattr(sb, "voice_id", "") or "").strip(),
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/voice/save")
+async def save_voice_endpoint(request: Request):
+    """Promote a design preview into a real voice and assign it to this episode.
+
+    Without this step a designed voice is lost: previews are throwaway, and their
+    generated_voice_id cannot be used for text-to-speech.
+    """
+    try:
+        data = await request.json()
+        gen_id = (data.get("generated_voice_id") or "").strip()
+        name = (data.get("name") or "").strip()
+        desc = (data.get("voice_description") or "").strip()
+        if not gen_id or not name:
+            raise HTTPException(status_code=400, detail="name and generated_voice_id are required")
+
+        saved = audio.save_designed_voice(name, desc, gen_id)
+        if not saved.get("voice_id"):
+            raise HTTPException(status_code=502, detail="ElevenLabs returned no voice_id")
+
+        sb = get_current_project()
+        sb.voice_id = saved["voice_id"]
+        save_current_project(sb)
+        return {"ok": True, **saved, "assigned_to_episode": True}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 

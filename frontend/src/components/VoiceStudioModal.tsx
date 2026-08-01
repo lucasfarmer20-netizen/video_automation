@@ -3,6 +3,12 @@
 import React, { useState } from "react";
 import { Mic, Sliders, Sparkles, X, Volume2, Check } from "lucide-react";
 
+interface Preview {
+  generated_voice_id: string;
+  audio_data_uri: string;
+  duration_secs?: number;
+}
+
 interface VoiceStudioModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -23,54 +29,36 @@ export default function VoiceStudioModal({ isOpen, onClose, post, mediaUrl }: Vo
   
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
-  const [generatedVoiceId, setGeneratedVoiceId] = useState<string | null>(null);
-  const [sampleAudioUrl, setSampleAudioUrl] = useState<string | null>(null);
+  // The current API returns three candidates per design, and a preview is NOT a
+  // usable voice — its generated_voice_id must be promoted via /api/voice/save
+  // before narration can use it.
+  const [previews, setPreviews] = useState<Preview[]>([]);
+  const [chosen, setChosen] = useState<string | null>(null);
+  const [voiceName, setVoiceName] = useState("Vesper");
+  const [savedVoiceId, setSavedVoiceId] = useState<string | null>(null);
+  const [sampleText, setSampleText] = useState("");
 
   if (!isOpen) return null;
 
   const handleGenerateVoice = async () => {
     setLoading(true);
     setMessage("");
-    setSampleAudioUrl(null);
+    setPreviews([]);
+    setChosen(null);
     try {
       const res = await post("/api/voice/design", {
         gender,
         age,
         accent,
-        description
+        description,
+        sample_text: sampleText
       });
-      
-      const voiceObj = res.voice || res;
-      if (res.ok && voiceObj) {
-        const vId = voiceObj.generated_voice_id || voiceObj.voice_id || res.generated_voice_id || res.voice_id || null;
-        if (vId) setGeneratedVoiceId(vId);
-        
-        let audioSrc = 
-          voiceObj.sample_audio_base64 || 
-          voiceObj.audio_base_64 || 
-          voiceObj.audio_base64 || 
-          voiceObj.sample_audio_url || 
-          voiceObj.audio_url || 
-          voiceObj.preview_url || 
-          res.sample_audio_base64 || 
-          res.sample_audio_url || 
-          res.audio_base_64 || 
-          res.audio_url || null;
-          
-        if (audioSrc) {
-          if (audioSrc.startsWith("data:") || audioSrc.startsWith("http://") || audioSrc.startsWith("https://")) {
-            setSampleAudioUrl(audioSrc);
-          } else if (typeof mediaUrl === "function") {
-            setSampleAudioUrl(mediaUrl(audioSrc));
-          } else {
-            setSampleAudioUrl(audioSrc);
-          }
-          setMessage("Unique voice sample generated! Listen to preview below.");
-        } else {
-          setMessage("Voice design generated, but audio sample was empty. Check ELEVENLABS_API_KEY.");
-        }
+      if (res.ok && Array.isArray(res.previews) && res.previews.length) {
+        setPreviews(res.previews);
+        setChosen(res.previews[0].generated_voice_id);
+        setMessage(`${res.previews.length} candidates generated. Audition them, then save the one you want.`);
       } else {
-        setMessage(`Voice generation error: ${res.error || "Unknown API error"}`);
+        setMessage(`Voice design failed: ${res.error || "no previews returned"}`);
       }
     } catch (e: any) {
       setMessage(`Error: ${e.message}`);
@@ -79,11 +67,37 @@ export default function VoiceStudioModal({ isOpen, onClose, post, mediaUrl }: Vo
     }
   };
 
+  // Promote the chosen audition into a real voice and assign it to this episode.
+  // Skipping this loses the voice: previews are throwaway.
+  const handleSaveVoice = async () => {
+    if (!chosen) return;
+    setLoading(true);
+    try {
+      const res = await post("/api/voice/save", {
+        generated_voice_id: chosen,
+        name: voiceName,
+        voice_description: description
+      });
+      if (res.ok && res.voice_id) {
+        setSavedVoiceId(res.voice_id);
+        setMessage(`Saved "${res.name}" (${res.voice_id}) and set it as this episode's narrator.`);
+      } else {
+        setMessage(`Save failed: ${res.error || "no voice_id returned"}`);
+      }
+    } catch (e: any) {
+      setMessage(`Save failed: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSaveSettings = async () => {
     setLoading(true);
     try {
+      // Only ever send a real, saved voice_id. This used to send a preview's
+      // generated_voice_id, which is not a usable voice.
       const payload: any = { stability, style_exaggeration: styleExaggeration };
-      if (generatedVoiceId) payload.voice_id = generatedVoiceId;
+      if (savedVoiceId) payload.voice_id = savedVoiceId;
       
       const res = await post("/api/voice/settings", payload);
       if (res.ok) {
@@ -180,6 +194,19 @@ export default function VoiceStudioModal({ isOpen, onClose, post, mediaUrl }: Vo
               />
             </div>
 
+            <div>
+              <label className="block text-[10px] text-zinc-400 mb-1 font-mono">
+                Audition line (optional — leave blank to auto-generate)
+              </label>
+              <textarea
+                value={sampleText}
+                onChange={(e) => setSampleText(e.target.value)}
+                rows={2}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:border-amber-400 focus:outline-none"
+                placeholder="Paste a real line of Vesper narration to hear the voice on your own copy..."
+              />
+            </div>
+
             <button
               onClick={handleGenerateVoice}
               disabled={loading}
@@ -189,23 +216,64 @@ export default function VoiceStudioModal({ isOpen, onClose, post, mediaUrl }: Vo
               <span>{loading ? "Generating Unique Voice..." : "Generate Unique AI Voice"}</span>
             </button>
 
-            {sampleAudioUrl && (
-              <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3.5 space-y-2 mt-3 animate-fade-in">
-                <div className="flex items-center justify-between text-xs text-amber-400 font-mono font-bold">
-                  <span className="flex items-center gap-1.5">
-                    <Volume2 className="w-4 h-4 text-amber-500 animate-pulse" />
-                    <span>Generated Voice Preview Sample</span>
-                  </span>
-                  {generatedVoiceId && (
-                    <span className="text-[10px] text-zinc-400 font-normal">ID: {generatedVoiceId}</span>
-                  )}
+            {previews.length > 0 && (
+              <div className="space-y-2 mt-3">
+                <div className="text-[10px] text-zinc-400 font-mono uppercase tracking-wider">
+                  Audition candidates — pick one, name it, then save
                 </div>
-                <audio
-                  controls
-                  autoPlay
-                  src={sampleAudioUrl}
-                  className="w-full h-8 rounded border border-amber-500/20 bg-zinc-950 accent-amber-500"
-                />
+                {previews.map((pv, i) => (
+                  <label
+                    key={pv.generated_voice_id}
+                    className={`block rounded-xl p-3 border cursor-pointer transition ${
+                      chosen === pv.generated_voice_id
+                        ? "bg-amber-500/10 border-amber-500/40"
+                        : "bg-zinc-900 border-zinc-800 hover:border-zinc-700"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-2">
+                      <input
+                        type="radio"
+                        name="voice-preview"
+                        checked={chosen === pv.generated_voice_id}
+                        onChange={() => setChosen(pv.generated_voice_id)}
+                        className="accent-amber-500"
+                      />
+                      <span className="text-xs font-bold text-zinc-200">Candidate {i + 1}</span>
+                      {pv.duration_secs && (
+                        <span className="text-[10px] text-zinc-500 font-mono">
+                          {pv.duration_secs.toFixed(1)}s
+                        </span>
+                      )}
+                    </div>
+                    <audio
+                      controls
+                      src={pv.audio_data_uri}
+                      className="w-full h-8 rounded border border-zinc-800 bg-zinc-950 accent-amber-500"
+                    />
+                  </label>
+                ))}
+
+                <div className="flex gap-2 pt-1">
+                  <input
+                    type="text"
+                    value={voiceName}
+                    onChange={(e) => setVoiceName(e.target.value)}
+                    placeholder="Voice name"
+                    className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:border-amber-400 focus:outline-none"
+                  />
+                  <button
+                    onClick={handleSaveVoice}
+                    disabled={loading || !chosen || !voiceName.trim()}
+                    className="px-4 py-2 rounded-lg text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-zinc-950 transition disabled:opacity-50 whitespace-nowrap"
+                  >
+                    Save &amp; use for this episode
+                  </button>
+                </div>
+                {savedVoiceId && (
+                  <div className="text-[10px] text-emerald-400 font-mono">
+                    Active narrator: {savedVoiceId}
+                  </div>
+                )}
               </div>
             )}
           </div>
