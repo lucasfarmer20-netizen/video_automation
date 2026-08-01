@@ -366,6 +366,43 @@ def resolve_video_model_endpoint(key: str | None) -> str:
     return assets.resolve_video_backend(key)["endpoint"]
 
 
+def _pad_clip_to_beat(path: Path, target_seconds: float) -> None:
+    """Extend a short clip to its beat length by freezing the final frame.
+
+    Paid video models produce a few seconds; a narration-led beat routinely wants
+    twenty or more. build_preview concatenates clips raw, so a short clip shortens
+    the whole video track — and because the mux uses -shortest, ffmpeg then trims
+    the ENTIRE audio mix to match. A 5s clip on a 24s beat silently cut 19 seconds
+    of narration off the end of the episode.
+
+    Freezing the last frame keeps the cut honest: the beat holds for as long as
+    its voiceover, the generated motion plays out, and the image simply settles.
+    """
+    try:
+        current = timeline._probe_seconds(path)
+    except Exception:
+        return
+    shortfall = float(target_seconds) - float(current)
+    if current <= 0 or shortfall < 0.1:
+        return
+
+    padded = path.with_name(f"{path.stem}__padded.mp4")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", str(path),
+             "-vf", f"tpad=stop_mode=clone:stop_duration={shortfall:.3f}",
+             "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-an",
+             str(padded)],
+            check=True,
+        )
+        padded.replace(path)
+        log_job("render", f"  padded to beat length: {current:.1f}s -> {target_seconds:.1f}s (froze final frame)")
+    except Exception as exc:  # noqa: BLE001 — an unpadded clip still renders
+        log_job("render", f"  !! could not pad clip to beat length: {exc}")
+        if padded.exists():
+            padded.unlink()
+
+
 def set_active_video_clip(sb: Storyboard, shot: Shot, video_rel_path: str, out_dir: Path):
     """Promote a generated video variation to be this beat's clip in the cut.
 
@@ -385,6 +422,8 @@ def set_active_video_clip(sb: Storyboard, shot: Shot, video_rel_path: str, out_d
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src_path, dest_path)
     log_job("render", f"  {shot.scene_id}: clip placed ({dest_path.stat().st_size:,} bytes)")
+    if shot.camera:
+        _pad_clip_to_beat(dest_path, float(shot.camera.duration))
     try:
         frame_out_path = config.ASSETS / shot.scene_id / f"final_frame_{shot.scene_id}.png"
         assets.extract_final_frame(dest_path, frame_out_path)
