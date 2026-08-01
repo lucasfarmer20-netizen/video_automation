@@ -64,3 +64,7 @@ cache/
 #   storyboard_manifest.bestiary.json / .calluses.json  (seed data for
 #   ensure_gcs_projects), characters.json, lora_config.json, requirements.txt,
 #   Dockerfile, cloudbuild.yaml, backend/, frontend/ source.
+
+# Ad-hoc inspection/migration scratch dirs (never part of a build)
+_inspect/
+_migrate_tmp/

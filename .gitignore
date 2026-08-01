@@ -42,3 +42,7 @@ cache/
 models/
 sizzle/
 intro/
+
+# Ad-hoc inspection/migration scratch dirs (never part of a build)
+_inspect/
+_migrate_tmp/
