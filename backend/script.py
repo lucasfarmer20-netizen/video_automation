@@ -60,6 +60,8 @@ For each beat, "style_medium" is a concrete HISTORICAL ART MEDIUM authentic to t
 
 "visual" describes ONLY the static scene subject and composition for that beat (what you see in the still image) — subject details, framing, composition, lighting, chiaroscuro, deep shadow, cinematic 16:9. Do NOT restate the medium, and do NOT include any camera movements, pans, zooms, or timing details here. CRITICAL: the visual must never contradict the medium's palette. If "style_medium" says monochrome, sepia, two-tone or a limited mineral palette, the visual may not introduce colours that medium cannot physically produce — do not write "deep indigo-inked sky" for a monochrome sepia-and-charcoal woodcut. When the medium is colour-limited, carry the scene on value, contrast, density of hatching and texture instead of hue. Read your own "style_medium" back before writing the visual and make sure every colour word in the visual is one that medium could actually make. For s001 the visual is the manuscript cold open itself (the hand, the illuminated book, the entity's chapter, the push into the first illustration). Favor shadow-play / silhouette for the scariest reveals.
 
+"sfx" is a short ambient-sound prompt for THIS beat, sent to a text-to-audio model to generate a bed that plays under the narration. Describe the environment, not music and not speech: the room tone, weather, insects, fire, distant water, cloth, wood. Two to eight words, concrete and physical - "humid night jungle, cicadas, distant thunder", "dry wind over grass, loose timber creaking", "low fire crackle, still interior". It must match the beat's place and time of day, and it must contain no melody, score, instruments or musical terms; a separate music bed is layered independently. Leave it an empty string only when true silence is the intent.
+
 "motion_prompt" describes ONLY the dynamic motion, camera actions, panning, zooming, speed, and timing details (how the still image animates into a video). E.g. "slow cinematic camera pan left, drifting candle flicker, smoke rising softly from the hearth."
 
 Number beats s001, s002, ... in order, starting with the manuscript cold open.
@@ -126,6 +128,8 @@ STORYBOARD PLANNING. For each beat give the narration and a matching visual, and
 For each beat, "style_medium" is a concrete VINTAGE PHOTOGRAPHY/DOCUMENT MEDIUM authentic to the era, phrased to lead an image prompt — name the real medium, period, camera, and photographic technique. Examples: "a gritty, raw 1930s black-and-white documentary photograph, large-format bellows camera, deep shadows, high-contrast silver halide film grain, authentic historical detail"; "a 19th-century sepia-toned wet plate collodion photograph, silver iodide emulsion, authentic dust scratches, copper plate glare"; "a vintage 1910s autochrome color photograph, coarse starch-grain texture, soft atmospheric lighting, authentic historical labor setting". Usually the SAME medium every beat; vary it only with good reason. Never put a modern/digital/3D/anime/illustration style here.
 
 "visual" describes ONLY the static scene subject and composition for that beat (what you see in the still image) — subject details, framing, composition, lighting, chiaroscuro, deep shadow, cinematic 16:9. Do NOT restate the medium, and do NOT include any camera movements, pans, zooms, or timing details here. CRITICAL: the visual must never contradict the medium's palette. If "style_medium" says monochrome, sepia, two-tone or a limited mineral palette, the visual may not introduce colours that medium cannot physically produce — do not write "deep indigo-inked sky" for a monochrome sepia-and-charcoal woodcut. When the medium is colour-limited, carry the scene on value, contrast, density of hatching and texture instead of hue. Read your own "style_medium" back before writing the visual and make sure every colour word in the visual is one that medium could actually make. For s001 the visual is the archival cold open itself (the hand, the folder, the vintage photo, the push past margins).
+
+"sfx" is a short ambient-sound prompt for THIS beat, sent to a text-to-audio model to generate a bed that plays under the narration. Describe the environment, not music and not speech: the room tone, weather, insects, fire, distant water, cloth, wood. Two to eight words, concrete and physical - "humid night jungle, cicadas, distant thunder", "dry wind over grass, loose timber creaking", "low fire crackle, still interior". It must match the beat's place and time of day, and it must contain no melody, score, instruments or musical terms; a separate music bed is layered independently. Leave it an empty string only when true silence is the intent.
 
 "motion_prompt" describes ONLY the dynamic motion, camera actions, panning, zooming, speed, and timing details (how the still image animates into a video). E.g. "slow cinematic camera pan left, coal dust drifting, lens flare, steam rising softly."
 
@@ -198,6 +202,11 @@ SCRIPT_SCHEMA = {
                         "enum": ["push_in", "push_out", "pan_left", "pan_right", "static"],
                     },
                     "suggested_fx": {"type": "array", "items": {"type": "string"}},
+                    # Ambient bed for this beat, sent to fal-ai/stable-audio.
+                    # Shot.sfx and generate_sfx_fal have always existed; nothing
+                    # ever populated the field because it was absent from this
+                    # schema, so every storyboard shipped with a silent A2 track.
+                    "sfx": {"type": "string"},
                     # null for almost every beat — only set it when a beat has a
                     # genuine reason to diverge from the episode model.
                     "image_model_override": {
@@ -218,6 +227,7 @@ SCRIPT_SCHEMA = {
                     "suggested_motion_type",
                     "suggested_camera",
                     "suggested_fx",
+                    "sfx",
                     "image_model_override",
                     "recommended_video_model",
                 ],
@@ -270,6 +280,7 @@ def _beats_to_storyboard(data: Any) -> Storyboard:
                 motion_type=m_type,
                 camera=Camera(move=str(cam_str)),
                 fx=list(beat.get("suggested_fx") or beat.get("fx") or []),
+                sfx=(beat.get("sfx") or "").strip(),
                 # Only an override. None means "use the episode model", which
                 # generate_drafts resolves from storyboard.render.backend.
                 image_model=(beat.get("image_model_override")

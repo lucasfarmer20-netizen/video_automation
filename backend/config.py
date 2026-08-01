@@ -20,7 +20,13 @@ load_dotenv()
 # --- Paths (derived, never hardcoded absolutes) -----------------------------
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
-AUDIO_POOL = ROOT / "audio_pool"      # curated, owned/licensed music (gitignored)
+# Curated, owned/licensed music. Shared across projects (a bed is reusable), so
+# it sits at the storage root rather than inside a project. On Cloud Run that
+# must be the GCS mount: ROOT/audio_pool is /app, which is ephemeral, so an
+# uploaded track vanished with the container and every timeline lost its music
+# bed on the next cold start.
+_GCS_MOUNT = Path("/gcs")
+AUDIO_POOL = (_GCS_MOUNT / "audio_pool") if _GCS_MOUNT.exists() else (ROOT / "audio_pool")
 LORA_TRAINING = ROOT / "lora_training"  # style-LoRA training frames (gitignored)
 LORA_CONFIG = ROOT / "lora_config.json"  # legacy "DEEPROOTLORE" LoRA pointer (flux-lora fallback)
 MODELS_DIR = ROOT / "models"             # local ML models (gitignored, large)
@@ -181,6 +187,7 @@ def media_roots() -> list[Path]:
         project_dir / "references",
         project_dir / "render",
         project_dir / "audio",
+        AUDIO_POOL,          # so the UI can audition music beds via /media/
         # Legacy local-run locations, kept so a workstation checkout still serves
         # media generated before episode_paths moved into the project directory.
         RENDER_DIR,

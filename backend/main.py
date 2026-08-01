@@ -861,6 +861,78 @@ async def set_global_reference(file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 
+MUSIC_SUFFIXES = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+
+
+@app.get("/api/music")
+def list_music():
+    """Music beds available to any project.
+
+    The pool is shared rather than per-project — a bed is reusable across
+    episodes — and lives on the GCS mount. It used to resolve to ROOT/audio_pool,
+    i.e. /app, so an uploaded track died with the container and every timeline
+    silently lost its music on the next cold start.
+    """
+    try:
+        pool = config.AUDIO_POOL
+        pool.mkdir(parents=True, exist_ok=True)
+        tracks = []
+        for f in sorted(pool.iterdir()):
+            if f.is_file() and f.suffix.lower() in MUSIC_SUFFIXES:
+                tracks.append({
+                    "name": f.name,
+                    "size_bytes": f.stat().st_size,
+                    "url": config.rel_media_path(f),
+                })
+        sb = get_current_project()
+        return {"ok": True, "tracks": tracks, "selected": sb.music_track or ""}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/music")
+async def upload_music(file: UploadFile = File(...)):
+    """Add a track to the shared pool. Curated/licensed audio only (see CLAUDE.md)."""
+    try:
+        name = secure_filename(file.filename or "track.mp3")
+        if Path(name).suffix.lower() not in MUSIC_SUFFIXES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported audio type. Use one of: {', '.join(sorted(MUSIC_SUFFIXES))}",
+            )
+        config.AUDIO_POOL.mkdir(parents=True, exist_ok=True)
+        dest = config.AUDIO_POOL / name
+        with open(dest, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        return {"ok": True, "name": name, "url": config.rel_media_path(dest),
+                "size_bytes": dest.stat().st_size}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/music/select")
+async def select_music(request: Request):
+    """Set (or clear, with an empty name) this episode's music bed."""
+    try:
+        data = await request.json()
+        name = (data.get("name") or "").strip()
+        if name:
+            if Path(name).name != name:
+                raise HTTPException(status_code=400, detail="Track name must not contain a path")
+            if not (config.AUDIO_POOL / name).is_file():
+                raise HTTPException(status_code=404, detail=f"No such track in the pool: {name}")
+        sb = get_current_project()
+        sb.music_track = name or None
+        save_current_project(sb)
+        return {"ok": True, "music_track": sb.music_track or ""}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
 @app.post("/api/render/reference/clear")
 def clear_global_reference():
     try:
