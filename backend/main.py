@@ -685,11 +685,11 @@ def get_active_project():
         paid_count = len(sb.paid_shots())
         
         # Options map to pass to frontend
-        image_backends = {
-            "nano2": "Nano Banana 2",
-            "flux-cfg": "Flux CFG",
-        }
-        
+        # Derived from the registry in assets.py, so the dropdown, the script
+        # stage's enum and the implemented backends cannot drift apart again.
+        image_backends = {k: v["label"] for k, v in assets.IMAGE_BACKENDS.items()}
+
+
         video_backends = {
             "seedance_2_0": "Seedance 2.0 (image-to-video)",
             "veo_3_1": "Google Veo 3.1 (image-to-video)",
@@ -1243,8 +1243,16 @@ async def regenerate(scene_id: str, request: Request):
             raise HTTPException(status_code=404, detail="Scene not found")
             
         data = await request.json()
-        backend = data.get("backend") or getattr(sb.render, "backend", "nano2")
-        
+        # Explicit request wins, then the beat's own override, then the episode
+        # default. The middle term was missing, so regenerating a beat ignored
+        # the model Claude picked for it.
+        backend = (
+            data.get("backend")
+            or getattr(shot, "image_model", None)
+            or getattr(sb.render, "backend", None)
+            or assets.DEFAULT_BACKEND
+        )
+
         assets.generate_for_shot(shot, n=3, backend=backend, render=sb.render)
         save_current_project(sb)
         return {"ok": True, "variations": shot.draft_variations, "backend": backend}

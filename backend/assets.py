@@ -44,6 +44,78 @@ LORA_ENDPOINT = "fal-ai/flux-lora"
 BASE_ENDPOINT = "fal-ai/flux/dev"
 IMAGE_SIZE = "landscape_16_9"
 
+# --- Backend registry: the single source of truth ---------------------------
+#
+# The script stage's schema enum and the studio's backend dropdown are both
+# derived from this. They used to be hand-maintained separately and had drifted
+# to ZERO overlap: Claude could only recommend three flux variants, the UI only
+# offered nano2/flux-cfg, and this module implemented a dozen. A per-beat model
+# choice therefore landed in the manifest and was silently ignored.
+#
+# ``handler`` selects the call shape: nano2 and flux-cfg have bespoke argument
+# sets (edit endpoint / NAG negative), everything else uses the generic
+# text-to-image call. Legacy keys (nano, flux, flux-lora) still work but are
+# deliberately absent — CLAUDE.md marks them deprecated, so they are not offered.
+IMAGE_BACKENDS: dict[str, dict] = {
+    "nano2": {
+        "label": "Nano Banana 2 — Gemini 3 Pro Image",
+        "endpoint": NANO2_ENDPOINT,
+        "handler": "nano2",
+        "note": "Reasoning model. Best prompt adherence, text rendering and character consistency. ~$0.15/img.",
+    },
+    "flux-cfg": {
+        "label": "FLUX.1 dev + NAG negative",
+        "endpoint": CFG_ENDPOINT,
+        "handler": "flux_cfg",
+        "note": "Cheapest. True negative prompt via NAG. ~$0.04/img.",
+    },
+    "flux_2_pro": {
+        "label": "FLUX.2 Pro",
+        "endpoint": "fal-ai/flux-2-pro",
+        "handler": "generic",
+        "note": "Detailed cinematic frames, rich texture.",
+    },
+    "flux_2_max": {
+        "label": "FLUX.2 Max",
+        "endpoint": "fal-ai/flux-2-max",
+        "handler": "generic",
+        "note": "Highest-fidelity flux tier.",
+    },
+    "flux_1_1_pro_ultra": {
+        "label": "FLUX1.1 Pro Ultra",
+        "endpoint": "fal-ai/flux-pro/v1.1-ultra",
+        "handler": "generic",
+        "note": "High resolution, wide panoramic compositions.",
+    },
+    "flux_1_dev_turbo": {
+        "label": "FLUX.1 dev (fast)",
+        "endpoint": "fal-ai/flux/dev",
+        "handler": "generic",
+        "note": "Fast, cheap drafts.",
+    },
+    "ideogram_4": {
+        "label": "Ideogram v4",
+        "endpoint": "ideogram/v4",
+        "handler": "generic",
+        "note": "Strong typography and lettering inside the image.",
+    },
+    "ideogram_4_instant": {
+        "label": "Ideogram v4 Instant",
+        "endpoint": "ideogram/v4/instant",
+        "handler": "generic",
+        "note": "Faster, cheaper Ideogram tier.",
+    },
+    "wan_2_7_image": {
+        "label": "Wan 2.7 (text-to-image)",
+        "endpoint": "fal-ai/wan/v2.7/text-to-image",
+        "handler": "generic",
+        "note": "Alternative look; useful as a tie-breaker.",
+    },
+}
+
+#: Keys offered to the script stage and the studio, in display order.
+IMAGE_BACKEND_KEYS: list[str] = list(IMAGE_BACKENDS)
+
 # flux-general knobs. Negative prompts are applied via NAG (Normalized Attention
 # Guidance) on this guidance-distilled model — NOT real CFG. (`use_real_cfg` + a
 # negative prompt currently 422s the endpoint: "Could not load pipeline". NAG needs
@@ -165,9 +237,19 @@ def _generate_nano2(prompt: str, n: int, negative: str = NEGATIVE_PROMPT,
     renders a brand-new interior in the shot's own medium — the fix for shots drifting
     to wildly different borders.
     """
+    # Positive phrasing only. This used to append "NOT: <60-token avoidance
+    # list>". Instruction-following models handle negation poorly -- naming
+    # "anime, cgi, 3d render, octane" can act as content injection rather than
+    # exclusion, and the list consumed a large share of the attention budget.
+    # Describing what the artifact IS rules out the same failures implicitly.
+    # (flux-cfg is unaffected: it gets a real negative via the NAG field.)
     interior = (
-        f"{prompt} Render this authentically in the stated historical art medium — "
-        f"a real artifact of that tradition, NOT: {negative}."
+        f"{prompt} Render this as a genuine surviving artifact of the stated "
+        f"historical medium — every mark made with that tradition's own tools and "
+        f"materials, carrying the irregularity real handwork leaves: uneven ink "
+        f"load, visible tool travel, the grain and wear of the physical support. "
+        f"A flat photographic reproduction of an aged original, not a modern "
+        f"illustration imitating one."
     )
     if frame_url:
         full = (
@@ -446,18 +528,9 @@ def generate_for_shot(
         # medium-leading positive prompt + NAG negative prompt (cheaper fallback).
         negative, steps, guidance, nag = _resolve_render(render)
         gen_urls = _generate_flux_cfg(_compose_prompt(shot), n, negative, steps, guidance, nag)
-    elif backend in ("flux_2_max", "flux_2_pro", "flux_1_1_pro_ultra", "flux_1_dev_turbo", "ideogram_4", "ideogram_4_instant", "wan_2_7_image"):
-        endpoints = {
-            "flux_2_max": "fal-ai/flux-2-max",
-            "flux_2_pro": "fal-ai/flux-2-pro",
-            "flux_1_1_pro_ultra": "fal-ai/flux-pro/v1.1-ultra",
-            "flux_1_dev_turbo": "fal-ai/flux/dev",
-            "ideogram_4": "ideogram/v4",
-            "ideogram_4_instant": "ideogram/v4/instant",
-            "wan_2_7_image": "fal-ai/wan/v2.7/text-to-image",
-        }
-        endpoint = endpoints[backend]
-        
+    elif IMAGE_BACKENDS.get(backend, {}).get("handler") == "generic":
+        endpoint = IMAGE_BACKENDS[backend]["endpoint"]
+
         args = {
             "prompt": _compose_prompt(shot),
             "num_images": n,
@@ -543,9 +616,15 @@ def generate_drafts(
         if skip_existing and shot.draft_variations:
             log(f"{shot.scene_id}: already has {len(shot.draft_variations)} drafts — skipping.")
             continue
+        # Per-episode model with a per-beat override: the storyboard's backend is
+        # the default, and a beat only diverges when Claude (or the human) set
+        # image_model on it. Previously one backend was applied to every beat, so
+        # a per-beat choice in the manifest was silently discarded.
+        shot_backend = (getattr(shot, "image_model", None) or "").strip() or backend
         try:
-            log(f"[{i}/{len(shots)}] Generating {n} drafts for {shot.scene_id} ({backend}) ...")
-            paths = generate_for_shot(shot, n, backend=backend, render=render)
+            tag = shot_backend if shot_backend == backend else f"{shot_backend} (override)"
+            log(f"[{i}/{len(shots)}] Generating {n} drafts for {shot.scene_id} ({tag}) ...")
+            paths = generate_for_shot(shot, n, backend=shot_backend, render=render)
             log(f"  -> {len(paths)} image(s) for {shot.scene_id}")
         except Exception as exc:
             log(f"  !! {shot.scene_id} FAILED: {exc}")

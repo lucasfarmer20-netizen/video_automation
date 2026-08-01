@@ -13,6 +13,7 @@ from typing import Any
 import anthropic
 
 from . import config
+from .assets import IMAGE_BACKEND_KEYS
 from .manifest import Camera, MotionType, Shot, Storyboard
 
 DEFAULT_MODEL = os.environ.get("SCRIPT_MODEL", "claude-opus-5")
@@ -57,18 +58,37 @@ STORYBOARD PLANNING. For each beat give the narration and a matching visual, and
 
 For each beat, "style_medium" is a concrete HISTORICAL ART MEDIUM authentic to the entity's culture, phrased to lead an image prompt — name the real medium, period, and technique. Examples: "a genuine antique ukiyo-e mokuhanga woodblock print, Edo period, hand-carved outlines, flat mineral pigment"; "a Slavic lubok woodcut in the Ivan Bilibin folk-illustration tradition"; "a medieval illuminated-manuscript codex page, egg tempera and gold leaf on vellum"; "a West African bronze relief plaque in the Benin court tradition". Usually the SAME medium every beat (one entity, one culture); vary it only with good reason. Never put a modern/digital/3D/anime/ photographic style here.
 
-"visual" describes ONLY the static scene subject and composition for that beat (what you see in the still image) — subject details, framing, composition, lighting, chiaroscuro, deep shadow, cinematic 16:9. Do NOT restate the medium, and do NOT include any camera movements, pans, zooms, or timing details here. For s001 the visual is the manuscript cold open itself (the hand, the illuminated book, the entity's chapter, the push into the first illustration). Favor shadow-play / silhouette for the scariest reveals.
+"visual" describes ONLY the static scene subject and composition for that beat (what you see in the still image) — subject details, framing, composition, lighting, chiaroscuro, deep shadow, cinematic 16:9. Do NOT restate the medium, and do NOT include any camera movements, pans, zooms, or timing details here. CRITICAL: the visual must never contradict the medium's palette. If "style_medium" says monochrome, sepia, two-tone or a limited mineral palette, the visual may not introduce colours that medium cannot physically produce — do not write "deep indigo-inked sky" for a monochrome sepia-and-charcoal woodcut. When the medium is colour-limited, carry the scene on value, contrast, density of hatching and texture instead of hue. Read your own "style_medium" back before writing the visual and make sure every colour word in the visual is one that medium could actually make. For s001 the visual is the manuscript cold open itself (the hand, the illuminated book, the entity's chapter, the push into the first illustration). Favor shadow-play / silhouette for the scariest reveals.
 
 "motion_prompt" describes ONLY the dynamic motion, camera actions, panning, zooming, speed, and timing details (how the still image animates into a video). E.g. "slow cinematic camera pan left, drifting candle flicker, smoke rising softly from the hearth."
 
 Number beats s001, s002, ... in order, starting with the manuscript cold open.
 
-AI MODEL ROUTING GUIDELINES (mandatory model assignment for each beat):
-You must assign a specific image and video model to each beat based on its complexity:
-- For "recommended_image_model":
-  * "flux_2_pro": Recommend for complex, cinematic reference images (highly detailed scenes, rich textures, multiple characters/historical artifacts) optimized for cost and quality.
-  * "flux_1_1_pro_ultra": Recommend for complex, cinematic reference images when wide panning shots are required.
-  * "flux_1_dev_turbo": Recommend for fast image drafts.
+MODEL ROUTING.
+
+"image_model" (top level, ONE for the whole episode): the episode is rendered by a
+single image model so the look stays coherent from beat to beat. Different models
+render mark-making differently, and a mid-episode switch is visible even when the
+medium description is identical. Choose from:
+  * "nano2" - Nano Banana 2 / Gemini 3 Pro Image. Best prompt adherence, character
+    consistency and in-image text. The right default, and the right answer whenever
+    a recurring figure or legible lettering matters.
+  * "flux-cfg" - FLUX.1 dev. Cheapest, and the only backend with a true negative
+    prompt. Reasonable when the episode is landscape/atmosphere driven with no
+    recurring character.
+  * "flux_2_pro" / "flux_2_max" - denser texture and fine detail.
+  * "flux_1_1_pro_ultra" - highest resolution; wide panoramic compositions.
+  * "flux_1_dev_turbo" - fast, cheap drafts.
+  * "ideogram_4" / "ideogram_4_instant" - strongest in-image typography.
+  * "wan_2_7_image" - alternative look.
+Prefer "nano2" unless the episode gives you a concrete reason to differ, and say
+nothing about models in the narration.
+
+"image_model_override" (per beat): null for essentially every beat. Set it ONLY
+where one beat genuinely needs a different model than the rest of the episode -
+for example a manuscript page whose legibility depends on typography. An override
+you cannot justify in one sentence should be null.
+
 - For "recommended_video_model":
   * "veo_3_1" or "seedance_2_0": Recommend for complex video/audio beats (heavy active motion, transformations, complex water/fire physics, detailed human motion).
   * "wan_2_7" or "kling_2_5_turbo_pro": Recommend for simple video b-roll beats (subtle camera pans, slow drift, rising smoke, static scene with wind).
@@ -105,18 +125,37 @@ STORYBOARD PLANNING. For each beat give the narration and a matching visual, and
 
 For each beat, "style_medium" is a concrete VINTAGE PHOTOGRAPHY/DOCUMENT MEDIUM authentic to the era, phrased to lead an image prompt — name the real medium, period, camera, and photographic technique. Examples: "a gritty, raw 1930s black-and-white documentary photograph, large-format bellows camera, deep shadows, high-contrast silver halide film grain, authentic historical detail"; "a 19th-century sepia-toned wet plate collodion photograph, silver iodide emulsion, authentic dust scratches, copper plate glare"; "a vintage 1910s autochrome color photograph, coarse starch-grain texture, soft atmospheric lighting, authentic historical labor setting". Usually the SAME medium every beat; vary it only with good reason. Never put a modern/digital/3D/anime/illustration style here.
 
-"visual" describes ONLY the static scene subject and composition for that beat (what you see in the still image) — subject details, framing, composition, lighting, chiaroscuro, deep shadow, cinematic 16:9. Do NOT restate the medium, and do NOT include any camera movements, pans, zooms, or timing details here. For s001 the visual is the archival cold open itself (the hand, the folder, the vintage photo, the push past margins).
+"visual" describes ONLY the static scene subject and composition for that beat (what you see in the still image) — subject details, framing, composition, lighting, chiaroscuro, deep shadow, cinematic 16:9. Do NOT restate the medium, and do NOT include any camera movements, pans, zooms, or timing details here. CRITICAL: the visual must never contradict the medium's palette. If "style_medium" says monochrome, sepia, two-tone or a limited mineral palette, the visual may not introduce colours that medium cannot physically produce — do not write "deep indigo-inked sky" for a monochrome sepia-and-charcoal woodcut. When the medium is colour-limited, carry the scene on value, contrast, density of hatching and texture instead of hue. Read your own "style_medium" back before writing the visual and make sure every colour word in the visual is one that medium could actually make. For s001 the visual is the archival cold open itself (the hand, the folder, the vintage photo, the push past margins).
 
 "motion_prompt" describes ONLY the dynamic motion, camera actions, panning, zooming, speed, and timing details (how the still image animates into a video). E.g. "slow cinematic camera pan left, coal dust drifting, lens flare, steam rising softly."
 
 Number beats s001, s002, ... in order, starting with the archival cold open.
 
-AI MODEL ROUTING GUIDELINES (mandatory model assignment for each beat):
-You must assign a specific image and video model to each beat based on its complexity:
-- For "recommended_image_model":
-  * "flux_2_pro": Recommend for complex, cinematic reference images (highly detailed scenes, rich textures, multiple characters/historical artifacts) optimized for cost and quality.
-  * "flux_1_1_pro_ultra": Recommend for complex, cinematic reference images when wide panning shots are required.
-  * "flux_1_dev_turbo": Recommend for fast image drafts.
+MODEL ROUTING.
+
+"image_model" (top level, ONE for the whole episode): the episode is rendered by a
+single image model so the look stays coherent from beat to beat. Different models
+render mark-making differently, and a mid-episode switch is visible even when the
+medium description is identical. Choose from:
+  * "nano2" - Nano Banana 2 / Gemini 3 Pro Image. Best prompt adherence, character
+    consistency and in-image text. The right default, and the right answer whenever
+    a recurring figure or legible lettering matters.
+  * "flux-cfg" - FLUX.1 dev. Cheapest, and the only backend with a true negative
+    prompt. Reasonable when the episode is landscape/atmosphere driven with no
+    recurring character.
+  * "flux_2_pro" / "flux_2_max" - denser texture and fine detail.
+  * "flux_1_1_pro_ultra" - highest resolution; wide panoramic compositions.
+  * "flux_1_dev_turbo" - fast, cheap drafts.
+  * "ideogram_4" / "ideogram_4_instant" - strongest in-image typography.
+  * "wan_2_7_image" - alternative look.
+Prefer "nano2" unless the episode gives you a concrete reason to differ, and say
+nothing about models in the narration.
+
+"image_model_override" (per beat): null for essentially every beat. Set it ONLY
+where one beat genuinely needs a different model than the rest of the episode -
+for example a manuscript page whose legibility depends on typography. An override
+you cannot justify in one sentence should be null.
+
 - For "recommended_video_model":
   * "veo_3_1" or "seedance_2_0": Recommend for complex video/audio beats (heavy active motion, transformations, complex water/fire physics, detailed human motion).
   * "wan_2_7" or "kling_2_5_turbo_pro": Recommend for simple video b-roll beats (subtle camera pans, slow drift, rising smoke, static scene with wind).
@@ -134,6 +173,12 @@ SCRIPT_SCHEMA = {
     "properties": {
         "title": {"type": "string"},
         "cultural_origin": {"type": "string"},
+        # Per-episode image model. One model renders the whole storyboard so the
+        # look stays coherent; a beat diverges only via image_model_override.
+        # The enum is derived from the backend registry in assets.py — it used to
+        # be a hand-written list of three flux variants that did not include the
+        # default backend, so Claude could never recommend it.
+        "image_model": {"type": "string", "enum": IMAGE_BACKEND_KEYS},
         "beats": {
             "type": "array",
             "items": {
@@ -153,9 +198,11 @@ SCRIPT_SCHEMA = {
                         "enum": ["push_in", "push_out", "pan_left", "pan_right", "static"],
                     },
                     "suggested_fx": {"type": "array", "items": {"type": "string"}},
-                    "recommended_image_model": {
-                        "type": "string",
-                        "enum": ["flux_2_pro", "flux_1_1_pro_ultra", "flux_1_dev_turbo"],
+                    # null for almost every beat — only set it when a beat has a
+                    # genuine reason to diverge from the episode model.
+                    "image_model_override": {
+                        "type": ["string", "null"],
+                        "enum": IMAGE_BACKEND_KEYS + [None],
                     },
                     "recommended_video_model": {
                         "type": "string",
@@ -171,14 +218,14 @@ SCRIPT_SCHEMA = {
                     "suggested_motion_type",
                     "suggested_camera",
                     "suggested_fx",
-                    "recommended_image_model",
+                    "image_model_override",
                     "recommended_video_model",
                 ],
                 "additionalProperties": False,
             },
         },
     },
-    "required": ["title", "cultural_origin", "beats"],
+    "required": ["title", "cultural_origin", "image_model", "beats"],
     "additionalProperties": False,
 }
 
@@ -223,16 +270,28 @@ def _beats_to_storyboard(data: Any) -> Storyboard:
                 motion_type=m_type,
                 camera=Camera(move=str(cam_str)),
                 fx=list(beat.get("suggested_fx") or beat.get("fx") or []),
-                image_model=beat.get("recommended_image_model") or beat.get("image_model"),
+                # Only an override. None means "use the episode model", which
+                # generate_drafts resolves from storyboard.render.backend.
+                image_model=(beat.get("image_model_override")
+                             or beat.get("recommended_image_model")   # legacy drafts
+                             or beat.get("image_model")),
                 video_model=beat.get("recommended_video_model") or beat.get("video_model"),
             )
         )
-    return Storyboard(
+
+    sb = Storyboard(
         title=title,
         cultural_origin=cultural_origin,
         script_locked=False,
         shots=shots,
     )
+    # Episode-level model choice drives every beat that has no override.
+    episode_model = ""
+    if isinstance(data, dict):
+        episode_model = (data.get("image_model") or "").strip()
+    if episode_model in IMAGE_BACKEND_KEYS:
+        sb.render.backend = episode_model
+    return sb
 
 
 def _scope(num_beats: int | None) -> str:
