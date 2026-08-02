@@ -43,6 +43,23 @@ class Camera:
 
 
 @dataclass
+class MotionConfig:
+    """Per-episode parallax defaults. Every beat inherits these; a beat overrides
+    with ``Camera.speed`` (multiplier) or ``Camera.amount`` (absolute travel).
+
+    Rates are travel *per second*, not per beat — that is the whole point. Fixed
+    per-beat totals looked fine at 6s and vanished at 24s, because what the eye
+    reads as motion is the rate. ``zoom_max``/``pan_max`` stop a very long beat
+    from pushing so far the framing falls apart.
+    """
+    speed: float = 1.0          # project-wide multiplier on both rates
+    zoom_rate: float = 0.011    # extra magnification per second
+    pan_rate: float = 0.009     # fraction of frame width per second
+    zoom_max: float = 0.22      # ceiling on rate-derived zoom travel
+    pan_max: float = 0.18
+
+
+@dataclass
 class MixConfig:
     """Per-episode audio mix levels (linear gain, 1.0 = unity).
 
@@ -120,6 +137,7 @@ class Storyboard:
     # default. Empty means "use VESPER_VOICE_ID / ELEVENLABS_VOICE_ID".
     voice_id: str = ""
     render: RenderConfig = field(default_factory=RenderConfig)
+    motion: MotionConfig = field(default_factory=MotionConfig)
     mix: MixConfig = field(default_factory=MixConfig)
     shots: List[Shot] = field(default_factory=list)
 
@@ -177,6 +195,10 @@ class Storyboard:
         mix = MixConfig(
             **{k: raw_mix[k] for k in raw_mix if k in MixConfig.__dataclass_fields__}
         )
+        raw_motion = data.get("motion") or {}
+        motion_cfg = MotionConfig(
+            **{k: raw_motion[k] for k in raw_motion if k in MotionConfig.__dataclass_fields__}
+        )
         return cls(
             id=project_id,
             version=data.get("version", MANIFEST_VERSION),
@@ -189,6 +211,7 @@ class Storyboard:
             music_prompt=data.get("music_prompt", "") or "",
             voice_id=data.get("voice_id", "") or "",
             render=render,
+            motion=motion_cfg,
             mix=mix,
             shots=shots,
         )

@@ -186,13 +186,37 @@ The second is better for an NLE, and needs a manifest field plus a UI affordance
 
 Create `frontend/src/components/StepHeader.tsx`, integrate into `page.tsx`.
 
-- `const [activeStep, setActiveStep] = useState<1|2|3|4>(1)`
-- Four pills; active in amber `#f59e0b`.
-- **Gate steps on real state**, don't just navigate: step 2 needs
-  `script_locked`, step 3 needs `storyboard_approved`, step 4 needs a rendered
-  preview or FCPXML. A locked step should say *why* — the existing assembly panel
-  does this and it's the pattern to follow. Never hide a control silently; that
-  reads as "my controls disappeared."
+**Five steps, per the `step2_audio_studio.jpg` mockup** (decided 2026-08-01; the
+mockups disagreed with each other — `step1`/`step4` showed four steps, `step3`
+showed a different four, `step2` showed five. Five wins):
+
+| # | Step | Gate |
+|---|---|---|
+| 1 | Pre-Production | — |
+| 2 | Audio Studio | `script_locked` |
+| 3 | Editing | `storyboard_approved` |
+| 4 | Visual FX | rendered beats exist |
+| 5 | Final Review | preview or FCPXML exists |
+
+- `const [activeStep, setActiveStep] = useState<1|2|3|4|5>(1)`
+- Five pills; active in amber `#f59e0b`.
+- **Gate steps on real state**, don't just navigate. A locked step should say
+  *why* — the existing assembly panel does this and it's the pattern to follow.
+  Never hide a control silently; that reads as "my controls disappeared."
+
+Step 4 (Visual FX) is where the parallax controls live — project defaults from
+`GET/POST /api/motion`, per-beat override on `camera.amount` / `camera.speed`,
+single-beat re-render via `POST /api/motion/preview/{scene_id}`.
+
+**The node editor is in scope** (decided 2026-08-01). `FlowCanvas` already
+exists, so this is a visual upgrade to match `00_dashboard_overview.jpg` — beat
+nodes joined by bezier curves with model badges — not new plumbing. It belongs
+in step 1 (Pre-Production), alongside the storyboard beats.
+
+**Not in scope:** the "Export & Publish to YouTube" button in
+`step4_export_publishing.jpg`. Publishing is out of this phase; build the
+server-side master render and the FCPXML export, and leave the publish control
+out rather than ship a dead button.
 
 `page.tsx` is ~1000 lines before this. Extract the existing assembly panel and
 job banners into components as part of Phase 1, or Phase 2 lands on top of a file

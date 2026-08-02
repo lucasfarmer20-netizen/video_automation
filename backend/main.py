@@ -590,7 +590,9 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
                     prev_extracted_frame = None
             else:
                 log_job("render", f"[{idx}/{total}] Rendering {shot.scene_id} locally ({shot.motion_type.value}) ...")
-                motion.render_shot(shot, fps=motion.DEFAULT_FPS, height=motion.DEFAULT_HEIGHT, out_dir=out_dir, placeholder=False)
+                motion.render_shot(shot, fps=motion.DEFAULT_FPS, height=motion.DEFAULT_HEIGHT,
+                                   out_dir=out_dir, placeholder=False,
+                                   motion_cfg=getattr(sb, "motion", None))
                 prev_extracted_frame = None
                 prev_video_dest_path = None
             
@@ -907,6 +909,90 @@ async def update_render_knobs(request: Request):
             
         save_current_project(sb)
         return {"ok": True, "render": asdict(r)}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.get("/api/motion")
+def get_motion():
+    """Project parallax defaults, plus the resolved travel for every beat.
+
+    `resolved` is what will actually render, so the UI can show the effective
+    number next to a beat instead of making the user infer it from the rate.
+    """
+    sb = get_current_project()
+    cfg = sb.motion
+    beats = []
+    for s in sb.shots:
+        cam = s.camera
+        amount = float(getattr(cam, "amount", 0.0) or 0.0)
+        z, p = motion.camera_amounts(cam.duration, amount, cam.speed, cfg)
+        travel = z if cam.move in ("push_in", "push_out") else p
+        beats.append({
+            "scene_id": s.scene_id,
+            "motion_type": s.motion_type.value,
+            "move": cam.move,
+            "duration": round(float(cam.duration), 2),
+            "speed": round(float(cam.speed), 3),
+            "amount": round(amount, 4),           # 0 = inherit the project rate
+            "travel": round(travel, 4),           # total, e.g. 0.15 -> 115% end scale
+            "rate_pct_per_sec": round(travel / max(0.1, float(cam.duration)) * 100, 3),
+        })
+    return {"ok": True, "motion": asdict(cfg), "beats": beats}
+
+
+@app.post("/api/motion")
+async def update_motion(request: Request):
+    """Set the project's parallax defaults. Re-render to see them."""
+    try:
+        sb = get_current_project()
+        data = await request.json()
+        limits = {"speed": (0.0, 6.0), "zoom_rate": (0.0, 0.10), "pan_rate": (0.0, 0.10),
+                  "zoom_max": (0.0, 0.80), "pan_max": (0.0, 0.80)}
+        for key, (lo, hi) in limits.items():
+            if key in data and data[key] is not None:
+                setattr(sb.motion, key, max(lo, min(hi, float(data[key]))))
+        save_current_project(sb)
+        return {"ok": True, "motion": asdict(sb.motion)}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/motion/preview/{scene_id}")
+def preview_motion(scene_id: str):
+    """Re-render one beat with the current settings, nothing else.
+
+    Tuning parallax by re-rendering the whole episode is a ~25 minute loop for a
+    number you may change again immediately. This renders the single beat you
+    are looking at.
+    """
+    try:
+        sb = get_current_project()
+        shot = next((s for s in sb.shots if s.scene_id == scene_id), None)
+        if not shot:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        if shot.motion_type == MotionType.AI_VIDEO:
+            raise HTTPException(status_code=400,
+                                detail="Beat is Tier-C ai_video; parallax settings do not apply.")
+        out_dir = config.episode_paths(sb.title)["render"]
+
+        def fn():
+            p = motion.render_shot(shot, fps=motion.DEFAULT_FPS, height=motion.DEFAULT_HEIGHT,
+                                   out_dir=out_dir, placeholder=False,
+                                   motion_cfg=getattr(sb, "motion", None))
+            z, pan = motion.camera_amounts(
+                shot.camera.duration, float(getattr(shot.camera, "amount", 0.0) or 0.0),
+                shot.camera.speed, sb.motion)
+            travel = z if shot.camera.move in ("push_in", "push_out") else pan
+            log_job("motion_preview",
+                    f"{scene_id}: {shot.camera.move} {travel*100:.1f}% over "
+                    f"{shot.camera.duration:.1f}s ({travel/max(0.1, shot.camera.duration)*100:.2f} %/s) "
+                    f"-> {_safe_rel_path(p)}")
+
+        start_job("motion_preview", fn)
+        return {"ok": True, "scene_id": scene_id}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 

@@ -74,16 +74,30 @@ def _ease(t: float, edge: float = EASE_EDGE) -> float:
     return (t - 0.5 * edge) / (1.0 - edge)
 
 
-def camera_amounts(duration: float, amount: float = 0.0) -> tuple[float, float]:
+def camera_amounts(duration: float, amount: float = 0.0, speed: float = 1.0,
+                   motion_cfg=None) -> tuple[float, float]:
     """Total (zoom, pan) travel for a beat of ``duration`` seconds.
 
-    ``amount`` (``Camera.amount``) overrides the rate-derived default when
-    non-zero — that is the per-beat "end scale 115%" control.
+    Resolution order, cheapest override last:
+
+    1. ``motion_cfg`` — the project's MotionConfig (rates, caps, global speed).
+    2. ``speed`` — the beat's ``Camera.speed`` multiplier, on top of the project.
+    3. ``amount`` — the beat's ``Camera.amount``. Absolute and final: 0.15 means
+       a 100% -> 115% push, exactly, ignoring rates and both speed multipliers.
+       This is the "End Scale" field in the storyboard UI, and a number typed
+       there must be the number that renders.
     """
     if amount and amount > 0:
         return float(amount), float(amount)
+    zr = float(getattr(motion_cfg, "zoom_rate", ZOOM_RATE))
+    pr = float(getattr(motion_cfg, "pan_rate", PAN_RATE))
+    zc = float(getattr(motion_cfg, "zoom_max", ZOOM_MAX))
+    pc = float(getattr(motion_cfg, "pan_max", PAN_MAX))
+    mult = float(getattr(motion_cfg, "speed", 1.0)) * max(0.0, float(speed))
     d = max(0.1, float(duration))
-    return min(ZOOM_RATE * d, ZOOM_MAX), min(PAN_RATE * d, PAN_MAX)
+    # Cap the rate-derived travel first, then apply the multipliers — so raising
+    # speed still speeds the shot up rather than silently hitting the ceiling.
+    return min(zr * d, zc) * mult, min(pr * d, pc) * mult
 
 
 def _camera(move: str, t: float, zoom_amt: float = 0.066,
@@ -114,12 +128,15 @@ def _camera(move: str, t: float, zoom_amt: float = 0.066,
 # gentle local stretches instead. `disp` gives even far pixels a little motion so
 # a push-in reads as the whole frame breathing, nearer faster.
 def _warp_frame(src: np.ndarray, disp: np.ndarray, base_y: np.ndarray,
-                base_x: np.ndarray, move: str, t: float, speed: float,
+                base_x: np.ndarray, move: str, t: float,
                 out_w: int, out_h: int,
                 zoom_amt: float = 0.066, pan_amt: float = 0.054) -> np.ndarray:
-    """Inverse-warp the source by the per-pixel depth displacement at time ``t``."""
+    """Inverse-warp the source by the per-pixel depth displacement at time ``t``.
+
+    Speed multipliers are already folded into zoom_amt/pan_amt by
+    camera_amounts(); applying them again here would square them.
+    """
     zoom, dx, dy = _camera(move, t, zoom_amt, pan_amt)
-    zoom, dx, dy = zoom * speed, dx * speed, dy * speed
     cx, cy = out_w / 2.0, out_h / 2.0
     scale = 1.0 + zoom * disp                    # nearer pixels magnify more
     sx = cx + (base_x - cx) / scale - (dx * out_w) * disp
@@ -209,12 +226,16 @@ class FX:
 # render
 # --------------------------------------------------------------------------- #
 def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT,
-                out_dir: Path = RENDER_DIR, placeholder: bool = False) -> Path:
+                out_dir: Path = RENDER_DIR, placeholder: bool = False,
+                motion_cfg=None) -> Path:
     """Render one approved shot to a silent H.264 clip; return the output path.
 
     ``placeholder=True`` renders a Tier-C (ai_video) shot from its still as a
     stand-in until the paid Kling clip exists — using the local parallax engine
     if the shot has a camera move, else a static hold.
+
+    ``motion_cfg`` is the project's Storyboard.motion; omitted, the module
+    defaults apply.
     """
     if not shot.draft_image:
         raise ValueError(f"{shot.scene_id}: no chosen draft_image to render.")
@@ -231,7 +252,7 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
     move = shot.camera.move if shot.camera else "static"
     speed = float(shot.camera.speed) if shot.camera else 1.0
     amount = float(getattr(shot.camera, "amount", 0.0) or 0.0) if shot.camera else 0.0
-    zoom_amt, pan_amt = camera_amounts(duration, amount)
+    zoom_amt, pan_amt = camera_amounts(duration, amount, speed, motion_cfg)
     n_frames = max(1, int(round(duration * fps)))
 
     img = depthmod.load_rgb(src)
@@ -265,7 +286,7 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
         for i in range(n_frames):
             t = i / max(1, n_frames - 1)
             if is_parallax:
-                frame = _warp_frame(src_rgb, disp, base_y, base_x, move, t, speed,
+                frame = _warp_frame(src_rgb, disp, base_y, base_x, move, t,
                                     out_w, out_h, zoom_amt, pan_amt)
             else:
                 frame = src_rgb.copy()   # static plate; FX only
@@ -299,7 +320,8 @@ def render_all(only: set[str] | None = None, fps: int = DEFAULT_FPS,
         tag = "placeholder" if is_ai else shot.motion_type.value
         print(f"Rendering {shot.scene_id} ({tag}, {shot.camera.move}) ...")
         try:
-            p = render_shot(shot, fps=fps, height=height, out_dir=out_dir, placeholder=is_ai)
+            p = render_shot(shot, fps=fps, height=height, out_dir=out_dir,
+                            placeholder=is_ai, motion_cfg=getattr(sb, "motion", None))
             print(f"  -> {p.relative_to(config.ROOT)}")
             outs.append(p)
         except Exception as exc:  # noqa: BLE001 — resilient batch
