@@ -927,7 +927,13 @@ def get_motion():
         cam = s.camera
         amount = float(getattr(cam, "amount", 0.0) or 0.0)
         z, p = motion.camera_amounts(cam.duration, amount, cam.speed, cfg)
-        travel = z if cam.move in ("push_in", "push_out") else p
+        # A beat only moves if it is the parallax tier AND has a real move.
+        # Reporting travel for a static plate or a Tier-C clip would show the UI
+        # a number that never renders.
+        if s.motion_type != MotionType.PARALLAX or cam.move not in ("push_in", "push_out", "pan_left", "pan_right"):
+            travel = 0.0
+        else:
+            travel = z if cam.move in ("push_in", "push_out") else p
         beats.append({
             "scene_id": s.scene_id,
             "motion_type": s.motion_type.value,
