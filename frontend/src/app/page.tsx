@@ -7,6 +7,7 @@ import {
   MessageSquare,
   LayoutGrid,
   GitBranch,
+  Move3d,
   Volume2,
   Tv,
   CheckCircle,
@@ -21,6 +22,7 @@ import {
 // Components
 import ProjectSidebar from "../components/ProjectSidebar";
 import KnobsSidebar from "../components/KnobsSidebar";
+import MotionPanel from "../components/MotionPanel";
 import VesperChat from "../components/VesperChat";
 import BeatCard from "../components/BeatCard";
 import FlowCanvas from "../components/FlowCanvas";
@@ -78,7 +80,7 @@ export default function WorkspacePage() {
   const [activeChannel, setActiveChannel] = useState<"bestiary" | "calluses">("bestiary");
   
   // View states
-  const [activeView, setActiveView] = useState<"grid" | "canvas">("grid");
+  const [activeView, setActiveView] = useState<"grid" | "canvas" | "motion">("grid");
   const [rightPanel, setRightPanel] = useState<"vesper" | "knobs">("vesper");
   
   // Background task state. `dismissedErrors` is tracked separately because
@@ -299,7 +301,14 @@ export default function WorkspacePage() {
         if (!prev) return null;
         const updatedShots = prev.project.shots.map((s: any) => {
           if (s.scene_id === sceneId) {
-            return { ...s, [field]: value };
+            // Merge for nested objects like `camera`: the API accepts partial
+            // updates, so overwriting wholesale would drop the sibling keys
+            // from local state until the next refetch and briefly render a
+            // beat as having no camera move.
+            const isPartial =
+              value && typeof value === "object" && !Array.isArray(value) &&
+              s[field] && typeof s[field] === "object" && !Array.isArray(s[field]);
+            return { ...s, [field]: isPartial ? { ...s[field], ...value } : value };
           }
           return s;
         });
@@ -680,6 +689,13 @@ export default function WorkspacePage() {
             >
               <GitBranch className="h-4 w-4" />
             </button>
+            <button
+              onClick={() => setActiveView("motion")}
+              className={`p-1.5 rounded transition ${activeView === "motion" ? "bg-zinc-800 text-amber-500" : "text-zinc-500 hover:text-zinc-300"}`}
+              title="Parallax & Camera Motion"
+            >
+              <Move3d className="h-4 w-4" />
+            </button>
           </div>
 
           <button
@@ -997,12 +1013,32 @@ export default function WorkspacePage() {
           )}
 
           {/* Workflow Graph View (React Flow) */}
-          {activeView === "canvas" ? (
+          {activeView === "motion" ? (
+            <MotionPanel
+              mediaUrl={mediaUrl}
+              epSlug={ep_slug}
+              fetchMotion={async () => {
+                try {
+                  const r = await fetch(`${API_BASE}/api/motion`);
+                  if (!r.ok) return null;
+                  return await r.json();
+                } catch { return null; }
+              }}
+              saveMotion={(cfg) => post("/api/motion", cfg)}
+              saveBeatCamera={(sceneId, camera) => handleUpdateField(sceneId, "camera", camera)}
+              previewBeat={(sceneId) => post(`/api/motion/preview/${sceneId}`)}
+            />
+          ) : activeView === "canvas" ? (
             <div className="h-[380px] sm:h-[500px] md:h-[550px] w-full shrink-0">
               <FlowCanvas
                 shots={project.shots}
                 mediaUrl={mediaUrl}
-                onUpdateDuration={(sceneId, dur) => handleUpdateField(sceneId, "camera", { move: "push_in", duration: dur, speed: 1.0 })}
+                // Send only the field that changed. This used to pass a whole
+                // camera object with move/speed hardcoded, which was harmless
+                // while the API discarded `camera` -- now that it persists,
+                // dragging a duration would reset a pan_left beat to push_in
+                // and wipe any per-beat speed override.
+                onUpdateDuration={(sceneId, dur) => handleUpdateField(sceneId, "camera", { duration: dur })}
                 onRegenerate={(sceneId) => handleRegenStill(sceneId)}
                 onGenerateSFX={async (sceneId) => {
                   await post(`/api/audio/sfx/${sceneId}`);
