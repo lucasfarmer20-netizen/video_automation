@@ -40,6 +40,10 @@ class Camera:
     # push from 100% to 115% scale). 0 means "auto": motion.camera_amounts()
     # derives it from `duration` so long and short beats drift at the same rate.
     amount: float = 0.0
+    # Hold this beat's duration against audio.sync_durations(), which otherwise
+    # refits every beat to its narration length. Without it, trimming a beat in
+    # the studio and then re-running narration silently discards the trim.
+    duration_locked: bool = False
 
 
 @dataclass

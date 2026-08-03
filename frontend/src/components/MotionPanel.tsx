@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
-import { Move3d, Save, Play, RotateCcw, Info } from "lucide-react";
+import { Move3d, Save, Play, RotateCcw, Info, Lock, Unlock } from "lucide-react";
 
 export interface MotionConfig {
   speed: number;
@@ -16,6 +16,7 @@ export interface MotionBeat {
   motion_type: string;
   move: string;
   duration: number;
+  duration_locked: boolean;
   speed: number;
   amount: number;
   travel: number;
@@ -28,7 +29,7 @@ interface MotionPanelProps {
   /** POST /api/motion */
   saveMotion: (cfg: Partial<MotionConfig>) => Promise<any>;
   /** POST /api/shot/{id} with { camera: {...} } */
-  saveBeatCamera: (sceneId: string, camera: Record<string, number | string>) => Promise<any>;
+  saveBeatCamera: (sceneId: string, camera: Record<string, number | string | boolean>) => Promise<any>;
   /** POST /api/motion/preview/{id} — re-renders one beat only */
   previewBeat: (sceneId: string) => Promise<any>;
   mediaUrl: (path: string) => string;
@@ -72,7 +73,7 @@ export default function MotionPanel({
     setBusy(null);
   };
 
-  const updateBeat = async (b: MotionBeat, camera: Record<string, number | string>) => {
+  const updateBeat = async (b: MotionBeat, camera: Record<string, number | string | boolean>) => {
     setBusy(b.scene_id);
     await saveBeatCamera(b.scene_id, camera);
     await load();
@@ -186,7 +187,24 @@ export default function MotionPanel({
                     : "bg-zinc-800 text-zinc-400"}`}>
                     {b.motion_type}
                   </span>
-                  <span className="text-[10px] font-mono text-zinc-500">{b.duration.toFixed(1)}s</span>
+                  <input
+                    type="number" step={0.1} min={0.2} defaultValue={b.duration}
+                    onBlur={(e) => {
+                      const v = num(e.target.value, b.duration);
+                      if (Math.abs(v - b.duration) > 0.001) updateBeat(b, { duration: v });
+                    }}
+                    className="w-16 bg-zinc-900 border border-zinc-800 rounded px-1 py-0.5 text-[10px] font-mono"
+                    title="Beat duration in seconds"
+                  />
+                  <button
+                    onClick={() => updateBeat(b, { duration_locked: !b.duration_locked })}
+                    className={`transition ${b.duration_locked ? "text-amber-500" : "text-zinc-600 hover:text-zinc-400"}`}
+                    title={b.duration_locked
+                      ? "Locked — re-running narration will not change this beat's duration"
+                      : "Unlocked — re-running narration refits this beat to its voiceover"}
+                  >
+                    {b.duration_locked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+                  </button>
                   {moves ? (
                     <span className={`text-[10px] font-mono ml-auto ${slow ? "text-amber-500" : "text-emerald-500"}`}>
                       {(b.travel * 100).toFixed(1)}% · {b.rate_pct_per_sec.toFixed(2)} %/s

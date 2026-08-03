@@ -939,6 +939,7 @@ def get_motion():
             "motion_type": s.motion_type.value,
             "move": cam.move,
             "duration": round(float(cam.duration), 2),
+            "duration_locked": bool(getattr(cam, "duration_locked", False)),
             "speed": round(float(cam.speed), 3),
             "amount": round(amount, 4),           # 0 = inherit the project rate
             "travel": round(travel, 4),           # total, e.g. 0.15 -> 115% end scale
@@ -1244,6 +1245,8 @@ async def update_shot(scene_id: str, request: Request):
                 shot.camera.amount = max(0.0, min(0.60, float(cam["amount"])))
             if "duration" in cam and cam["duration"] is not None:
                 shot.camera.duration = max(0.2, float(cam["duration"]))
+            if "duration_locked" in cam and cam["duration_locked"] is not None:
+                shot.camera.duration_locked = bool(cam["duration_locked"])
 
         save_current_project(sb)
         return {"ok": True, "paid_count": len(sb.paid_shots()), "camera": asdict(shot.camera)}
@@ -1867,14 +1870,27 @@ def run_assemble_endpoint(stage: str, force_paid: bool = False):
                 log_job("narration", f"Synthesizing {len(sb.shots)} beat(s) with voice {voice} ...")
                 clips = audio.synthesize_narration(sb)
                 log_job("narration", f"{len(clips)} narration clip(s) written.")
-                changed = audio.sync_durations(sb)
+                report: dict = {}
+                changed = audio.sync_durations(sb, report=report)
                 save_current_project(sb)
                 total = sum(float(s.camera.duration) for s in sb.shots if s.camera)
+                locked = report.get("locked") or []
                 log_job(
                     "narration",
-                    f"Synced {changed} shot duration(s) to audio; runtime now "
-                    f"{total:.1f}s (~{total/60:.1f} min).",
+                    f"Synced {changed} shot duration(s) to audio"
+                    + (f"; {len(locked)} locked beat(s) left as-is" if locked else "")
+                    + f"; runtime now {total:.1f}s (~{total/60:.1f} min).",
                 )
+                # A locked beat shorter than its own VO lets narration bleed into
+                # the next shot. Legal, but say it out loud -- this is the kind of
+                # defect you otherwise find on the finished master.
+                for o in report.get("overrun") or []:
+                    log_job(
+                        "narration",
+                        f"  !! {o['scene_id']}: locked at {o['duration']:.1f}s but its "
+                        f"narration runs {o['vo']:.1f}s — the voice will overrun into the "
+                        f"next beat. Unlock it or raise it to {o['would_be']:.1f}s.",
+                    )
                 
         elif stage == "render":
             if not sb.storyboard_approved:

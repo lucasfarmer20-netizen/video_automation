@@ -120,7 +120,7 @@ def synthesize_narration(storyboard: Storyboard | None = None,
 
 
 def sync_durations(storyboard: Storyboard | None = None, pad: float = 0.8,
-                   min_dur: float = 3.0) -> int:
+                   min_dur: float = 3.0, report: dict | None = None) -> int:
     """Fit each shot's ``camera.duration`` to its narration clip (VO length + pad).
 
     Narration-led pacing: a beat must hold at least as long as its voiceover, or
@@ -128,6 +128,13 @@ def sync_durations(storyboard: Storyboard | None = None, pad: float = 0.8,
     typical 15-25s documentary beat). Mutates the storyboard in place and returns
     the number of shots changed; the caller persists it (so the active manifest
     path is respected).
+
+    Beats with ``camera.duration_locked`` are left alone — that is the whole
+    point of the flag, since re-running narration would otherwise throw away a
+    trim made in the studio. A locked beat shorter than its own VO is reported
+    through ``report``: it is legal (you may want the voice to carry over a cut)
+    but it is almost always a mistake, and silently overlapping narration is the
+    kind of thing you only notice on the finished master.
     """
     import librosa
 
@@ -140,6 +147,14 @@ def sync_durations(storyboard: Storyboard | None = None, pad: float = 0.8,
             continue
         vo = float(librosa.get_duration(path=str(f)))
         new = round(max(min_dur, vo + pad), 2)
+        if getattr(shot.camera, "duration_locked", False):
+            if report is not None:
+                entry = {"scene_id": shot.scene_id, "duration": float(shot.camera.duration),
+                         "vo": round(vo, 2), "would_be": new}
+                if shot.camera.duration < vo:
+                    report.setdefault("overrun", []).append(entry)
+                report.setdefault("locked", []).append(entry)
+            continue
         if abs(shot.camera.duration - new) > 0.05:
             shot.camera.duration = new
             changed += 1
