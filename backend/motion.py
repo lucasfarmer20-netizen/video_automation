@@ -119,18 +119,35 @@ def _camera(move: str, t: float, zoom_amt: float = 0.066,
     return 0.0, 0.0, 0.0  # static
 
 
-def _pan_headroom(move: str, pan_amt: float) -> float:
+# How much of a lateral move is depth-differential rather than rigid. The pan
+# used to be applied *entirely* proportional to depth, so near pixels travelled
+# 6.7x further than far ones (disp spans 0.15..1.0) and every surface spanning
+# that range was sheared -- measured on a real plate, the bottom row moved
+# 101.8px while the top moved 37.2px. That is a rubber sheet, not a camera.
+# A real lateral move translates the whole frame equally; parallax is the small
+# differential on top. 0.25 keeps the near/far spread around 20px on a 1280px
+# frame -- enough to read as depth, well under the threshold where it reads as
+# skew.
+PARALLAX_GAIN = 0.25
+
+
+def _pan_headroom(move: str, pan_amt: float, max_lat: float = 1.0) -> float:
     """Base magnification a pan needs so it never samples past the plate edge.
 
-    Costs framing -- an 18% pan crops 18% of the image -- but that is what any
+    ``max_lat`` is the largest lateral multiplier any pixel sees (1 + gain *
+    max deviation from the reference plane), so the headroom covers the
+    differential as well as the rigid move.
+
+    Costs framing -- an 18% pan crops ~18% of the image -- but that is what any
     Ken Burns pan does, and the drafts are 2K against a 720p render, so there is
-    resolution to spare. The alternative is the edge smear.
+    resolution to spare. The alternative is a replicated edge column.
     """
     if move not in ("pan_left", "pan_right"):
         return 1.0
+    need = min(0.9, abs(float(pan_amt)) * max(1.0, float(max_lat)))
     # 1.005 covers sub-pixel rounding at the trailing edge; without it the last
     # column lands ~0.2px past the plate.
-    return 1.005 / max(0.1, 1.0 - min(0.9, abs(float(pan_amt))))
+    return 1.005 / max(0.1, 1.0 - need)
 
 
 # --------------------------------------------------------------------------- #
@@ -144,25 +161,28 @@ def _pan_headroom(move: str, pan_amt: float) -> float:
 def _warp_frame(src: np.ndarray, disp: np.ndarray, base_y: np.ndarray,
                 base_x: np.ndarray, move: str, t: float,
                 out_w: int, out_h: int,
-                zoom_amt: float = 0.066, pan_amt: float = 0.054) -> np.ndarray:
+                zoom_amt: float = 0.066, pan_amt: float = 0.054,
+                base_scale: float = 1.0, disp_ref: float = 0.5) -> np.ndarray:
     """Inverse-warp the source by the per-pixel depth displacement at time ``t``.
 
     Speed multipliers are already folded into zoom_amt/pan_amt by
     camera_amounts(); applying them again here would square them.
+
+    ``base_scale`` is the pan headroom (see _pan_headroom) and ``disp_ref`` the
+    plate's mean displacement — the plane that tracks the rigid camera move
+    exactly, with nearer and further pixels leading and lagging it.
     """
     zoom, dx, dy = _camera(move, t, zoom_amt, pan_amt)
-    # A pan has no zoom, so without a base over-scale the sampler runs off the
-    # side of the plate and mode="nearest" replicates the edge column across the
-    # whole overshoot -- a smeared border band, not a pan. Pre-magnify by just
-    # enough that the furthest-displaced pixel still lands inside the source.
-    # Push moves need none: dx is 0 and scale >= 1, so they only ever sample
-    # inward. Derivation: need cx*(1 - 1/s0) >= |dx|max * out_w, and |dx|max is
-    # pan_amt/2, so s0 >= 1/(1 - pan_amt).
-    base_scale = _pan_headroom(move, pan_amt)
     cx, cy = out_w / 2.0, out_h / 2.0
+    # Zoom stays fully depth-proportional: a depth-varying *magnification* reads
+    # as depth, which is why push moves already looked right.
     scale = base_scale * (1.0 + zoom * disp)     # nearer pixels magnify more
-    sx = cx + (base_x - cx) / scale - (dx * out_w) * disp
-    sy = cy + (base_y - cy) / scale - (dy * out_h) * disp
+    # Lateral motion does not. Applied fully depth-proportional it shears the
+    # frame (see PARALLAX_GAIN). Rigid translation for every pixel, plus a small
+    # differential around the reference plane.
+    lat = 1.0 + PARALLAX_GAIN * (disp - disp_ref)
+    sx = cx + (base_x - cx) / scale - (dx * out_w) * lat
+    sy = cy + (base_y - cy) / scale - (dy * out_h) * lat
     coords = [sy, sx]
     out = np.empty((out_h, out_w, 3), np.float32)
     for c in range(3):
@@ -292,6 +312,12 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
         # one flat card.
         disp = (0.15 + 0.85 * depth).astype(np.float32)
         base_y, base_x = (a.astype(np.float32) for a in np.mgrid[0:out_h, 0:out_w])
+        # The mean plane tracks the rigid camera move exactly; everything else
+        # leads or lags it by PARALLAX_GAIN. Headroom must cover that spread as
+        # well as the move itself.
+        disp_ref = float(disp.mean())
+        max_lat = 1.0 + PARALLAX_GAIN * float(np.abs(disp - disp_ref).max())
+        base_scale = _pan_headroom(move, pan_amt, max_lat)
 
     # stable per-shot seed (avoids hash randomization across runs)
     seed = (sum(bytes(shot.scene_id, "utf-8")) * 131) % 100003
@@ -309,7 +335,8 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
             t = i / max(1, n_frames - 1)
             if is_parallax:
                 frame = _warp_frame(src_rgb, disp, base_y, base_x, move, t,
-                                    out_w, out_h, zoom_amt, pan_amt)
+                                    out_w, out_h, zoom_amt, pan_amt,
+                                    base_scale, disp_ref)
             else:
                 frame = src_rgb.copy()   # static plate; FX only
             frame = fx.apply(frame, t, i)

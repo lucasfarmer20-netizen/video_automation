@@ -71,8 +71,22 @@ _IMAGENET_STD = np.array([0.229, 0.224, 0.225], np.float32)
 _INPUT_LONG = 518  # ViT input; Depth-Anything wants dims that are multiples of 14
 
 
+_ONNX_WARNED = False
+
+
 def _round14(n: float, lo: int = 14) -> int:
     return max(lo, int(round(n / 14.0)) * 14)
+
+
+def _static_input_hw(sess) -> "tuple[int, int] | None":
+    """(H, W) if the export pins its spatial dims, else None for a dynamic one."""
+    try:
+        shp = sess.get_inputs()[0].shape
+    except Exception:  # noqa: BLE001
+        return None
+    if len(shp) == 4 and isinstance(shp[2], int) and isinstance(shp[3], int):
+        return int(shp[2]), int(shp[3])
+    return None
 
 
 def _stage_model(path: Path) -> Path:
@@ -152,7 +166,17 @@ def _try_onnx_depth(img: np.ndarray) -> np.ndarray | None:
         return None
     try:
         h0, w0 = img.shape[:2]
-        if w0 >= h0:
+        fixed = _static_input_hw(sess)
+        if fixed is not None:
+            # This export declares a static square input (Depth-Anything V2 ONNX
+            # is 1x3x518x518). Feeding it an aspect-preserving 518x294 raised
+            # InvalidArgument, the bare `except` below swallowed it, and every
+            # render silently fell back to the heuristic -- a vertical gradient,
+            # which is why parallax looked like the bottom of frame sliding
+            # faster than the top. Squash to the model's shape and unsquash the
+            # result; that is how fixed-shape depth exports are meant to be fed.
+            th, tw = fixed
+        elif w0 >= h0:
             tw, th = _INPUT_LONG, _round14(_INPUT_LONG * h0 / w0)
         else:
             th, tw = _INPUT_LONG, _round14(_INPUT_LONG * w0 / h0)
@@ -166,7 +190,16 @@ def _try_onnx_depth(img: np.ndarray) -> np.ndarray | None:
         depth = np.asarray(Image.fromarray(depth).resize((w0, h0), Image.BICUBIC),
                            dtype=np.float32)
         return _norm(depth)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — heuristic still covers the render
+        # Say it once. Silently degrading to the heuristic is what hid a broken
+        # input shape through every episode rendered so far: the tier reported
+        # success and produced a vertical gradient instead of depth.
+        global _ONNX_WARNED
+        if not _ONNX_WARNED:
+            _ONNX_WARNED = True
+            print(f"Depth model failed ({exc.__class__.__name__}: {exc}); "
+                  f"falling back to heuristic depth. Parallax will be a vertical "
+                  f"gradient until this is fixed.")
         return None
 
 
