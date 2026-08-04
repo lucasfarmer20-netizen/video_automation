@@ -47,6 +47,39 @@ class Camera:
 
 
 @dataclass
+class Grade:
+    """Look controls applied to the base plate before any motion.
+
+    One set of names, used at two scopes: ``Storyboard.grade`` is the episode
+    default and ``Shot.grade`` is a *sparse* override of the same keys. That is
+    deliberate — the alternative (separate per-shot field names) is how you end
+    up with several controls that mean the same thing and no defined precedence.
+
+    ``key_light`` is only honest on photographic plates. On an illustrated
+    medium the light is painted into the artwork and the depth map is nearly
+    featureless, so shading it does almost nothing; measured on a real Bestiary
+    plate, a key light pushed to double strength barely read at all. Defaults
+    are therefore set per channel — see DEFAULT_GRADES.
+    """
+    brightness: float = 0.0        # exposure in stops; 0 = unchanged
+    contrast: float = 0.0          # -1..1 around mid-grey
+    temperature: int = 5600        # Kelvin. LOW = warm/orange, high = cool/blue
+    saturation: float = 1.0
+    rim_light: float = 0.0         # 0..1 edge glow from depth discontinuities
+    key_light: str = ""            # "" | left | right | top | front
+    key_intensity: float = 0.0     # 0..1
+
+
+# Bestiary plates are woodblock/manuscript media with the light already painted
+# in; Calluses plates are photographic and have real depth structure to shade.
+DEFAULT_GRADES: dict[str, dict] = {
+    "bestiary": {"rim_light": 0.0, "key_light": "", "key_intensity": 0.0},
+    "calluses": {"rim_light": 0.22, "key_light": "right", "key_intensity": 0.55,
+                 "temperature": 4200},
+}
+
+
+@dataclass
 class MotionConfig:
     """Per-episode parallax defaults. Every beat inherits these; a beat overrides
     with ``Camera.speed`` (multiplier) or ``Camera.amount`` (absolute travel).
@@ -109,6 +142,10 @@ class Shot:
     flow_hero: bool = False
     hero_clip: bool = False
     audio_anchor: Optional[float] = None
+    # Sparse override of Storyboard.grade -- only the keys set here differ from
+    # the episode default. Kept as a plain dict so adding a look control never
+    # needs a manifest migration.
+    grade: dict = field(default_factory=dict)
     draft_variations: List[str] = field(default_factory=list)
     draft_image: Optional[str] = None
     video_variations: List[str] = field(default_factory=list)
@@ -142,6 +179,7 @@ class Storyboard:
     voice_id: str = ""
     render: RenderConfig = field(default_factory=RenderConfig)
     motion: MotionConfig = field(default_factory=MotionConfig)
+    grade: Grade = field(default_factory=Grade)
     mix: MixConfig = field(default_factory=MixConfig)
     shots: List[Shot] = field(default_factory=list)
 
@@ -199,6 +237,9 @@ class Storyboard:
         mix = MixConfig(
             **{k: raw_mix[k] for k in raw_mix if k in MixConfig.__dataclass_fields__}
         )
+        raw_grade = data.get("grade") or {}
+        grade = Grade(**{k: raw_grade[k] for k in raw_grade
+                         if k in Grade.__dataclass_fields__})
         raw_motion = data.get("motion") or {}
         motion_cfg = MotionConfig(
             **{k: raw_motion[k] for k in raw_motion if k in MotionConfig.__dataclass_fields__}
@@ -216,6 +257,7 @@ class Storyboard:
             voice_id=data.get("voice_id", "") or "",
             render=render,
             motion=motion_cfg,
+            grade=grade,
             mix=mix,
             shots=shots,
         )

@@ -131,6 +131,98 @@ def _camera(move: str, t: float, zoom_amt: float = 0.066,
 PARALLAX_GAIN = 0.25
 
 
+def resolve_grade(sb, shot) -> dict:
+    """Episode grade, overlaid with the beat's sparse override.
+
+    Channel defaults fill in first, so a Calluses plate gets a rim and key light
+    while a Bestiary plate does not — see manifest.DEFAULT_GRADES for why.
+    """
+    from dataclasses import asdict as _asdict
+    from .manifest import DEFAULT_GRADES, Grade as _Grade
+
+    base = _asdict(getattr(sb, "grade", None) or _Grade())
+    # Channel defaults only apply where the episode is still at the dataclass
+    # default, so an explicit project setting always wins.
+    untouched = _asdict(_Grade())
+    for k, v in DEFAULT_GRADES.get(getattr(sb, "channel", ""), {}).items():
+        if k in base and base[k] == untouched.get(k):
+            base[k] = v
+    base.update({k: v for k, v in (getattr(shot, "grade", None) or {}).items() if k in base})
+    return base
+
+
+def grade_needs_depth(g: dict) -> bool:
+    """True when the look uses the depth map, so a static beat must compute it."""
+    return bool(g.get("rim_light", 0)) or (
+        bool(g.get("key_light")) and float(g.get("key_intensity", 0)) > 0
+    )
+
+
+def _surface_normals(depth: np.ndarray, strength: float = 60.0) -> np.ndarray:
+    """Normals from the depth map already computed for parallax — free."""
+    gy, gx = np.gradient(ndimage.gaussian_filter(depth, 3.0).astype(np.float32))
+    n = np.dstack([-gx * strength, -gy * strength, np.ones_like(depth)])
+    return n / (np.linalg.norm(n, axis=2, keepdims=True) + 1e-6)
+
+
+_KEY_DIRS = {
+    "left":  (-1.0, -0.3, 0.5),
+    "right": ( 1.0, -0.3, 0.5),
+    "top":   ( 0.0, -1.0, 0.5),
+    "front": ( 0.0,  0.0, 1.0),
+}
+
+
+def apply_grade(rgb: np.ndarray, g: dict, depth: np.ndarray | None = None) -> np.ndarray:
+    """Exposure / contrast / temperature / saturation, then depth-based light.
+
+    Applied once to the plate before the motion loop, not per frame: the light
+    belongs to the scene, so it should travel with the plate under a camera move
+    — and doing it once is N times cheaper.
+    """
+    out = rgb.astype(np.float32)
+
+    b = float(g.get("brightness", 0.0) or 0.0)
+    if b:
+        out = out * (2.0 ** b)
+
+    c = float(g.get("contrast", 0.0) or 0.0)
+    if c:
+        out = (out - 0.5) * (1.0 + c) + 0.5
+
+    k = int(g.get("temperature", 5600) or 5600)
+    if k != 5600:
+        # Low Kelvin reads warm. Camera white-balance convention is the inverse
+        # of this, which is a genuinely easy way to ship the slider backwards.
+        t = (5600 - k) / 3000.0
+        out = out * np.array([1.0 + 0.18 * t, 1.0 + 0.02 * t, 1.0 - 0.20 * t], np.float32)
+
+    s = float(g.get("saturation", 1.0) or 1.0)
+    if abs(s - 1.0) > 1e-3:
+        lum = out.mean(axis=2, keepdims=True)
+        out = lum + (out - lum) * s
+
+    if depth is not None:
+        key = (g.get("key_light") or "").strip().lower()
+        ki = float(g.get("key_intensity", 0.0) or 0.0)
+        if key in _KEY_DIRS and ki > 0:
+            L = np.array(_KEY_DIRS[key], np.float32)
+            L /= np.linalg.norm(L)
+            lam = np.clip((_surface_normals(depth) * L).sum(axis=2), 0.0, 1.0)
+            # Ambient is raised as intensity falls so the frame does not simply
+            # get darker as the key is dialled down.
+            out = out * (1.0 - ki * 0.5 + ki * lam)[..., None]
+
+        rim = float(g.get("rim_light", 0.0) or 0.0)
+        if rim > 0:
+            gy, gx = np.gradient(ndimage.gaussian_filter(depth, 2.0).astype(np.float32))
+            edge = np.clip(np.hypot(gx, gy) * 40.0, 0.0, 1.0)
+            edge = ndimage.gaussian_filter(edge, 1.5) * (depth ** 0.5)
+            out = out + (edge * rim)[..., None] * np.array([1.0, 0.92, 0.75], np.float32)
+
+    return np.clip(out, 0.0, 1.0)
+
+
 def _pan_headroom(move: str, pan_amt: float, max_lat: float = 1.0) -> float:
     """Base magnification a pan needs so it never samples past the plate edge.
 
@@ -269,7 +361,7 @@ class FX:
 # --------------------------------------------------------------------------- #
 def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT,
                 out_dir: Path = RENDER_DIR, placeholder: bool = False,
-                motion_cfg=None) -> Path:
+                motion_cfg=None, storyboard=None) -> Path:
     """Render one approved shot to a silent H.264 clip; return the output path.
 
     ``placeholder=True`` renders a Tier-C (ai_video) shot from its still as a
@@ -300,8 +392,22 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
     img = depthmod.load_rgb(src)
     src_rgb = np.asarray(Image.fromarray(img).resize((out_w, out_h), Image.LANCZOS),
                          dtype=np.float32) / 255.0
-    is_parallax = shot.motion_type == MotionType.PARALLAX or (placeholder and move != "static")
-    if is_parallax:
+
+    # Three independent questions, previously collapsed into one flag:
+    #   has_move   -- is there a camera move at all?
+    #   use_depth  -- should that move be depth-driven (2.5D) or flat (2D)?
+    #   needs_depth-- does the *look* need a depth map even without motion?
+    # Collapsing them meant a `static` beat rendered as a frozen plate and could
+    # not be given a Ken Burns move at all.
+    has_move = move != "static"
+    use_depth = shot.motion_type == MotionType.PARALLAX or (placeholder and has_move)
+    grade = resolve_grade(storyboard, shot) if storyboard is not None else {}
+    needs_depth = use_depth or grade_needs_depth(grade)
+
+    depth = None
+    disp = base_y = base_x = None
+    disp_ref, base_scale = 0.5, 1.0
+    if needs_depth:
         depth = depthmod.estimate_depth(img)
         depth = np.asarray(Image.fromarray(depth).resize((out_w, out_h), Image.BILINEAR),
                            dtype=np.float32)
@@ -311,7 +417,17 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
         # spread means near/far separate visibly instead of the plate sliding as
         # one flat card.
         disp = (0.15 + 0.85 * depth).astype(np.float32)
+
+    if grade:
+        # Once, on the plate — the light belongs to the scene, so it travels with
+        # it under a camera move, and this is N frames cheaper than per-frame.
+        src_rgb = apply_grade(src_rgb, grade, depth if grade_needs_depth(grade) else None)
+
+    if has_move:
         base_y, base_x = (a.astype(np.float32) for a in np.mgrid[0:out_h, 0:out_w])
+        if not use_depth:
+            # Flat plate: every pixel displaces equally, i.e. plain 2D Ken Burns.
+            disp = np.ones((out_h, out_w), np.float32)
         # The mean plane tracks the rigid camera move exactly; everything else
         # leads or lags it by PARALLAX_GAIN. Headroom must cover that spread as
         # well as the move itself.
@@ -333,7 +449,7 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
     try:
         for i in range(n_frames):
             t = i / max(1, n_frames - 1)
-            if is_parallax:
+            if has_move:
                 frame = _warp_frame(src_rgb, disp, base_y, base_x, move, t,
                                     out_w, out_h, zoom_amt, pan_amt,
                                     base_scale, disp_ref)
@@ -370,7 +486,8 @@ def render_all(only: set[str] | None = None, fps: int = DEFAULT_FPS,
         print(f"Rendering {shot.scene_id} ({tag}, {shot.camera.move}) ...")
         try:
             p = render_shot(shot, fps=fps, height=height, out_dir=out_dir,
-                            placeholder=is_ai, motion_cfg=getattr(sb, "motion", None))
+                            placeholder=is_ai, motion_cfg=getattr(sb, "motion", None),
+                            storyboard=sb)
             print(f"  -> {p.relative_to(config.ROOT)}")
             outs.append(p)
         except Exception as exc:  # noqa: BLE001 — resilient batch

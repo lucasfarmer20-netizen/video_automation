@@ -25,7 +25,8 @@ import JobBanners from "../components/JobBanners";
 import VesperChat from "../components/VesperChat";
 import BeatCard from "../components/BeatCard";
 import FlowCanvas from "../components/FlowCanvas";
-import TimingSheet from "../components/TimingSheet";
+import MultitrackTimeline from "../components/MultitrackTimeline";
+import GradePanel, { Grade } from "../components/GradePanel";
 import MetadataPanel, { Metadata } from "../components/MetadataPanel";
 import VoiceStudioModal from "../components/VoiceStudioModal";
 
@@ -832,12 +833,19 @@ export default function WorkspacePage() {
               fcpxmlReady={Boolean(fcpxml_ready)}
             />
           ) : activeStep === 3 ? (
-            <TimingSheet
+            <MultitrackTimeline
               shots={project.shots || []}
+              musicTrack={project.music_track}
               mediaUrl={mediaUrl}
               onUpdateCamera={(sceneId, camera) => handleUpdateField(sceneId, "camera", camera)}
             />
           ) : activeStep === 4 ? (
+            <div className="flex flex-col gap-5">
+            <GradePanel
+              grade={activeProject.grade ?? null}
+              channel={project.channel}
+              onSave={async (gr: Partial<Grade>) => { const r = await post("/api/grade", gr); fetchActiveProject(); return r; }}
+            />
             <MotionPanel
               mediaUrl={mediaUrl}
               epSlug={ep_slug}
@@ -852,6 +860,7 @@ export default function WorkspacePage() {
               saveBeatCamera={(sceneId, camera) => handleUpdateField(sceneId, "camera", camera)}
               previewBeat={(sceneId) => post(`/api/motion/preview/${sceneId}`)}
             />
+            </div>
           ) : activeStep === 1 && activeView === "canvas" ? (
             <div className="h-[380px] sm:h-[500px] md:h-[550px] w-full shrink-0">
               <FlowCanvas

@@ -593,7 +593,7 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
                 log_job("render", f"[{idx}/{total}] Rendering {shot.scene_id} locally ({shot.motion_type.value}) ...")
                 motion.render_shot(shot, fps=motion.DEFAULT_FPS, height=motion.DEFAULT_HEIGHT,
                                    out_dir=out_dir, placeholder=False,
-                                   motion_cfg=getattr(sb, "motion", None))
+                                   motion_cfg=getattr(sb, "motion", None), storyboard=sb)
                 prev_extracted_frame = None
                 prev_video_dest_path = None
             
@@ -829,6 +829,7 @@ def get_active_project():
             # Shipped alongside the project so the mix and motion panels do not
             # each need their own round trip on every step change.
             "mix": asdict(sb.mix),
+            "grade": asdict(sb.grade),
             "motion": asdict(sb.motion),
             "counts": counts,
             "preview_url": preview_url,
@@ -1043,7 +1044,7 @@ def preview_motion(scene_id: str):
         def fn():
             p = motion.render_shot(shot, fps=motion.DEFAULT_FPS, height=motion.DEFAULT_HEIGHT,
                                    out_dir=out_dir, placeholder=False,
-                                   motion_cfg=getattr(sb, "motion", None))
+                                   motion_cfg=getattr(sb, "motion", None), storyboard=sb)
             z, pan = motion.camera_amounts(
                 shot.camera.duration, float(getattr(shot.camera, "amount", 0.0) or 0.0),
                 shot.camera.speed, sb.motion)
@@ -1055,6 +1056,49 @@ def preview_motion(scene_id: str):
 
         start_job("motion_preview", fn)
         return {"ok": True, "scene_id": scene_id}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.get("/api/grade")
+def get_grade():
+    """Episode look, plus each beat's resolved grade and sparse override."""
+    sb = get_current_project()
+    return {
+        "ok": True,
+        "grade": asdict(sb.grade),
+        "channel": sb.channel,
+        "beats": [
+            {"scene_id": s.scene_id,
+             "override": dict(getattr(s, "grade", None) or {}),
+             "resolved": motion.resolve_grade(sb, s)}
+            for s in sb.shots
+        ],
+    }
+
+
+@app.post("/api/grade")
+async def update_grade(request: Request):
+    """Set the episode look. Re-render to see it."""
+    try:
+        sb = get_current_project()
+        data = await request.json()
+        limits = {"brightness": (-3.0, 3.0), "contrast": (-1.0, 1.0),
+                  "temperature": (2000, 12000), "saturation": (0.0, 2.0),
+                  "rim_light": (0.0, 1.0), "key_intensity": (0.0, 1.0)}
+        for key, (lo, hi) in limits.items():
+            if key in data and data[key] is not None:
+                v = max(lo, min(hi, float(data[key])))
+                setattr(sb.grade, key, int(v) if key == "temperature" else v)
+        if "key_light" in data:
+            kl = str(data["key_light"] or "").strip().lower()
+            if kl and kl not in motion._KEY_DIRS:
+                raise HTTPException(status_code=400, detail=f"Unknown key_light: {kl}")
+            sb.grade.key_light = kl
+        save_current_project(sb)
+        return {"ok": True, "grade": asdict(sb.grade)}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -1284,6 +1328,21 @@ async def update_shot(scene_id: str, request: Request):
             shot.flow_hero = bool(data["flow_hero"])
         if "sfx" in data:
             shot.sfx = str(data["sfx"] or "")
+        if "grade" in data:
+            # Sparse: only the keys present differ from the episode grade. Sending
+            # null for a key clears the override rather than pinning a value.
+            g = data["grade"]
+            if g is None:
+                shot.grade = {}
+            elif isinstance(g, dict):
+                allowed = set(asdict(sb.grade))
+                for k, v in g.items():
+                    if k not in allowed:
+                        continue
+                    if v is None:
+                        shot.grade.pop(k, None)
+                    else:
+                        shot.grade[k] = v
         if "camera" in data and isinstance(data["camera"], dict):
             # FlowCanvas has been PATCHing `camera` all along; without this the
             # write was accepted and silently discarded, so no camera edit ever
