@@ -119,6 +119,20 @@ def _camera(move: str, t: float, zoom_amt: float = 0.066,
     return 0.0, 0.0, 0.0  # static
 
 
+def _pan_headroom(move: str, pan_amt: float) -> float:
+    """Base magnification a pan needs so it never samples past the plate edge.
+
+    Costs framing -- an 18% pan crops 18% of the image -- but that is what any
+    Ken Burns pan does, and the drafts are 2K against a 720p render, so there is
+    resolution to spare. The alternative is the edge smear.
+    """
+    if move not in ("pan_left", "pan_right"):
+        return 1.0
+    # 1.005 covers sub-pixel rounding at the trailing edge; without it the last
+    # column lands ~0.2px past the plate.
+    return 1.005 / max(0.1, 1.0 - min(0.9, abs(float(pan_amt))))
+
+
 # --------------------------------------------------------------------------- #
 # continuous depth warp (2.5D parallax)
 # --------------------------------------------------------------------------- #
@@ -137,8 +151,16 @@ def _warp_frame(src: np.ndarray, disp: np.ndarray, base_y: np.ndarray,
     camera_amounts(); applying them again here would square them.
     """
     zoom, dx, dy = _camera(move, t, zoom_amt, pan_amt)
+    # A pan has no zoom, so without a base over-scale the sampler runs off the
+    # side of the plate and mode="nearest" replicates the edge column across the
+    # whole overshoot -- a smeared border band, not a pan. Pre-magnify by just
+    # enough that the furthest-displaced pixel still lands inside the source.
+    # Push moves need none: dx is 0 and scale >= 1, so they only ever sample
+    # inward. Derivation: need cx*(1 - 1/s0) >= |dx|max * out_w, and |dx|max is
+    # pan_amt/2, so s0 >= 1/(1 - pan_amt).
+    base_scale = _pan_headroom(move, pan_amt)
     cx, cy = out_w / 2.0, out_h / 2.0
-    scale = 1.0 + zoom * disp                    # nearer pixels magnify more
+    scale = base_scale * (1.0 + zoom * disp)     # nearer pixels magnify more
     sx = cx + (base_x - cx) / scale - (dx * out_w) * disp
     sy = cy + (base_y - cy) / scale - (dy * out_h) * disp
     coords = [sy, sx]
