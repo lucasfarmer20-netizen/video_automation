@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { Mic, Sliders, Sparkles, X, Volume2, Check } from "lucide-react";
+import { Mic, Sliders, Sparkles, X, Volume2, Check, Play } from "lucide-react";
 
 interface Preview {
   generated_voice_id: string;
@@ -33,6 +33,9 @@ export default function VoiceStudioModal({ isOpen, onClose, post, mediaUrl }: Vo
   // usable voice — its generated_voice_id must be promoted via /api/voice/save
   // before narration can use it.
   const [previews, setPreviews] = useState<Preview[]>([]);
+  const [sampling, setSampling] = useState(false);
+  const [sampleUri, setSampleUri] = useState<string>("");
+  const [sampleLine, setSampleLine] = useState<string>("");
   const [chosen, setChosen] = useState<string | null>(null);
   const [voiceName, setVoiceName] = useState("Vesper");
   const [savedVoiceId, setSavedVoiceId] = useState<string | null>(null);
@@ -88,6 +91,29 @@ export default function VoiceStudioModal({ isOpen, onClose, post, mediaUrl }: Vo
       setMessage(`Save failed: ${e.message}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Audition the voice that is actually selected, with the slider values as they
+  // stand right now — including unsaved ones, so you can hear a change before
+  // committing it.
+  const handleSampleVoice = async () => {
+    setSampling(true);
+    setMessage("");
+    try {
+      const payload: any = { stability, style_exaggeration: styleExaggeration };
+      if (savedVoiceId) payload.voice_id = savedVoiceId;
+      const res = await post("/api/voice/sample", payload);
+      if (res.ok && res.audio_data_uri) {
+        setSampleUri(res.audio_data_uri);
+        setSampleLine(res.text || "");
+      } else {
+        setMessage(`Sample failed: ${res.error || "no audio returned"}`);
+      }
+    } catch (e: any) {
+      setMessage(`Sample failed: ${e.message}`);
+    } finally {
+      setSampling(false);
     }
   };
 
@@ -319,6 +345,38 @@ export default function VoiceStudioModal({ isOpen, onClose, post, mediaUrl }: Vo
                 className="w-full accent-amber-500"
               />
               <p className="text-[10px] text-zinc-500">Higher style exaggeration amplifies heavy documentary delivery and vocal weight.</p>
+            </div>
+
+            {/* Audition the CURRENT settings. The design flow only auditions
+                brand-new voices; without this there is no way to hear an
+                existing voice, or to hear what these two sliders actually do. */}
+            <div className="border-t border-zinc-800 pt-3 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <button
+                  onClick={handleSampleVoice}
+                  disabled={sampling}
+                  className="bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-100 px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 border border-zinc-700"
+                >
+                  <Play className="w-3.5 h-3.5 text-amber-500" />
+                  {sampling ? "Rendering sample…" : "Hear these settings"}
+                </button>
+                <span className="text-[10px] text-zinc-500 font-mono text-right">
+                  reads this episode&apos;s first line
+                </span>
+              </div>
+
+              {sampleUri && (
+                <div className="space-y-1">
+                  <audio key={sampleUri} controls autoPlay src={sampleUri} className="w-full h-9" />
+                  {sampleLine && (
+                    <p className="text-[10px] text-zinc-500 italic line-clamp-2">&ldquo;{sampleLine}&rdquo;</p>
+                  )}
+                </div>
+              )}
+              <p className="text-[10px] text-zinc-600">
+                Samples are billed per character, so this runs only when you ask —
+                it does not fire as you drag. Nothing is written to disk.
+              </p>
             </div>
           </div>
 

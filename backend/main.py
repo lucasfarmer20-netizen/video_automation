@@ -6,6 +6,7 @@ fal.ai media API, and DaVinci Resolve OTIO exporter.
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 import json
@@ -2053,6 +2054,41 @@ async def save_voice_endpoint(request: Request):
         return {"ok": True, **saved, "assigned_to_episode": True}
     except HTTPException as he:
         raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/voice/sample")
+async def voice_sample_endpoint(request: Request):
+    """Audition a saved voice, optionally with unsaved stability/style values.
+
+    /api/voice/design auditions brand-new voices, but there was no way to hear
+    an existing voice or to hear what the sliders do — /api/voice/settings
+    returns numbers and no audio. Sampling costs ElevenLabs characters, so this
+    is explicit rather than firing on every slider move.
+    """
+    try:
+        data = await request.json()
+        sb = get_current_project()
+        # Default to this episode's own first line: the most representative
+        # thing to judge a narrator on is the script they will actually read.
+        first = next((s.narration for s in sb.shots if (s.narration or "").strip()), "")
+        text = (data.get("text") or first
+                or "In the humid dark, something older than the village waits.").strip()
+
+        mp3 = audio.sample_voice(
+            text,
+            voice_id=(data.get("voice_id") or "").strip() or None,
+            stability=data.get("stability"),
+            style=data.get("style_exaggeration"),
+            storyboard=sb,
+        )
+        return {
+            "ok": True,
+            "audio_data_uri": "data:audio/mpeg;base64," + base64.b64encode(mp3).decode("ascii"),
+            "chars": len(text),
+            "text": text,
+        }
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 

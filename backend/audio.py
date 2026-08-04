@@ -95,21 +95,9 @@ def synthesize_narration(storyboard: Storyboard | None = None,
             out.append(dest)
             continue
         print(f"TTS {shot.scene_id}: {text[:56]}...")
-        try:
-            from elevenlabs import VoiceSettings
-            v_settings = VoiceSettings(
-                stability=config.ELEVENLABS_STABILITY,
-                similarity_boost=config.ELEVENLABS_SIMILARITY_BOOST,
-                style=config.ELEVENLABS_STYLE_EXAGGERATION,
-                use_speaker_boost=config.ELEVENLABS_SPEAKER_BOOST,
-            )
-        except ImportError:
-            v_settings = {
-                "stability": config.ELEVENLABS_STABILITY,
-                "similarity_boost": config.ELEVENLABS_SIMILARITY_BOOST,
-                "style": config.ELEVENLABS_STYLE_EXAGGERATION,
-                "use_speaker_boost": config.ELEVENLABS_SPEAKER_BOOST,
-            }
+        # Shared with sample_voice() so an audition uses the same settings the
+        # real narration will.
+        v_settings = _voice_settings()
         stream = client.text_to_speech.convert(
             voice_id=voice, text=text,
             model_id=config.ELEVENLABS_MODEL, output_format=OUTPUT_FORMAT,
@@ -117,6 +105,72 @@ def synthesize_narration(storyboard: Storyboard | None = None,
         )
         out.append(_write_stream(stream, dest))
     return out
+
+
+def _voice_settings(stability: float | None = None, style: float | None = None):
+    """VoiceSettings for a TTS call, defaulting to the process-level knobs."""
+    s = config.ELEVENLABS_STABILITY if stability is None else float(stability)
+    st = config.ELEVENLABS_STYLE_EXAGGERATION if style is None else float(style)
+    try:
+        from elevenlabs import VoiceSettings
+        return VoiceSettings(
+            stability=s,
+            similarity_boost=config.ELEVENLABS_SIMILARITY_BOOST,
+            style=st,
+            use_speaker_boost=config.ELEVENLABS_SPEAKER_BOOST,
+        )
+    except ImportError:
+        return {
+            "stability": s,
+            "similarity_boost": config.ELEVENLABS_SIMILARITY_BOOST,
+            "style": st,
+            "use_speaker_boost": config.ELEVENLABS_SPEAKER_BOOST,
+        }
+
+
+def sample_voice(text: str, voice_id: str | None = None,
+                 stability: float | None = None, style: float | None = None,
+                 storyboard: Storyboard | None = None) -> bytes:
+    """Render a short line with a *saved* voice and return the MP3 bytes.
+
+    The design flow already auditions brand-new voices, but there was no way to
+    hear an existing voice, or to hear what stability/style changes do — the
+    settings endpoint returns numbers and no audio. This closes that: it uses
+    the same client, model and VoiceSettings shape as synthesize_narration, so
+    the sample is representative of the real narration rather than a different
+    code path that might sound different.
+
+    Nothing is written to disk; a sample is throwaway and must never be mistaken
+    for a beat's narration.
+    """
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("sample_voice needs some text")
+    # Samples are billed per character like any TTS, so cap them.
+    text = text[:400]
+
+    sb = storyboard or load()
+    voice = (
+        (voice_id or "").strip()
+        or (getattr(sb, "voice_id", "") or "").strip()
+        or config.VESPER_VOICE_ID
+        or config.ELEVENLABS_VOICE_ID
+    )
+    if not voice:
+        raise RuntimeError("No voice selected and no ELEVENLABS_VOICE_ID configured.")
+
+    stream = _client().text_to_speech.convert(
+        voice_id=voice, text=text,
+        model_id=config.ELEVENLABS_MODEL, output_format=OUTPUT_FORMAT,
+        voice_settings=_voice_settings(stability, style),
+    )
+    buf = bytearray()
+    for chunk in stream:
+        if chunk:
+            buf.extend(chunk)
+    if not buf:
+        raise RuntimeError("ElevenLabs returned no audio for the sample.")
+    return bytes(buf)
 
 
 def sync_durations(storyboard: Storyboard | None = None, pad: float = 0.8,
