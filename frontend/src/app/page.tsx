@@ -26,6 +26,7 @@ import VesperChat from "../components/VesperChat";
 import BeatCard from "../components/BeatCard";
 import FlowCanvas from "../components/FlowCanvas";
 import TimingSheet from "../components/TimingSheet";
+import MetadataPanel, { Metadata } from "../components/MetadataPanel";
 import VoiceStudioModal from "../components/VoiceStudioModal";
 
 // Setup API URL mapping
@@ -96,6 +97,7 @@ export default function WorkspacePage() {
   const [dismissedErrors, setDismissedErrors] = useState<Record<string, string>>({});
   const [chatHistory, setChatHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [voiceStudioOpen, setVoiceStudioOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileRightPanelOpen, setMobileRightPanelOpen] = useState(false);
@@ -136,6 +138,13 @@ export default function WorkspacePage() {
         setActiveProject(data);
         setActiveChannel(data.project.channel);
       }
+      // Metadata is a sidecar file, not part of the manifest, so it is fetched
+      // separately and may simply not exist yet.
+      try {
+        const m = await fetch(`${API_BASE}/api/metadata`);
+        const md = await m.json();
+        setMetadata(md.ok ? md.metadata : null);
+      } catch { setMetadata(null); }
     } catch (e) {
       console.error("Failed to load active project details", e);
     } finally {
@@ -809,7 +818,20 @@ export default function WorkspacePage() {
           {/* Step 1 is storyboard work (cards or node graph), Step 3 is timing,
               Step 4 is motion. Steps 2 and 5 are driven entirely by the panels
               above, so nothing renders here. */}
-          {activeStep === 3 ? (
+          {activeStep === 5 ? (
+            <MetadataPanel
+              metadata={metadata}
+              busy={jobs["metadata"]?.status === "running"}
+              bundleBusy={jobs["bundle"]?.status === "running"}
+              bundleReady={jobs["bundle"]?.status === "done"}
+              onGenerate={async () => { await post("/api/metadata/generate"); }}
+              onSave={async (md) => { const r = await post("/api/metadata", md); if (r.ok) setMetadata(r.metadata); return r; }}
+              onBuildBundle={async () => { await post("/api/export/bundle"); }}
+              bundleUrl={`${API_BASE}/api/export/bundle`}
+              fcpxmlUrl={`${API_BASE}/api/export/fcpxml`}
+              fcpxmlReady={Boolean(fcpxml_ready)}
+            />
+          ) : activeStep === 3 ? (
             <TimingSheet
               shots={project.shots || []}
               mediaUrl={mediaUrl}

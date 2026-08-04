@@ -40,7 +40,7 @@ def secure_filename(filename: str) -> str:
     return filename
 
 # Submodule imports
-from . import config, manifest, script, assets, audio, motion, timeline, sizzle
+from . import config, manifest, script, assets, audio, motion, timeline, sizzle, metadata, bundle
 from .manifest import Storyboard, Shot, MotionType, Camera, RenderConfig, db
 from .pipeline_worker import start_job, get_jobs_status, log_job
 
@@ -2152,6 +2152,86 @@ def get_assemble_status():
 
 
 # --- MEDIA SERVING ENDPOINTS ---
+
+@app.get("/api/metadata")
+def get_metadata():
+    """Saved publishing metadata for this episode, if it has been drafted."""
+    try:
+        sb = get_current_project()
+        md = metadata.load_saved(sb)
+        return {"ok": True, "metadata": md.to_dict() if md else None}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/metadata/generate")
+def generate_metadata_endpoint():
+    """Draft title / description / chapters / tags from the locked script."""
+    try:
+        sb = get_current_project()
+        if not sb.script_locked:
+            return JSONResponse(status_code=400, content={
+                "ok": False,
+                "error": "Metadata is drafted from the locked script. Lock the script first.",
+            })
+
+        def fn():
+            md = metadata.generate(sb, log=lambda m: log_job("metadata", m))
+            p = metadata.save(md, sb)
+            log_job("metadata", f"Wrote {_safe_rel_path(p)} — "
+                                f"{len(md.chapters)} chapter(s), {len(md.tags)} tag(s).")
+
+        start_job("metadata", fn)
+        return {"ok": True, "stage": "metadata"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/metadata")
+async def update_metadata(request: Request):
+    """Persist hand-edited metadata. The draft is a starting point, not the copy."""
+    try:
+        sb = get_current_project()
+        data = await request.json()
+        md = metadata.Metadata.from_dict(data)
+        p = metadata.save(md, sb)
+        return {"ok": True, "saved": _safe_rel_path(p), "metadata": md.to_dict()}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/export/bundle")
+def build_export_bundle():
+    """Pack the FCPXML plus every asset it references into one ZIP.
+
+    The plain .fcpxml points at absolute container paths, so on any other machine
+    every clip is offline. This rewrites them relative and ships the media.
+    """
+    try:
+        sb = get_current_project()
+
+        def fn():
+            p = bundle.build(sb, log=lambda m: log_job("bundle", m))
+            log_job("bundle", f"Ready: {_safe_rel_path(p)}")
+
+        start_job("bundle", fn)
+        return {"ok": True, "stage": "bundle"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.get("/api/export/bundle")
+def download_export_bundle():
+    sb = get_current_project()
+    slug = config.episode_paths(sb.title)["slug"]
+    path = (config.MANIFEST_PATH.parent / f"{slug}_bundle.zip").resolve()
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="No bundle yet — build it first (POST /api/export/bundle).",
+        )
+    return FileResponse(path, media_type="application/zip", filename=path.name)
+
 
 @app.get("/api/export/{kind}")
 def download_timeline_export(kind: str):
