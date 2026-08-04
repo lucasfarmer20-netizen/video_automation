@@ -351,6 +351,80 @@ MUSIC_BACKEND_KEYS: list[str] = list(MUSIC_BACKENDS)
 DEFAULT_MUSIC_BACKEND = "elevenlabs_music"
 
 
+def _ffmpeg_bin() -> str:
+    """System ffmpeg (per CLAUDE.md), falling back to the imageio-bundled one.
+
+    The fallback exists only so local dev works without a PATH install; the
+    deployed image has ffmpeg proper.
+    """
+    import shutil
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "ffmpeg not found. It is a system-level install, not a pip package."
+        ) from exc
+
+
+def is_mp3(path: Path) -> bool:
+    """True if the file really is MP3, by content — not by extension."""
+    try:
+        head = Path(path).open("rb").read(4)
+    except OSError:
+        return False
+    # ID3 tag, or a raw MPEG audio frame sync (11 set bits).
+    return head[:3] == b"ID3" or (len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0)
+
+
+def transcode_to_mp3(src: Path, bitrate: str = "192k", normalize_lufs: float | None = None,
+                     log=print) -> Path:
+    """Re-encode ``src`` to MP3 beside itself and remove the original.
+
+    Generators hand back uncompressed audio: ACE-Step returns RIFF/WAV, and
+    stable-audio's SFX are WAV too. A 44 MB music bed and 55 MB of SFX are
+    ~10x their MP3 size, which is paid for on every export bundle, every GCS
+    read and every mix.
+
+    ``normalize_lufs`` applies ffmpeg loudnorm to a target integrated loudness.
+    Left off by default: it changes how the audio sounds, which is a creative
+    decision, not a storage one.
+    """
+    src = Path(src)
+    if not src.is_file() or src.stat().st_size == 0:
+        raise FileNotFoundError(f"Nothing to transcode at {src}")
+    if src.suffix.lower() == ".mp3" and is_mp3(src) and normalize_lufs is None:
+        return src
+
+    dest = src.with_suffix(".mp3")
+    tmp = src.with_name(src.stem + ".transcode.mp3")
+    before = src.stat().st_size
+
+    cmd = [_ffmpeg_bin(), "-y", "-v", "error", "-i", str(src)]
+    if normalize_lufs is not None:
+        cmd += ["-af", f"loudnorm=I={normalize_lufs}:TP=-1.5:LRA=11"]
+    cmd += ["-codec:a", "libmp3lame", "-b:a", bitrate, str(tmp)]
+
+    import subprocess
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg failed on {src.name}: {(proc.stderr or '').strip()[:300]}")
+
+    # Replace only once the new file is known good, so a failed transcode can
+    # never destroy the only copy of a generated asset.
+    if src != dest:
+        src.unlink()
+    tmp.replace(dest)
+    after = dest.stat().st_size
+    log(f"{src.name} -> {dest.name}: {before/1e6:.1f} MB -> {after/1e6:.1f} MB "
+        f"({100 - after/max(before,1)*100:.0f}% smaller)")
+    return dest
+
+
 def generate_music(prompt: str, dest: Path, duration_seconds: float = 180.0,
                    backend: str = DEFAULT_MUSIC_BACKEND, log=print) -> Path:
     """Generate a music bed into ``dest``. Returns the written path.
@@ -407,6 +481,15 @@ def generate_music(prompt: str, dest: Path, duration_seconds: float = 180.0,
 
     dest.write_bytes(data)
     log(f"Wrote music bed {dest.name} ({dest.stat().st_size:,} bytes)")
+
+    # Store MP3 regardless of what the model returned. A bed is a loopable
+    # underscore mixed well under narration, so lossless buys nothing and costs
+    # ~10x the bytes on every export, GCS read and mix.
+    if ext != ".mp3":
+        try:
+            dest = transcode_to_mp3(dest, log=log)
+        except Exception as exc:  # noqa: BLE001 — the bed is usable either way
+            log(f"Could not transcode the bed to MP3 ({exc}); keeping {dest.suffix}.")
     return dest
 
 
@@ -438,13 +521,25 @@ def generate_sfx_fal(prompt: str, dest: Path, duration_seconds: float | None = N
             
         r = requests.get(audio_url, timeout=60)
         r.raise_for_status()
-        dest.write_bytes(r.content)
-        print(f"Wrote Fal SFX to {dest}")
+        # stable-audio returns WAV. Write what arrived, then store MP3: 15 beats
+        # of ambience was 55 MB uncompressed.
+        raw = dest.with_suffix(".wavtmp") if dest.suffix.lower() == ".mp3" else dest
+        raw.write_bytes(r.content)
+        try:
+            dest = transcode_to_mp3(raw, bitrate="128k", log=print)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Could not transcode SFX to MP3 ({exc}); keeping raw audio.")
+            if raw != dest:
+                raw.replace(dest)
+        print(f"Wrote Fal SFX to {dest} ({dest.stat().st_size:,} bytes)")
         return dest
     except Exception as e:
-        print(f"Fal SFX generation failed ({e}); falling back to local empty placeholder audio.")
-        dest.write_bytes(b"")
-        return dest
+        # Never leave a zero-byte file behind. dest.exists() is what the render
+        # stage checks before regenerating, so an empty placeholder made the
+        # failure permanent -- and librosa raises on it, which took the whole
+        # preview build down rather than just losing one beat's ambience.
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(f"Fal SFX generation failed for '{prompt[:60]}': {e}") from e
 
 
 def generate_shot_sfx(storyboard: Storyboard | None = None,
@@ -466,7 +561,10 @@ def generate_shot_sfx(storyboard: Storyboard | None = None,
             continue
         dur = shot.camera.duration if shot.camera else None
         print(f"SFX {shot.scene_id}: {prompt[:56]}...")
-        out.append(generate_sfx_fal(prompt, dest, duration_seconds=dur))
+        try:
+            out.append(generate_sfx_fal(prompt, dest, duration_seconds=dur))
+        except Exception as exc:  # noqa: BLE001 — one beat must not end the batch
+            print(f"  !! {shot.scene_id} SFX failed: {exc}")
     return out
 
 

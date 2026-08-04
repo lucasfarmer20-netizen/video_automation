@@ -1964,7 +1964,13 @@ def run_assemble_endpoint(stage: str, force_paid: bool = False):
                     if shot.sfx:
                         dest = sfx_dir / f"{shot.scene_id}.mp3"
                         if not dest.exists():
-                            audio.generate_sfx_fal(shot.sfx, dest, duration_seconds=shot.camera.duration)
+                            try:
+                                audio.generate_sfx_fal(shot.sfx, dest,
+                                                       duration_seconds=shot.camera.duration)
+                            except Exception as exc:  # noqa: BLE001
+                                # One beat's ambience failing must not abandon
+                                # the rest of the batch.
+                                log_job("render", f"  !! {shot.scene_id} SFX failed: {exc}")
             
         elif stage == "preview":
             def fn():
@@ -2152,6 +2158,60 @@ def get_assemble_status():
 
 
 # --- MEDIA SERVING ENDPOINTS ---
+
+@app.post("/api/audio/transcode")
+def transcode_audio_endpoint(normalize_sfx: bool = False):
+    """Re-encode this episode's uncompressed audio to MP3, in place.
+
+    Generators hand back WAV (ACE-Step for music, stable-audio for SFX), which is
+    ~10x the bytes and is paid for on every export bundle, GCS read and mix.
+    New generations are MP3 already; this migrates what already exists.
+
+    ``normalize_sfx`` additionally seats SFX at a fixed loudness. Off by default
+    because it changes how the audio sounds — the raw stems here vary by 13 dB
+    between beats, which one master fader cannot fix, but that is a creative
+    call rather than a storage one.
+    """
+    try:
+        sb = get_current_project()
+        ep = config.episode_paths(sb.title)
+
+        def fn():
+            saved = 0
+            targets: list[tuple[Path, str, float | None]] = []
+            for d, br in ((ep["sfx"], "128k"), (ep["narration"], "128k")):
+                if d.is_dir():
+                    lufs = -23.0 if (normalize_sfx and d == ep["sfx"]) else None
+                    targets += [(p, br, lufs) for p in sorted(d.iterdir()) if p.is_file()]
+            if sb.music_track:
+                mp = config.AUDIO_POOL / sb.music_track
+                if mp.is_file():
+                    targets.append((mp, "192k", None))
+
+            for p, br, lufs in targets:
+                if p.suffix.lower() == ".mp3" and audio.is_mp3(p) and lufs is None:
+                    continue
+                before = p.stat().st_size
+                try:
+                    out = audio.transcode_to_mp3(p, bitrate=br, normalize_lufs=lufs,
+                                                 log=lambda m: log_job("transcode", m))
+                except Exception as exc:  # noqa: BLE001
+                    log_job("transcode", f"  !! {p.name}: {exc}")
+                    continue
+                saved += before - out.stat().st_size
+                # The manifest names the bed by filename; a rename must follow it
+                # or the mix silently loses the music.
+                if sb.music_track and p.name == sb.music_track and out.name != p.name:
+                    sb.music_track = out.name
+                    save_current_project(sb)
+                    log_job("transcode", f"music_track -> {out.name}")
+            log_job("transcode", f"Done. Reclaimed {saved/1e6:.1f} MB.")
+
+        start_job("transcode", fn)
+        return {"ok": True, "stage": "transcode"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
 
 @app.get("/api/metadata")
 def get_metadata():
