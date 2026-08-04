@@ -21,7 +21,7 @@ from dataclasses import asdict
 
 import fal_client
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import unicodedata
 
@@ -2222,6 +2222,17 @@ def build_export_bundle():
 
 @app.get("/api/export/bundle")
 def download_export_bundle():
+    """Stream the bundle.
+
+    Deliberately streamed rather than served with FileResponse: Cloud Run rejects
+    a response that declares a large Content-Length ("Response size was too
+    large"), which is exactly what FileResponse does. Yielding chunks with no
+    Content-Length sends it chunked instead, which is not subject to that cap —
+    a full episode bundle is a few hundred MB and will never fit under it.
+
+    The cost is that the browser cannot show a progress percentage. That is
+    worth it for a download that otherwise 500s.
+    """
     sb = get_current_project()
     slug = config.episode_paths(sb.title)["slug"]
     path = (config.MANIFEST_PATH.parent / f"{slug}_bundle.zip").resolve()
@@ -2230,7 +2241,25 @@ def download_export_bundle():
             status_code=404,
             detail="No bundle yet — build it first (POST /api/export/bundle).",
         )
-    return FileResponse(path, media_type="application/zip", filename=path.name)
+
+    def _chunks(p: Path, size: int = 1024 * 1024):
+        # 1 MiB reads: the file lives on the GCS FUSE mount, where many small
+        # reads are many network round trips.
+        with open(p, "rb") as fh:
+            while True:
+                blk = fh.read(size)
+                if not blk:
+                    break
+                yield blk
+
+    return StreamingResponse(
+        _chunks(path),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{path.name}"',
+            "X-Bundle-Bytes": str(path.stat().st_size),
+        },
+    )
 
 
 @app.get("/api/export/{kind}")
