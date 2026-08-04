@@ -7,14 +7,9 @@ import {
   MessageSquare,
   LayoutGrid,
   GitBranch,
-  Move3d,
   Volume2,
-  Tv,
-  CheckCircle,
   Clock,
-  Play,
   RotateCcw,
-  Sparkles,
   Menu,
   X
 } from "lucide-react";
@@ -23,6 +18,10 @@ import {
 import ProjectSidebar from "../components/ProjectSidebar";
 import KnobsSidebar from "../components/KnobsSidebar";
 import MotionPanel from "../components/MotionPanel";
+import type { MixConfig } from "../components/MixPanel";
+import AssemblyPanel from "../components/AssemblyPanel";
+import StepHeader, { StepId } from "../components/StepHeader";
+import JobBanners from "../components/JobBanners";
 import VesperChat from "../components/VesperChat";
 import BeatCard from "../components/BeatCard";
 import FlowCanvas from "../components/FlowCanvas";
@@ -80,7 +79,10 @@ export default function WorkspacePage() {
   const [activeChannel, setActiveChannel] = useState<"bestiary" | "calluses">("bestiary");
   
   // View states
-  const [activeView, setActiveView] = useState<"grid" | "canvas" | "motion">("grid");
+  const [activeView, setActiveView] = useState<"grid" | "canvas">("grid");
+  // Which pipeline step is showing. Additive rollout: this only filters which
+  // existing panels render -- no control has moved or been rebuilt.
+  const [activeStep, setActiveStep] = useState<StepId>(1);
   const [rightPanel, setRightPanel] = useState<"vesper" | "knobs">("vesper");
   
   // Background task state. `dismissedErrors` is tracked separately because
@@ -590,6 +592,11 @@ export default function WorkspacePage() {
   }
 
   const { project, preview_url, fcpxml_ready, ep_slug, paid_count, image_backends, video_backends, tiers } = activeProject;
+  // Backend now reports per-stage asset counts, so the step header gates on
+  // real state instead of guessing. Older payloads may not have them.
+  const counts = activeProject.counts ?? {
+    beats: project.shots?.length ?? 0, stills: 0, narration: 0, sfx: 0, rendered: 0,
+  };
   const effectiveTiers = tiers || {};
   const canAssemble = Boolean(project.storyboard_approved);
   // Approval refuses unless every beat has a chosen image, so this is what
@@ -673,7 +680,8 @@ export default function WorkspacePage() {
         </div>
 
         <div className="flex items-center gap-2.5 md:gap-3 justify-between md:justify-end w-full md:w-auto">
-          {/* View toggle */}
+          {/* View toggle — only meaningful on the steps that show beats. */}
+          {(activeStep === 1 || activeStep === 3) && (
           <div className="flex items-center bg-zinc-950 p-1 rounded-lg border border-zinc-800">
             <button
               onClick={() => setActiveView("grid")}
@@ -689,14 +697,8 @@ export default function WorkspacePage() {
             >
               <GitBranch className="h-4 w-4" />
             </button>
-            <button
-              onClick={() => setActiveView("motion")}
-              className={`p-1.5 rounded transition ${activeView === "motion" ? "bg-zinc-800 text-amber-500" : "text-zinc-500 hover:text-zinc-300"}`}
-              title="Parallax & Camera Motion"
-            >
-              <Move3d className="h-4 w-4" />
-            </button>
           </div>
+          )}
 
           <button
             onClick={() => setVoiceStudioOpen(true)}
@@ -764,256 +766,49 @@ export default function WorkspacePage() {
 
         {/* Central timeline editor */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 flex flex-col gap-6 w-full">
+
+          <StepHeader
+            active={activeStep}
+            onChange={setActiveStep}
+            counts={counts}
+            scriptLocked={Boolean(project.script_locked)}
+            storyboardApproved={Boolean(project.storyboard_approved)}
+          />
           
-          {/* Assemble control board. Always rendered: it used to disappear
-              entirely when the storyboard wasn't approved, which reads as "my
-              automation controls vanished" — especially after switching to a
-              new, empty project. Now it stays put and says why it's inert. */}
-          <section className="glass-panel rounded-xl p-5 border border-zinc-900 flex flex-col gap-4">
-              <h3 className={`font-bold text-sm mb-1 ${canAssemble ? "text-emerald-400" : "text-zinc-500"}`}>
-                🎬 Assembling Timeline Proxy
-              </h3>
+          <AssemblyPanel
+            activeStep={activeStep}
+            project={project}
+            jobs={jobs}
+            canAssemble={canAssemble}
+            missingStills={missingStills}
+            mix={activeProject.mix ?? null}
+            previewUrl={preview_url}
+            fcpxmlReady={fcpxml_ready}
+            epSlug={ep_slug}
+            mediaUrl={mediaUrl}
+            onAssemble={handleAssemble}
+            onGenerateAllStills={handleGenerateAllStills}
+            onSaveMix={async (m: MixConfig) => { await post("/api/mix", m); fetchActiveProject(); }}
+            onUploadImage={handleUploadImage}
+            onUploadClip={handleUploadClip}
+          />
 
-              {!canAssemble && (
-                <div className="bg-amber-950/25 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-200/90 font-mono leading-relaxed flex flex-col gap-3">
-                  <div>
-                    <span className="font-bold text-amber-400">Locked.</span>{" "}
-                    {!project.shots?.length
-                      ? <>This project has no beats yet. Draft a storyboard with Vesper, or pick another project in the left sidebar.</>
-                      : missingStills.length
-                      ? <><span className="text-amber-400 font-bold">{missingStills.length}</span> of {project.shots.length} beats have no draft image. Approval needs every beat illustrated — generate them in one pass below, then <span className="text-amber-400 font-bold">Approve →</span>.</>
-                      : <>All {project.shots.length} beats are illustrated. Use <span className="text-amber-400 font-bold">Approve →</span> in the header to unlock the assembly pipeline.</>}
-                  </div>
+          <JobBanners
+            jobs={jobs}
+            erroredJobs={erroredJobs}
+            onDismissErrors={(entries) =>
+              setDismissedErrors(prev => {
+                const next = { ...prev };
+                entries.forEach(([stage, job]) => { next[stage] = job.log; });
+                return next;
+              })
+            }
+          />
 
-                  {missingStills.length > 0 && (
-                    <div className="flex items-center justify-between gap-3 border-t border-amber-500/20 pt-3">
-                      <button
-                        onClick={handleGenerateAllStills}
-                        disabled={jobs["drafts"]?.status === "running"}
-                        className="bg-amber-500 hover:bg-amber-400 text-zinc-950 px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50 shrink-0"
-                      >
-                        <Sparkles className="h-3.5 w-3.5" />
-                        <span>0 · Generate {missingStills.length} draft still{missingStills.length === 1 ? "" : "s"}</span>
-                      </button>
-                      <span className={`text-xs font-mono font-semibold ${
-                        jobs["drafts"]?.status === "done" ? "text-emerald-500" : "text-zinc-500"
-                      }`}>
-                        {jobs["drafts"]?.status || "Idle"}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                <div className="flex flex-col gap-3">
-                  {/* Step 1: Voiceover */}
-                  <div className="flex items-center justify-between bg-zinc-950/50 p-3 rounded-lg border border-zinc-900">
-                    <button
-                      onClick={() => handleAssemble("narration")}
-                      disabled={!canAssemble || jobs["narration"]?.status === "running"}
-                      className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
-                    >
-                      <Volume2 className="h-4 w-4 text-amber-500" />
-                      <span>1 · Generate voiceover</span>
-                    </button>
-                    <span className={`text-xs font-mono font-semibold ${
-                      jobs["narration"]?.status === "done" ? "text-emerald-500" : "text-zinc-500"
-                    }`}>
-                      {jobs["narration"]?.status || "Idle"}
-                    </span>
-                  </div>
-
-                  {/* Step 3: Preview */}
-                  <div className="flex items-center justify-between bg-zinc-950/50 p-3 rounded-lg border border-zinc-900">
-                    <button
-                      onClick={() => handleAssemble("preview")}
-                      disabled={!canAssemble || jobs["preview"]?.status === "running"}
-                      className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
-                    >
-                      <Tv className="h-4 w-4 text-amber-500" />
-                      <span>3 · Build preview (rough cut)</span>
-                    </button>
-                    <span className={`text-xs font-mono font-semibold ${
-                      jobs["preview"]?.status === "done" ? "text-emerald-500" : "text-zinc-500"
-                    }`}>
-                      {jobs["preview"]?.status || "Idle"}
-                    </span>
-                  </div>
-
-                  {/* Step 4: Resolve xml */}
-                  <div className="flex items-center justify-between bg-zinc-950/50 p-3 rounded-lg border border-zinc-900">
-                    <button
-                      onClick={() => handleAssemble("timeline")}
-                      disabled={!canAssemble || jobs["timeline"]?.status === "running"}
-                      className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
-                    >
-                      <CheckCircle className="h-4 w-4 text-amber-500" />
-                      <span>4 · Export Resolve timeline</span>
-                    </button>
-                    <span className={`text-xs font-mono font-semibold ${
-                      jobs["timeline"]?.status === "done" ? "text-emerald-500" : "text-zinc-500"
-                    }`}>
-                      {jobs["timeline"]?.status || "Idle"}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="bg-zinc-950/40 p-4 border border-zinc-900 rounded-lg flex flex-col gap-3">
-                  <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider font-mono">
-                    2 · Video Renders &amp; Ingest
-                  </div>
-                  
-                  <div className="flex items-center justify-between bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-900">
-                    <button
-                      onClick={() => handleAssemble("render")}
-                      disabled={!canAssemble || jobs["render"]?.status === "running"}
-                      className="bg-amber-500 hover:bg-amber-600 text-zinc-950 px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
-                    >
-                      <Play className="h-3.5 w-3.5 fill-current" />
-                      <span>Render pipeline via fal.ai</span>
-                    </button>
-                    <span className={`text-xs font-mono font-semibold ${
-                      jobs["render"]?.status === "done" ? "text-emerald-500" : "text-zinc-500"
-                    }`}>
-                      {jobs["render"]?.status || "Idle"}
-                    </span>
-                  </div>
-
-                  <div className="border-t border-zinc-900 pt-3 flex flex-col gap-2">
-                    <span className="text-[9px] uppercase tracking-wider text-zinc-500 font-bold font-mono">
-                      Ingest local bypass (Option B)
-                    </span>
-                    <div className="flex gap-2">
-                      <select id="bypass_opt_select" className="bg-zinc-900 text-zinc-300 text-xs rounded border border-zinc-800 px-2 py-1 flex-1">
-                        {project.shots?.map((s: any) => (
-                          <option key={s.scene_id} value={s.scene_id}>{s.scene_id}</option>
-                        ))}
-                      </select>
-                      <button
-                        onClick={() => {
-                          const sid = (document.getElementById("bypass_opt_select") as HTMLSelectElement)?.value;
-                          const fileInput = document.createElement("input");
-                          fileInput.type = "file";
-                          fileInput.accept = "image/*,video/*";
-                          fileInput.onchange = (e) => {
-                            const file = (e.target as HTMLInputElement).files?.[0];
-                            if (file && sid) {
-                              if (file.type.startsWith("image/")) handleUploadImage(sid, file);
-                              else if (file.type.startsWith("video/")) handleUploadClip(sid, file);
-                            }
-                          };
-                          fileInput.click();
-                        }}
-                        className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-bold border border-zinc-700 px-3 py-1.5 rounded"
-                      >
-                        Ingest File
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Preview player */}
-              {preview_url && (
-                <div className="border-t border-zinc-900 pt-4 mt-2">
-                  <video controls className="w-full max-h-80 bg-black border border-zinc-900 rounded-lg shadow-2xl" src={mediaUrl(preview_url)} />
-                  <div className="text-[10px] text-zinc-500 font-mono mt-2 flex justify-between select-none">
-                    <span>Narration + Music synced Proxy track preview</span>
-                    {fcpxml_ready && (
-                      <span className="text-amber-500 font-semibold animate-pulse">
-                        ▶ Timeline compiled! Import {ep_slug}.fcpxml into DaVinci Resolve
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-          </section>
-
-          {/* Active Running Job Progress Banner */}
-          {Object.entries(jobs).some(([_, j]) => j.status === "running") && (
-            <div className="bg-amber-950/30 border border-amber-500/30 rounded-xl p-4 mb-6 shadow-xl backdrop-blur-md relative overflow-hidden animate-pulse">
-              <div className="flex items-center justify-between gap-4 mb-2">
-                <div className="flex items-center gap-3">
-                  <div className="w-4 h-4 border-2 border-amber-500 border-t-transparent rounded-full animate-spin shrink-0"></div>
-                  <span className="text-sm font-bold text-amber-400 font-mono tracking-wide">
-                    {jobs.script_draft?.status === "running"
-                      ? "✨ Vesper AI is drafting your documentary storyboard..."
-                      : jobs.drafts?.status === "running"
-                      ? "🖼 Generating draft stills for every beat..."
-                      : jobs.render?.status === "running"
-                      ? "🎨 Rendering stills & motion clips in background..."
-                      : jobs.narration?.status === "running"
-                      ? "🎙 Synthesizing AI narration audio tracks..."
-                      : "⚙ Processing pipeline background job..."}
-                  </span>
-                </div>
-                <span className="text-[10px] font-mono uppercase tracking-widest bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded-full">
-                  Active Process
-                </span>
-              </div>
-              
-              {/* Animated Indeterminate Progress Bar */}
-              <div className="w-full bg-zinc-900 rounded-full h-2 overflow-hidden border border-amber-500/20 mb-2">
-                <div className="bg-gradient-to-r from-amber-500 via-amber-400 to-amber-600 h-full rounded-full animate-pulse w-full"></div>
-              </div>
-
-              {/* Live Log Snippet */}
-              {Object.entries(jobs).map(([stage, job]) => job.status === "running" && job.log && (
-                <div key={stage} className="text-[11px] font-mono text-zinc-400 truncate bg-zinc-950/60 px-3 py-1.5 rounded-lg border border-zinc-900">
-                  <span className="text-amber-500 font-bold">[{stage.toUpperCase()}]</span> {job.log.trim().split("\n").pop()}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Job Failure / Error Alert Banner */}
-          {erroredJobs.length > 0 && (
-            <div className="bg-red-950/50 border border-red-500/50 rounded-xl p-4 mb-6 shadow-2xl backdrop-blur-md relative overflow-hidden">
-              <div className="flex items-center justify-between gap-4 mb-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-red-500/20 border border-red-500/40 text-red-400 font-bold flex items-center justify-center text-sm shrink-0">
-                    ⚠️
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-bold text-red-400 font-mono tracking-wide">
-                      Pipeline Execution Warning / Failure Log
-                    </h4>
-                    <p className="text-xs text-red-300/80 font-mono">
-                      One or more background pipeline tasks encountered an error. Review details below.
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={() =>
-                    setDismissedErrors(prev => {
-                      const next = { ...prev };
-                      erroredJobs.forEach(([stage, job]) => { next[stage] = job.log; });
-                      return next;
-                    })
-                  }
-                  className="text-xs font-mono uppercase tracking-widest bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30 px-3 py-1.5 rounded-lg transition"
-                >
-                  Dismiss Error
-                </button>
-              </div>
-
-              {/* Log Stack Traces */}
-              {erroredJobs.map(([stage, job]) => (
-                <div key={stage} className="mt-2 bg-zinc-950 p-3 rounded-lg border border-red-900/40 text-[11px] font-mono text-red-300 space-y-1 overflow-x-auto max-h-60 leading-relaxed shadow-inner">
-                  <div className="flex items-center justify-between border-b border-red-900/40 pb-1 mb-1 font-bold">
-                    <span className="text-red-400 uppercase tracking-widest">[{stage.toUpperCase()} STAGE FAILED]</span>
-                  </div>
-                  <pre className="whitespace-pre-wrap text-zinc-300 select-text font-mono">
-                    {job.log || "Stage execution failed with an unhandled exception."}
-                  </pre>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Workflow Graph View (React Flow) */}
-          {activeView === "motion" ? (
+          {/* Step 4 owns the motion panel; steps 1 and 3 show the beats, either
+              as cards or as the node graph. Steps 2 and 5 are driven entirely by
+              the panels above, so nothing renders here. */}
+          {activeStep === 4 ? (
             <MotionPanel
               mediaUrl={mediaUrl}
               epSlug={ep_slug}
@@ -1028,11 +823,14 @@ export default function WorkspacePage() {
               saveBeatCamera={(sceneId, camera) => handleUpdateField(sceneId, "camera", camera)}
               previewBeat={(sceneId) => post(`/api/motion/preview/${sceneId}`)}
             />
-          ) : activeView === "canvas" ? (
+          ) : (activeStep === 1 || activeStep === 3) && activeView === "canvas" ? (
             <div className="h-[380px] sm:h-[500px] md:h-[550px] w-full shrink-0">
               <FlowCanvas
                 shots={project.shots}
                 mediaUrl={mediaUrl}
+                imageBackends={image_backends}
+                videoBackends={video_backends}
+                defaultImageModel={project.render?.backend}
                 // Send only the field that changed. This used to pass a whole
                 // camera object with move/speed hardcoded, which was harmless
                 // while the API discarded `camera` -- now that it persists,
@@ -1046,7 +844,7 @@ export default function WorkspacePage() {
                 }}
               />
             </div>
-          ) : (
+          ) : (activeStep === 1 || activeStep === 3) ? (
             /* Storyboard Timeline Cards Grid */
             <div className="flex flex-col gap-6 relative">
               {project.shots?.map((shot: any) => (
@@ -1073,7 +871,7 @@ export default function WorkspacePage() {
                 />
               ))}
             </div>
-          )}
+          ) : null}
         </main>
 
         {/* Mobile Right Drawer Backdrop */}

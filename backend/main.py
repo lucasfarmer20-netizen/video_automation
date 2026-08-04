@@ -707,12 +707,42 @@ def get_projects(channel: Optional[str] = None):
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 
+def _resolved_video_key(raw: str | None) -> str:
+    """Registry key a stored video_model actually resolves to.
+
+    resolve_video_backend() returns the entry, not its key, and the UI needs the
+    key to select the right option.
+    """
+    entry = assets.resolve_video_backend(raw)
+    for k, v in assets.VIDEO_BACKENDS.items():
+        if v is entry:
+            return k
+    return "seedance_2_0"
+
+
 @app.get("/api/project/active")
 def get_active_project():
     try:
         sb = get_current_project()
         reg = _ref_registry()
-        
+
+        # Everything below is served off the GCS FUSE mount, where a stat is a
+        # network round trip. episode_paths() used to be recomputed inside the
+        # shot loop and each beat cost its own .exists(); asking for narration
+        # and sfx the same way would have tripled that. List each directory once
+        # and test membership instead.
+        ep = config.episode_paths(sb.title)
+
+        def _stems(d) -> set[str]:
+            try:
+                return {p.stem for p in d.iterdir() if p.is_file()}
+            except (OSError, FileNotFoundError):
+                return set()
+
+        rendered_stems = _stems(ep["render"])
+        narration_stems = _stems(ep["narration"])
+        sfx_stems = _stems(ep["sfx"])
+
         # Prepare metadata structure
         shots_payload = []
         for s in sb.shots:
@@ -722,22 +752,44 @@ def get_active_project():
                 {"name": n, "file": _ref_file(n, reg)} for n in s.references
             ]
             s_dict["motion_prompt_suggestion"] = _suggest_motion_prompt(s)
-            # Clip path, relative to a media root. The frontend prefixes /media/
-            # exactly once, so nothing here may carry a leading route segment.
-            shot_paths = config.episode_paths(sb.title)
-            dest_clip = shot_paths["render"] / f"{s.scene_id}.mp4"
             # Paths are relative to a media root; the frontend prefixes /media/
             # exactly once. episode_paths now lives inside the project directory,
             # so there is no slug segment.
+            has_clip = s.scene_id in rendered_stems
             s_dict["active_clip_url"] = (
-                config.rel_media_path(dest_clip) if dest_clip.exists() else None
+                config.rel_media_path(ep["render"] / f"{s.scene_id}.mp4") if has_clip else None
             )
+            # Step gating needs to know which stages a beat has actually been
+            # through -- the workflow header cannot gate Audio Studio or Editing
+            # on state nobody reports.
+            s_dict["has_narration"] = s.scene_id in narration_stems
+            s_dict["has_sfx"] = s.scene_id in sfx_stems
+            # Manifests still carry legacy values -- raw endpoint strings and
+            # keys that were never in the registry (e.g. the dead
+            # "fal-ai/kling-video/v3/image-to-video"). The resolver aliases them
+            # at render time, but a <select> bound to a value absent from its
+            # options renders blank and can rewrite the field on the next touch.
+            # Report the key that will actually be used so the UI shows the truth.
+            if s.motion_type == MotionType.AI_VIDEO:
+                raw = s.video_model or sb.render.video_model
+                s_dict["video_model_key"] = _resolved_video_key(raw)
+                s_dict["video_model_is_legacy"] = s_dict["video_model_key"] != (s.video_model or "")
+            else:
+                s_dict["video_model_key"] = None
+                s_dict["video_model_is_legacy"] = False
             shots_payload.append(s_dict)
 
-        # Preview track resolution
-        ep = config.episode_paths(sb.title)
+        counts = {
+            "beats": len(sb.shots),
+            "stills": sum(1 for s in sb.shots if s.draft_image),
+            "narration": sum(1 for s in sb.shots if s.scene_id in narration_stems),
+            "sfx": sum(1 for s in sb.shots if s.scene_id in sfx_stems),
+            "rendered": sum(1 for s in sb.shots if s.scene_id in rendered_stems),
+        }
+
+        # "_preview" is already in the render listing above -- no extra stat.
         preview_file = ep["render"] / "_preview.mp4"
-        preview_url = config.rel_media_path(preview_file) if preview_file.exists() else None
+        preview_url = config.rel_media_path(preview_file) if "_preview" in rendered_stems else None
         
         # Same location timeline.build writes to: the project directory.
         fcpxml_file = config.MANIFEST_PATH.parent / f"{ep['slug']}.fcpxml"
@@ -752,13 +804,12 @@ def get_active_project():
         image_backends = {k: v["label"] for k, v in assets.IMAGE_BACKENDS.items()}
 
 
-        video_backends = {
-            "seedance_2_0": "Seedance 2.0 (image-to-video)",
-            "veo_3_1": "Google Veo 3.1 (image-to-video)",
-            "kling_2_5_turbo_pro": "Kling 2.5 Turbo Pro (image-to-video)",
-            "wan_2_7": "Wan 2.7 (image-to-video)",
-            "luma_dream_machine": "Luma Dream Machine Ray-2 (image-to-video)",
-        }
+        # Same registry the resolver uses, for the same reason image_backends
+        # does it. This dict used to be written out by hand and had drifted:
+        # it offered "kling_2_5_turbo_pro", which is not a registry key, so
+        # resolve_video_backend() fell through to a substring match and billed
+        # Kling 2.1 Standard instead. Picking a model must render that model.
+        video_backends = {k: v["label"] for k, v in assets.VIDEO_BACKENDS.items()}
         
         return {
             "ok": True,
@@ -774,6 +825,11 @@ def get_active_project():
                 "render": asdict(sb.render),
                 "shots": shots_payload,
             },
+            # Shipped alongside the project so the mix and motion panels do not
+            # each need their own round trip on every step change.
+            "mix": asdict(sb.mix),
+            "motion": asdict(sb.motion),
+            "counts": counts,
             "preview_url": preview_url,
             "fcpxml_ready": fcpxml_ready,
             "ep_slug": ep["slug"],
