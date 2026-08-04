@@ -25,6 +25,7 @@ import JobBanners from "../components/JobBanners";
 import VesperChat from "../components/VesperChat";
 import BeatCard from "../components/BeatCard";
 import FlowCanvas from "../components/FlowCanvas";
+import TimingSheet from "../components/TimingSheet";
 import VoiceStudioModal from "../components/VoiceStudioModal";
 
 // Setup API URL mapping
@@ -681,7 +682,7 @@ export default function WorkspacePage() {
 
         <div className="flex items-center gap-2.5 md:gap-3 justify-between md:justify-end w-full md:w-auto">
           {/* View toggle — only meaningful on the steps that show beats. */}
-          {(activeStep === 1 || activeStep === 3) && (
+          {activeStep === 1 && (
           <div className="flex items-center bg-zinc-950 p-1 rounded-lg border border-zinc-800">
             <button
               onClick={() => setActiveView("grid")}
@@ -805,10 +806,16 @@ export default function WorkspacePage() {
             }
           />
 
-          {/* Step 4 owns the motion panel; steps 1 and 3 show the beats, either
-              as cards or as the node graph. Steps 2 and 5 are driven entirely by
-              the panels above, so nothing renders here. */}
-          {activeStep === 4 ? (
+          {/* Step 1 is storyboard work (cards or node graph), Step 3 is timing,
+              Step 4 is motion. Steps 2 and 5 are driven entirely by the panels
+              above, so nothing renders here. */}
+          {activeStep === 3 ? (
+            <TimingSheet
+              shots={project.shots || []}
+              mediaUrl={mediaUrl}
+              onUpdateCamera={(sceneId, camera) => handleUpdateField(sceneId, "camera", camera)}
+            />
+          ) : activeStep === 4 ? (
             <MotionPanel
               mediaUrl={mediaUrl}
               epSlug={ep_slug}
@@ -823,7 +830,7 @@ export default function WorkspacePage() {
               saveBeatCamera={(sceneId, camera) => handleUpdateField(sceneId, "camera", camera)}
               previewBeat={(sceneId) => post(`/api/motion/preview/${sceneId}`)}
             />
-          ) : (activeStep === 1 || activeStep === 3) && activeView === "canvas" ? (
+          ) : activeStep === 1 && activeView === "canvas" ? (
             <div className="h-[380px] sm:h-[500px] md:h-[550px] w-full shrink-0">
               <FlowCanvas
                 shots={project.shots}
@@ -844,7 +851,7 @@ export default function WorkspacePage() {
                 }}
               />
             </div>
-          ) : (activeStep === 1 || activeStep === 3) ? (
+          ) : activeStep === 1 ? (
             /* Storyboard Timeline Cards Grid */
             <div className="flex flex-col gap-6 relative">
               {project.shots?.map((shot: any) => (
