@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
-import { Lock, Unlock, Film, Mic, Waves, Music, ZoomIn, ZoomOut } from "lucide-react";
+import { Lock, Unlock, Film, Mic, Waves, Music, ZoomIn, ZoomOut, RefreshCw, Play } from "lucide-react";
 
 interface Shot {
   scene_id: string;
@@ -12,6 +12,10 @@ interface Shot {
   has_narration?: boolean;
   has_sfx?: boolean;
   sfx?: string;
+  narration_url?: string | null;
+  sfx_url?: string | null;
+  gain_narration?: number;
+  gain_sfx?: number;
 }
 
 interface MultitrackTimelineProps {
@@ -21,6 +25,10 @@ interface MultitrackTimelineProps {
   musicTrack?: string;
   mediaUrl: (p: string) => string;
   onUpdateCamera: (sceneId: string, camera: Record<string, number | boolean | string>) => void;
+  onUpdateGain?: (sceneId: string, field: "gain_narration" | "gain_sfx", v: number) => void;
+  onRegenNarration?: (sceneId: string) => void;
+  onRegenSfx?: (sceneId: string) => void;
+  busy?: Record<string, boolean>;
 }
 
 const MOVES = ["static", "push_in", "push_out", "pan_left", "pan_right"];
@@ -59,22 +67,84 @@ function Waveform({ data, colour }: { data?: number[]; colour: string }) {
   );
 }
 
+
+const toDb = (g: number) => (g <= 0.0001 ? -60 : 20 * Math.log10(g));
+const fromDb = (db: number) => (db <= -39.5 ? 0 : Math.pow(10, db / 20));
+
+const TONE: Record<string, string> = {
+  emerald: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
+  amber: "bg-amber-500/15 text-amber-400 border-amber-500/25",
+};
+
+/** One track of the selected clip: audition, trim, regenerate. */
+function ClipAudio({ label, tone, url, present, wanted, gain, busy, onGain, onRegen,
+                     regenLabel, note }: any) {
+  const [playing, setPlaying] = React.useState(false);
+  const [local, setLocal] = React.useState<number | null>(null);
+  const ref = React.useRef<HTMLAudioElement | null>(null);
+  const db = local ?? toDb(gain ?? 1);
+  // Commit on release, not per pixel: each write is a GCS round trip.
+  const commit = () => { if (local !== null) { onGain?.(fromDb(local)); setLocal(null); } };
+
+  const toggle = () => {
+    if (!url) return;
+    if (!ref.current) { ref.current = new Audio(url); ref.current.onended = () => setPlaying(false); }
+    if (playing) { ref.current.pause(); ref.current.currentTime = 0; setPlaying(false); }
+    else { ref.current.volume = Math.min(1, gain ?? 1); ref.current.play(); setPlaying(true); }
+  };
+
+  return (
+    <div className="flex items-center gap-2 text-[10px] font-mono">
+      <span className={`px-1.5 py-0.5 rounded border shrink-0 ${TONE[tone]}`}>{label}</span>
+      {present ? (
+        <>
+          <button onClick={toggle} className="text-zinc-400 hover:text-zinc-100 w-4 shrink-0"
+                  title="Audition">{playing ? "■" : <Play className="h-3 w-3" />}</button>
+          <input type="range" min={-40} max={12} step={0.5}
+                 value={Math.max(-40, Math.min(12, db))}
+                 onChange={(e) => setLocal(parseFloat(e.target.value))}
+                 onPointerUp={commit} onKeyUp={commit} onBlur={commit}
+                 className="w-40 accent-amber-500 h-1" title="Trim on top of the episode bus" />
+          <span className={`w-12 text-right tabular-nums ${
+            Math.abs(db) < 0.25 ? "text-zinc-600" : "text-zinc-300"}`}>
+            {db <= -39.5 ? "−∞" : `${db >= 0 ? "+" : ""}${db.toFixed(1)}`}
+          </span>
+        </>
+      ) : (
+        <span className="text-zinc-600 italic">{wanted ? "not generated" : "none for this beat"}</span>
+      )}
+      {onRegen && wanted && (
+        <button onClick={onRegen} disabled={busy}
+          className="ml-1 flex items-center gap-1 px-2 py-1 rounded border border-zinc-800 text-zinc-400 hover:text-zinc-100 hover:border-zinc-700 disabled:opacity-40 transition shrink-0">
+          <RefreshCw className={`h-3 w-3 ${busy ? "animate-spin" : ""}`} />
+          {busy ? "working…" : regenLabel}
+        </button>
+      )}
+      <span className="text-zinc-600 truncate ml-1">{note}</span>
+    </div>
+  );
+}
+
 export default function MultitrackTimeline({
-  shots, musicTrack, mediaUrl, onUpdateCamera, peaks
+  shots, musicTrack, mediaUrl, onUpdateCamera, peaks,
+  onUpdateGain, onRegenNarration, onRegenSfx, busy
 }: MultitrackTimelineProps) {
   const [pxPerSec, setPxPerSec] = useState(4);
   const [selected, setSelected] = useState<string | null>(null);
+  // Live duration while dragging a clip edge; committed on release so a drag is
+  // one write, not one per pixel.
+  const [drag, setDrag] = useState<{ id: string; dur: number } | null>(null);
 
   const { blocks, total } = useMemo(() => {
     let acc = 0;
     const b = shots.map((s) => {
       const start = acc;
-      const dur = s.camera?.duration || 0;
+      const dur = (drag && drag.id === s.scene_id ? drag.dur : s.camera?.duration) || 0;
       acc += dur;
       return { shot: s, start, dur };
     });
     return { blocks: b, total: acc };
-  }, [shots]);
+  }, [shots, drag]);
 
   const width = Math.max(total * pxPerSec, 320);
   const sel = blocks.find((b) => b.shot.scene_id === selected);
@@ -159,6 +229,32 @@ export default function MultitrackTimeline({
                   {shot.camera?.duration_locked && (
                     <Lock className="absolute right-0.5 bottom-0.5 h-2.5 w-2.5 text-amber-300" />
                   )}
+                  {/* Trim handle. Durations are narration-led, so shortening a
+                      beat below its voiceover will let the voice run into the
+                      next shot -- the inspector says so when it happens. */}
+                  <span
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+                      setDrag({ id: shot.scene_id, dur });
+                    }}
+                    onPointerMove={(e) => {
+                      if (!drag || drag.id !== shot.scene_id) return;
+                      const delta = e.movementX / pxPerSec;
+                      setDrag({ id: shot.scene_id, dur: Math.max(0.5, drag.dur + delta) });
+                    }}
+                    onPointerUp={(e) => {
+                      e.stopPropagation();
+                      if (drag && drag.id === shot.scene_id) {
+                        const v = Math.round(drag.dur * 10) / 10;
+                        if (Math.abs(v - (shot.camera?.duration || 0)) > 0.05)
+                          onUpdateCamera(shot.scene_id, { duration: v });
+                      }
+                      setDrag(null);
+                    }}
+                    title="Drag to trim"
+                    className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-amber-500/0 hover:bg-amber-500/70 transition"
+                  />
                 </button>
               ))}
             </div>
@@ -264,6 +360,38 @@ export default function MultitrackTimeline({
           <span className="text-[10px] font-mono text-zinc-600 ml-auto">
             {tc(sel.start)} → {tc(sel.start + sel.dur)}
           </span>
+
+          {/* Audio for this beat, tunable here rather than a step away. Noticing
+              a clip is wrong while retiming and having to leave the tab to fix
+              it is the friction this removes. */}
+          <div className="w-full border-t border-zinc-900 pt-3 mt-1 flex flex-col gap-2">
+            <ClipAudio
+              label="A1 Narration" tone="emerald"
+              url={sel.shot.narration_url ? mediaUrl(sel.shot.narration_url) : null}
+              present={!!sel.shot.has_narration}
+              wanted={!!sel.shot.narration?.trim()}
+              gain={sel.shot.gain_narration ?? 1}
+              busy={!!busy?.narration}
+              onGain={(v: number) => onUpdateGain?.(sel.shot.scene_id, "gain_narration", v)}
+              onRegen={onRegenNarration ? () => onRegenNarration(sel.shot.scene_id) : undefined}
+              regenLabel="Re-record"
+              note={sel.shot.camera.duration_locked
+                ? "duration locked — re-recording will not retime this beat"
+                : "duration is narration-led — re-recording may change it"}
+            />
+            <ClipAudio
+              label="A2 SFX" tone="amber"
+              url={sel.shot.sfx_url ? mediaUrl(sel.shot.sfx_url) : null}
+              present={!!sel.shot.has_sfx}
+              wanted={!!sel.shot.sfx?.trim()}
+              gain={sel.shot.gain_sfx ?? 1}
+              busy={!!busy?.sfx}
+              onGain={(v: number) => onUpdateGain?.(sel.shot.scene_id, "gain_sfx", v)}
+              onRegen={onRegenSfx ? () => onRegenSfx(sel.shot.scene_id) : undefined}
+              regenLabel="Regenerate"
+              note={sel.shot.sfx?.trim() || "no SFX prompt on this beat"}
+            />
+          </div>
         </div>
       ) : (
         <div className="px-4 py-2.5 border-t border-zinc-900 text-[11px] text-zinc-600">

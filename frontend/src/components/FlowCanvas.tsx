@@ -37,6 +37,7 @@ interface FlowCanvasProps {
   onUpdateDuration?: (sceneId: string, duration: number) => void;
   onRegenerate?: (sceneId: string) => void;
   onGenerateSFX?: (sceneId: string) => void;
+  onRegenNarration?: (sceneId: string) => void;
   /** POST /api/shot/{id} with { gain_narration } or { gain_sfx }. */
   onUpdateGain?: (sceneId: string, field: "gain_narration" | "gain_sfx", v: number) => void;
   /** Registry label maps, so a badge never shows a model the resolver disowns. */
@@ -61,7 +62,7 @@ const TRACK_COLOUR: Record<string, string> = {
 };
 
 /** One audio track on a beat node: audition it, and trim it against the bus. */
-function AudioRow({ label, colour, url, present, gain, onGain, absent, hint }: any) {
+function AudioRow({ label, colour, url, present, gain, onGain, absent, hint, onRegen }: any) {
   const [playing, setPlaying] = React.useState(false);
   const ref = React.useRef<HTMLAudioElement | null>(null);
   // Local while dragging, committed on release. A range input fires onChange for
@@ -111,7 +112,11 @@ function AudioRow({ label, colour, url, present, gain, onGain, absent, hint }: a
           </span>
         </>
       ) : (
-        <span className="text-zinc-600 italic truncate">{absent}</span>
+        <span className="text-zinc-600 italic truncate flex-1">{absent}</span>
+      )}
+      {onRegen && (
+        <button onClick={onRegen} title="Regenerate this clip"
+          className="shrink-0 text-zinc-500 hover:text-amber-400 transition">↻</button>
       )}
     </div>
   );
@@ -192,6 +197,7 @@ const BeatNode = ({ data }: any) => {
           gain={data.gainNarration}
           onGain={(v: number) => data.onUpdateGain?.(data.scene_id, "gain_narration", v)}
           absent="not generated"
+          onRegen={data.onRegenNarration ? () => data.onRegenNarration(data.scene_id) : undefined}
         />
         <AudioRow
           label="A2 SFX" colour="amber"
@@ -200,6 +206,7 @@ const BeatNode = ({ data }: any) => {
           onGain={(v: number) => data.onUpdateGain?.(data.scene_id, "gain_sfx", v)}
           absent={data.sfxPrompt ? "not generated" : "none for this beat"}
           hint={data.sfxPrompt}
+          onRegen={data.sfxPrompt && data.onGenerateSFX ? () => data.onGenerateSFX(data.scene_id) : undefined}
         />
       </div>
 
@@ -242,7 +249,7 @@ const BeatNode = ({ data }: any) => {
 
 export default function FlowCanvas({
   shots, mediaUrl, onUpdateDuration, onRegenerate, onGenerateSFX,
-  imageBackends, videoBackends, defaultImageModel, onUpdateGain
+  imageBackends, videoBackends, defaultImageModel, onUpdateGain, onRegenNarration
 }: FlowCanvasProps) {
   const nodeTypes = useMemo(() => ({ beatNode: BeatNode }), []);
   const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
@@ -281,7 +288,8 @@ export default function FlowCanvas({
           onUpdateDuration,
           onRegenerate,
           onGenerateSFX,
-          onUpdateGain
+          onUpdateGain,
+          onRegenNarration
         }
       };
     });
@@ -303,7 +311,7 @@ export default function FlowCanvas({
     setNodes(generatedNodes);
     setEdges(generatedEdges);
   }, [shots, mediaUrl, setNodes, setEdges, imageBackends, videoBackends, defaultImageModel,
-      onUpdateDuration, onRegenerate, onGenerateSFX, onUpdateGain]);
+      onUpdateDuration, onRegenerate, onGenerateSFX, onUpdateGain, onRegenNarration]);
 
   return (
     <div className="w-full h-full bg-zinc-950/20 border border-zinc-900 rounded-xl overflow-hidden shadow-inner">

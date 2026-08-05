@@ -2224,6 +2224,54 @@ async def single_sfx_endpoint(scene_id: str):
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 
+@app.post("/api/audio/narration/{scene_id}")
+def single_narration_endpoint(scene_id: str):
+    """Re-record one beat's narration.
+
+    synthesize_narration skips anything already on disk -- correct for a batch,
+    useless for "this line reads wrong". Delete first so the beat is genuinely
+    re-recorded, and let it run as a job because TTS on a long beat is not
+    instant.
+    """
+    try:
+        sb = get_current_project()
+        shot = next((s for s in sb.shots if s.scene_id == scene_id), None)
+        if not shot:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        if not (shot.narration or "").strip():
+            raise HTTPException(status_code=400, detail="This beat has no narration text.")
+        if not sb.script_locked:
+            raise HTTPException(status_code=400,
+                                detail="Script gate: lock the script before recording narration.")
+
+        dest = config.episode_paths(sb.title)["narration"] / f"{scene_id}.mp3"
+
+        def fn():
+            dest.unlink(missing_ok=True)
+            out = audio.synthesize_narration(sb, only={scene_id})
+            if not out:
+                log_job("narration", f"{scene_id}: nothing written — check the narration text.")
+                return
+            # Durations are narration-led, so re-recording a beat changes its
+            # length unless the user has pinned it.
+            if not getattr(shot.camera, "duration_locked", False):
+                report: dict = {}
+                audio.sync_durations(sb, report=report)
+                save_current_project(sb)
+                log_job("narration", f"{scene_id}: re-recorded; duration now "
+                                     f"{shot.camera.duration:.1f}s.")
+            else:
+                log_job("narration", f"{scene_id}: re-recorded; duration held at "
+                                     f"{shot.camera.duration:.1f}s (locked).")
+
+        start_job("narration", fn)
+        return {"ok": True, "scene_id": scene_id}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
 @app.get("/api/assemble/status")
 def get_assemble_status():
     return {"ok": True, "jobs": get_jobs_status()}

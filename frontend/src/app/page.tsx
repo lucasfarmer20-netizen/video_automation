@@ -342,6 +342,20 @@ export default function WorkspacePage() {
     }
   };
 
+  // Shared by the node graph and the timeline inspector, so "regenerate" means
+  // the same thing wherever you press it.
+  const handleUpdateGain = async (sceneId: string, field: string, v: number) => {
+    await post(`/api/shot/${sceneId}`, { [field]: v });
+    fetchActiveProject();
+  };
+  const handleRegenNarration = async (sceneId: string) => {
+    await post(`/api/audio/narration/${sceneId}`);
+  };
+  const handleRegenSfx = async (sceneId: string) => {
+    await post(`/api/audio/sfx/${sceneId}`);
+    fetchActiveProject();
+  };
+
   const handleSaveKnobs = async (knobs: any) => {
     const data = await post("/api/render", knobs);
     if (data.ok) {
@@ -845,6 +859,11 @@ export default function WorkspacePage() {
               shots={project.shots || []}
               peaks={peaks}
               musicTrack={project.music_track}
+              onUpdateGain={handleUpdateGain}
+              onRegenNarration={handleRegenNarration}
+              onRegenSfx={handleRegenSfx}
+              busy={{ narration: jobs["narration"]?.status === "running",
+                      sfx: jobs["sfx"]?.status === "running" }}
               mediaUrl={mediaUrl}
               onUpdateCamera={(sceneId, camera) => handleUpdateField(sceneId, "camera", camera)}
             />
@@ -889,10 +908,8 @@ export default function WorkspacePage() {
                   await post(`/api/audio/sfx/${sceneId}`);
                   fetchActiveProject();
                 }}
-                onUpdateGain={async (sceneId, field, v) => {
-                  await post(`/api/shot/${sceneId}`, { [field]: v });
-                  fetchActiveProject();
-                }}
+                onUpdateGain={handleUpdateGain}
+                onRegenNarration={handleRegenNarration}
               />
             </div>
           ) : activeStep === 1 ? (
