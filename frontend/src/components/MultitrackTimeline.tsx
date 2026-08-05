@@ -265,6 +265,11 @@ export default function MultitrackTimeline({
         e.preventDefault();
         setIsFullscreen(false);
       } else if (e.code === "Space") {
+        // A focused button or link owns Space -- stealing it makes controls look
+        // dead to keyboard users.
+        const tag = active?.tagName;
+        if (tag === "BUTTON" || tag === "A" ||
+            (active as HTMLElement | null)?.getAttribute?.("role") === "button") return;
         e.preventDefault();
         const v = videoRef.current;
         if (v) {
@@ -278,22 +283,14 @@ export default function MultitrackTimeline({
         e.preventDefault();
         const v = videoRef.current;
         if (!v || !blocks.length) return;
-        const curTime = v.currentTime;
-        const prevBlock = [...blocks].reverse().find(b => b.start < curTime - 0.2);
-        if (prevBlock) {
-          v.currentTime = prevBlock.start;
-        } else {
-          v.currentTime = 0;
-        }
+        const target = beatSeek(-1, v.currentTime);
+        v.currentTime = target ?? 0;
       } else if (e.code === "ArrowRight") {
         e.preventDefault();
         const v = videoRef.current;
         if (!v || !blocks.length) return;
-        const curTime = v.currentTime;
-        const nextBlock = blocks.find(b => b.start > curTime + 0.1);
-        if (nextBlock) {
-          v.currentTime = nextBlock.start;
-        }
+        const target = beatSeek(1, v.currentTime);
+        if (target !== null) v.currentTime = target;
       }
     };
 
@@ -321,6 +318,46 @@ export default function MultitrackTimeline({
     }
     return lanes;
   }, [sfxLanesCount]);
+
+  // ---- time-base bridge -------------------------------------------------
+  // The tracks are laid out in LIVE manifest time; the video plays in PREVIEW
+  // time (whatever the durations were when it was rendered). They coincide only
+  // while the preview is in sync. Mapping beat-by-beat keeps the playhead over
+  // the right clip either way, instead of the readout naming one beat while the
+  // line sits over another.
+  const previewToX = React.useCallback((t: number): number => {
+    const pb = previewMeta?.beats;
+    if (!pb?.length) return t * pxPerSec;
+    const i = pb.findIndex((x) => t >= x.start && t < x.start + x.duration);
+    if (i < 0 || !blocks[i]) return t * pxPerSec;
+    const lb = blocks.find((b) => b.shot.scene_id === pb[i].scene_id) ?? blocks[i];
+    const frac = pb[i].duration > 0 ? (t - pb[i].start) / pb[i].duration : 0;
+    return (lb.start + frac * lb.dur) * pxPerSec;
+  }, [previewMeta, blocks, pxPerSec]);
+
+  const xToPreview = React.useCallback((x: number): number => {
+    const tLive = x / pxPerSec;
+    const pb = previewMeta?.beats;
+    if (!pb?.length) return tLive;
+    const lb = blocks.find((b) => tLive >= b.start && tLive < b.start + b.dur);
+    if (!lb) return tLive;
+    const p = pb.find((y) => y.scene_id === lb.shot.scene_id);
+    if (!p) return tLive;                       // beat added since the render
+    const frac = lb.dur > 0 ? (tLive - lb.start) / lb.dur : 0;
+    return p.start + frac * p.duration;
+  }, [previewMeta, blocks, pxPerSec]);
+
+  /** Preview time at the start of the beat before/after the playhead. */
+  const beatSeek = React.useCallback((dir: -1 | 1, cur: number): number | null => {
+    const pb = previewMeta?.beats;
+    if (!pb?.length) return null;
+    if (dir < 0) {
+      const prev = [...pb].reverse().find((b) => b.start < cur - 0.2);
+      return prev ? prev.start : 0;
+    }
+    const next = pb.find((b) => b.start > cur + 0.1);
+    return next ? next.start : null;
+  }, [previewMeta]);
 
   const atPlayhead = React.useMemo(() => {
     const beats = previewMeta?.beats;
@@ -517,7 +554,7 @@ export default function MultitrackTimeline({
               const v = videoRef.current;
               if (!v || !previewMeta) return;
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-              const t = (e.clientX - rect.left) / pxPerSec;
+              const t = xToPreview(e.clientX - rect.left);
               v.currentTime = Math.max(0, Math.min(previewMeta.runtime, t));
             }}
           >
@@ -525,7 +562,7 @@ export default function MultitrackTimeline({
             {previewUrl && previewMeta && (
               <div
                 className="absolute top-0 bottom-0 w-1 neon-laser-line z-30 pointer-events-none transition-all"
-                style={{ left: playhead * pxPerSec }}
+                style={{ left: previewToX(playhead) }}
               >
                 <div className="absolute top-1 -left-[4px] w-3 h-3 rotate-45 bg-amber-400 border border-amber-100 neon-glow-amber" />
               </div>

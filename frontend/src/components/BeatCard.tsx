@@ -577,7 +577,7 @@ export default function BeatCard({
           }}
           onClick={() => document.getElementById(`imgfile-${shot.scene_id}`)?.click()}
           className={`drop-zone border border-dashed rounded-lg px-3 py-1.5 text-[10px] cursor-pointer transition ${
-            dragImgOver ? "border-amber-500 bg-amber-500/5 text-zinc-200" : "border-zinc-800 text-zinc-500 hover:text-zinc-350"
+            dragImgOver ? "border-amber-500 bg-amber-500/5 text-zinc-200" : "border-zinc-800 text-zinc-500 hover:text-zinc-300"
           }`}
         >
           Upload Custom Still
