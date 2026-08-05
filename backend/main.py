@@ -1341,6 +1341,11 @@ async def update_shot(scene_id: str, request: Request):
             if k in data and data[k] is not None:
                 # 0..4 linear (-inf..+12 dB). Trims sit on top of the episode bus.
                 setattr(shot, k, max(0.0, min(4.0, float(data[k]))))
+        for k, lo, hi in (("offset_narration", -120.0, 120.0),
+                          ("fade_in_narration", 0.0, 30.0),
+                          ("fade_out_narration", 0.0, 30.0)):
+            if k in data and data[k] is not None:
+                setattr(shot, k, max(lo, min(hi, float(data[k]))))
         if "grade" in data:
             # Sparse: only the keys present differ from the episode grade. Sending
             # null for a key clears the override rather than pinning a value.
@@ -2266,6 +2271,178 @@ def single_narration_endpoint(scene_id: str):
 
         start_job("narration", fn)
         return {"ok": True, "scene_id": scene_id}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+SFX_UPLOAD_SUFFIXES = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+
+
+def _layer_path(sb, scene_id: str, layer_id: str) -> Path:
+    return config.episode_paths(sb.title)["sfx"] / f"{scene_id}__{layer_id}.mp3"
+
+
+@app.get("/api/shot/{scene_id}/layers")
+def list_layers(scene_id: str):
+    """This beat's SFX layers, including the legacy single file as a layer."""
+    try:
+        sb = get_current_project()
+        shot = next((s for s in sb.shots if s.scene_id == scene_id), None)
+        if not shot:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        sfx_dir = config.episode_paths(sb.title)["sfx"]
+        out = []
+        for lay in audio.resolve_sfx_layers(shot, sfx_dir):
+            d = asdict(lay)
+            f = Path(lay.file) if lay.file else (sfx_dir / f"{scene_id}.mp3")
+            d["url"] = config.rel_media_path(f) if f.is_file() else None
+            out.append(d)
+        return {"ok": True, "layers": out}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/shot/{scene_id}/layers")
+async def add_or_update_layer(scene_id: str, request: Request):
+    """Create or edit a layer. Send `id` to edit, omit it to create.
+
+    Editing is sparse: only the keys present change, so nudging an offset cannot
+    clobber a gain set moments earlier from another surface.
+    """
+    try:
+        sb = get_current_project()
+        shot = next((s for s in sb.shots if s.scene_id == scene_id), None)
+        if not shot:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        data = await request.json()
+
+        # Materialise the legacy single file before adding a second layer, or it
+        # would silently disappear the moment `sfx_layers` becomes non-empty.
+        if not shot.sfx_layers:
+            shot.sfx_layers = list(
+                audio.resolve_sfx_layers(shot, config.episode_paths(sb.title)["sfx"])
+            )
+
+        lid = (data.get("id") or "").strip()
+        lay = next((l for l in shot.sfx_layers if l.id == lid), None) if lid else None
+        if lay is None:
+            import time
+            lay = manifest.AudioLayer(id=data.get("id") or f"L{int(time.time()*1000)%10**8}")
+            shot.sfx_layers.append(lay)
+
+        for k, lo, hi in (("gain", 0.0, 4.0), ("offset", -120.0, 120.0),
+                          ("fade_in", 0.0, 30.0), ("fade_out", 0.0, 30.0)):
+            if k in data and data[k] is not None:
+                setattr(lay, k, max(lo, min(hi, float(data[k]))))
+        for k in ("prompt", "label", "source", "file"):
+            if k in data and data[k] is not None:
+                setattr(lay, k, str(data[k]))
+
+        save_current_project(sb)
+        return {"ok": True, "layer": asdict(lay), "count": len(shot.sfx_layers)}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/shot/{scene_id}/layers/{layer_id}/delete")
+def delete_layer(scene_id: str, layer_id: str):
+    try:
+        sb = get_current_project()
+        shot = next((s for s in sb.shots if s.scene_id == scene_id), None)
+        if not shot:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        if not shot.sfx_layers:
+            shot.sfx_layers = list(
+                audio.resolve_sfx_layers(shot, config.episode_paths(sb.title)["sfx"])
+            )
+        before = len(shot.sfx_layers)
+        shot.sfx_layers = [l for l in shot.sfx_layers if l.id != layer_id]
+        # The audio file is left on disk deliberately: removing a layer from the
+        # mix should not destroy a clip that was paid for or uploaded.
+        save_current_project(sb)
+        return {"ok": True, "removed": before - len(shot.sfx_layers)}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/shot/{scene_id}/layers/{layer_id}/generate")
+def generate_layer(scene_id: str, layer_id: str):
+    """Generate this layer's audio from its own prompt."""
+    try:
+        sb = get_current_project()
+        shot = next((s for s in sb.shots if s.scene_id == scene_id), None)
+        if not shot:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        lay = next((l for l in (shot.sfx_layers or []) if l.id == layer_id), None)
+        if lay is None:
+            raise HTTPException(status_code=404, detail="Layer not found")
+        if not (lay.prompt or "").strip():
+            raise HTTPException(status_code=400, detail="This layer has no prompt.")
+
+        dest = _layer_path(sb, scene_id, layer_id)
+
+        def fn():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            audio.generate_sfx_fal(lay.prompt, dest, duration_seconds=shot.camera.duration)
+            lay.file = config.rel_media_path(dest) or str(dest)
+            lay.source = "generated"
+            save_current_project(sb)
+            log_job("sfx", f"{scene_id}/{layer_id}: generated from '{lay.prompt[:50]}'")
+
+        start_job("sfx", fn)
+        return {"ok": True, "scene_id": scene_id, "layer_id": layer_id}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/shot/{scene_id}/layers/upload")
+async def upload_layer_audio(scene_id: str, file: UploadFile = File(...)):
+    """Bring your own sound. Transcoded to MP3 like anything generated."""
+    try:
+        sb = get_current_project()
+        shot = next((s for s in sb.shots if s.scene_id == scene_id), None)
+        if not shot:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        name = secure_filename(file.filename or "layer")
+        if Path(name).suffix.lower() not in SFX_UPLOAD_SUFFIXES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported audio type. Use one of: {', '.join(sorted(SFX_UPLOAD_SUFFIXES))}",
+            )
+        if not shot.sfx_layers:
+            shot.sfx_layers = list(
+                audio.resolve_sfx_layers(shot, config.episode_paths(sb.title)["sfx"])
+            )
+
+        import time
+        lid = f"U{int(time.time()*1000)%10**8}"
+        raw = _layer_path(sb, scene_id, lid).with_suffix(Path(name).suffix.lower())
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        with open(raw, "wb") as fh:
+            shutil.copyfileobj(file.file, fh)
+        try:
+            final = audio.transcode_to_mp3(raw, bitrate="128k")
+        except Exception as exc:  # noqa: BLE001 — keep the upload even if ffmpeg balks
+            print(f"layer upload: transcode failed ({exc}); keeping {raw.suffix}")
+            final = raw
+
+        lay = manifest.AudioLayer(
+            id=lid, source="uploaded", label=Path(name).stem[:40],
+            file=config.rel_media_path(final) or str(final),
+        )
+        shot.sfx_layers.append(lay)
+        save_current_project(sb)
+        return {"ok": True, "layer": asdict(lay), "count": len(shot.sfx_layers)}
     except HTTPException as he:
         raise he
     except Exception as e:

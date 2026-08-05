@@ -173,6 +173,45 @@ def sample_voice(text: str, voice_id: str | None = None,
     return bytes(buf)
 
 
+def resolve_sfx_layers(shot, sfx_dir) -> list:
+    """The beat's SFX layers, or a synthetic one wrapping the legacy single file.
+
+    Existing manifests have `sfx` (a prompt) and one file at <scene>.mp3 with no
+    layers. Rather than migrate them -- which would rewrite every manifest and
+    break anything still reading the old shape -- the old form is presented as a
+    one-element layer list at read time.
+    """
+    from .manifest import AudioLayer
+    layers = list(getattr(shot, "sfx_layers", None) or [])
+    if layers:
+        return layers
+    prompt = (getattr(shot, "sfx", "") or "").strip()
+    legacy = sfx_dir / f"{shot.scene_id}.mp3"
+    if not prompt and not legacy.is_file():
+        return []
+    return [AudioLayer(
+        id="legacy", prompt=prompt,
+        file=str(legacy) if legacy.is_file() else "",
+        gain=float(getattr(shot, "gain_sfx", 1.0) or 1.0),
+        label="sfx",
+    )]
+
+
+def apply_fades(seg, sr: int, fade_in: float, fade_out: float):
+    """Linear fades in place on an (n, channels) float array."""
+    import numpy as np
+    n = seg.shape[0]
+    fi = int(min(max(fade_in, 0.0), 30.0) * sr)
+    fo = int(min(max(fade_out, 0.0), 30.0) * sr)
+    if fi > 0:
+        k = min(fi, n)
+        seg[:k] *= np.linspace(0.0, 1.0, k, dtype=seg.dtype)[:, None]
+    if fo > 0:
+        k = min(fo, n)
+        seg[n - k:] *= np.linspace(1.0, 0.0, k, dtype=seg.dtype)[:, None]
+    return seg
+
+
 def peaks(path: Path, buckets: int = 240) -> list[float]:
     """Downsampled 0..1 peak envelope for a clip, for drawing a waveform.
 

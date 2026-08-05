@@ -47,6 +47,27 @@ class Camera:
 
 
 @dataclass
+class AudioLayer:
+    """One audio clip under a beat.
+
+    Replaces the old one-prompt-one-file-per-beat model, which could not express
+    an offset, a fade, an uploaded file, or more than one sound. A layer is
+    positioned relative to its beat's start and may cross the boundary in either
+    direction -- a negative offset starts it under the previous shot, which is
+    how you set a mood before the cut lands.
+    """
+    id: str = ""                 # stable key; file lives at audio/sfx/<scene>__<id>.mp3
+    prompt: str = ""             # empty when the file was uploaded rather than generated
+    file: str = ""               # media-root-relative; empty until generated/uploaded
+    source: str = "generated"    # "generated" | "uploaded"
+    gain: float = 1.0
+    offset: float = 0.0          # seconds from the beat start; negative starts early
+    fade_in: float = 0.0
+    fade_out: float = 0.0
+    label: str = ""
+
+
+@dataclass
 class Grade:
     """Look controls applied to the base plate before any motion.
 
@@ -152,6 +173,13 @@ class Shot:
     # stable-audio is inconsistent), which one master fader cannot fix.
     gain_narration: float = 1.0
     gain_sfx: float = 1.0
+    # Narration placement, same semantics as an AudioLayer.
+    offset_narration: float = 0.0
+    fade_in_narration: float = 0.0
+    fade_out_narration: float = 0.0
+    # Layered ambience. Empty means "fall back to the legacy single sfx file",
+    # so existing manifests keep working untouched -- see resolve_sfx_layers().
+    sfx_layers: List[AudioLayer] = field(default_factory=list)
     draft_variations: List[str] = field(default_factory=list)
     draft_image: Optional[str] = None
     video_variations: List[str] = field(default_factory=list)
@@ -225,6 +253,11 @@ class Storyboard:
                 extra = set(shot) - known
                 if extra:
                     print(f"manifest: ignoring unknown shot field(s) {sorted(extra)} on {shot.get('scene_id')}")
+                fields["sfx_layers"] = [
+                    AudioLayer(**{k: v for k, v in (lay or {}).items()
+                                  if k in AudioLayer.__dataclass_fields__})
+                    for lay in (shot.get("sfx_layers") or [])
+                ]
                 fields["motion_type"] = MotionType(shot.get("motion_type", "parallax"))
                 # Filter camera keys for the same reason as the shot keys above:
                 # one unrecognised field must never cost the whole storyboard.

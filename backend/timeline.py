@@ -29,7 +29,7 @@ from pathlib import Path
 
 import opentimelineio as otio
 
-from . import config
+from . import audio, config
 from .manifest import Storyboard, load
 
 FPS = 24
@@ -259,9 +259,17 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
             y = np.stack([y, y])
         return (y.T.astype(np.float32)) * level
 
-    def _place(path: Path, off: float, level: float) -> None:
+    def _place(path: Path, off: float, level: float,
+               fade_in: float = 0.0, fade_out: float = 0.0) -> None:
         seg = _load_stereo(path, level)
+        if fade_in or fade_out:
+            seg = audio.apply_fades(seg, sr, fade_in, fade_out)
         start = int(off * sr)
+        # A layer may start before the episode does (a negative offset on the
+        # first beat). Trim the head rather than dropping the whole clip.
+        if start < 0:
+            seg = seg[-start:]
+            start = 0
         end = min(start + seg.shape[0], total)
         if end > start:
             mix[start:end] += seg[: end - start]
@@ -277,13 +285,25 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
         # Bus level x per-beat trim. The trim is what lets a beat whose stem came
         # back 13 dB hot sit with the rest without moving the whole bus.
         g_narr = float(getattr(shot, "gain_narration", 1.0) or 1.0)
-        g_sfx = float(getattr(shot, "gain_sfx", 1.0) or 1.0)
         nf = narr_dir / f"{shot.scene_id}.mp3"
         if nf.exists():
-            _place(nf, off, lvl_narr * g_narr)
-        xf = sfx_dir / f"{shot.scene_id}.mp3"
-        if (shot.sfx or "").strip() and xf.exists():
-            _place(xf, off, lvl_sfx * g_sfx)
+            _place(nf, off + float(getattr(shot, "offset_narration", 0.0) or 0.0),
+                   lvl_narr * g_narr,
+                   float(getattr(shot, "fade_in_narration", 0.0) or 0.0),
+                   float(getattr(shot, "fade_out_narration", 0.0) or 0.0))
+
+        # Layers, each positioned relative to this beat. A negative offset starts
+        # a sound under the previous shot -- _place clamps to the episode, so a
+        # layer that would begin before 0:00 is simply trimmed at the head.
+        for lay in audio.resolve_sfx_layers(shot, sfx_dir):
+            src = Path(lay.file) if lay.file else (sfx_dir / f"{shot.scene_id}.mp3")
+            if not src.is_absolute():
+                src = config.resolve_media(str(src), shot.scene_id) or (sfx_dir / src.name)
+            if not src or not Path(src).is_file():
+                continue
+            _place(Path(src), off + float(lay.offset or 0.0),
+                   lvl_sfx * float(lay.gain or 1.0),
+                   float(lay.fade_in or 0.0), float(lay.fade_out or 0.0))
     if sb.music_track:
         mp = config.AUDIO_POOL / sb.music_track
         if mp.exists():
