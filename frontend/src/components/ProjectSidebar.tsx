@@ -44,7 +44,7 @@ export default function ProjectSidebar({
   };
 
   return (
-    <aside className="w-80 bg-zinc-950/85 backdrop-blur-md border-r border-zinc-800/80 flex flex-col h-full shrink-0 shadow-2xl z-30">
+    <aside className="w-80 glass-surface border-r border-white/10 flex flex-col h-full shrink-0 shadow-2xl z-30">
       {/* Top Channel Selector */}
       <div className="p-4 border-b border-zinc-900/90 flex flex-col gap-3">
         <label className="text-[10px] uppercase tracking-wider text-zinc-400 font-bold font-mono">

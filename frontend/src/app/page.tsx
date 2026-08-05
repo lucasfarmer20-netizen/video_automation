@@ -690,10 +690,10 @@ export default function WorkspacePage() {
   );
 
   return (
-    <div className="min-h-screen bg-zinc-950 flex flex-col overflow-hidden text-zinc-100">
+    <div className="min-h-screen bg-transparent flex flex-col overflow-hidden text-zinc-100">
       
       {/* Floating Header */}
-      <header className="sticky top-0 z-40 bg-zinc-900/60 backdrop-blur-xl border-b border-zinc-900 px-4 md:px-6 py-3 md:py-4 flex flex-col md:flex-row items-center justify-between gap-3 md:gap-4">
+      <header className="sticky top-0 z-40 glass-surface border-b border-white/10 px-4 md:px-6 py-3 md:py-4 flex flex-col md:flex-row items-center justify-between gap-3 md:gap-4">
         <div className="flex flex-wrap items-center gap-2.5 md:gap-4 w-full md:w-auto">
           {/* Mobile Sidebar Toggle */}
           <button

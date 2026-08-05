@@ -31,7 +31,7 @@ export default function AssemblyPanel({
   onAssemble, onGenerateAllStills, onSaveMix, onUploadImage, onUploadClip,
 }: AssemblyPanelProps) {
   return (
-    <section className="rounded-2xl p-5 border border-zinc-800/80 bg-zinc-950/85 backdrop-blur-md shadow-2xl flex flex-col gap-4">
+    <section className="rounded-2xl p-5 glass-panel border border-white/12 shadow-2xl flex flex-col gap-4">
         <h3 className={`font-bold text-sm mb-1 flex items-center gap-2 ${canAssemble ? "text-emerald-400" : "text-zinc-400"}`}>
           <span className={`w-2 h-2 rounded-full ${canAssemble ? "bg-emerald-400 animate-pulse shadow-[0_0_8px_#34d399]" : "bg-zinc-600"}`} />
           🎬 Assembling Timeline Proxy
