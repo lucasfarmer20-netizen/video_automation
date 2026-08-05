@@ -130,10 +130,10 @@ export default function BeatCard({
 
   return (
     <div
-      className={`glass-panel rounded-xl p-5 border relative transition duration-300 ${
-        shot.approved ? "border-emerald-500/20 bg-emerald-950/5" : ""
-      } ${shot.flow_hero ? "border-amber-500/20 bg-amber-950/5" : ""} ${
-        shot.motion_type === "ai_video" ? "border-blue-500/10 bg-blue-950/5" : "border-zinc-900"
+      className={`rounded-2xl p-5 border relative transition-all duration-300 backdrop-blur-md shadow-xl ${
+        shot.approved ? "border-emerald-500/40 bg-emerald-950/20 shadow-[0_0_15px_rgba(52,211,153,0.1)]" : ""
+      } ${shot.flow_hero ? "border-amber-400/50 bg-amber-950/20 shadow-[0_0_15px_rgba(245,158,11,0.1)]" : ""} ${
+        shot.motion_type === "ai_video" ? "border-purple-500/30 bg-purple-950/20 shadow-[0_0_15px_rgba(192,132,252,0.1)]" : "border-zinc-800/80 bg-zinc-950/85 hover:border-zinc-700 hover:shadow-2xl"
       }`}
       id={`beat-${shot.scene_id}`}
     >

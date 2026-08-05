@@ -44,18 +44,18 @@ export default function ProjectSidebar({
   };
 
   return (
-    <aside className="w-80 bg-zinc-950/80 border-r border-zinc-900 flex flex-col h-full shrink-0">
+    <aside className="w-80 bg-zinc-950/85 backdrop-blur-md border-r border-zinc-800/80 flex flex-col h-full shrink-0 shadow-2xl z-30">
       {/* Top Channel Selector */}
-      <div className="p-4 border-b border-zinc-900 flex flex-col gap-3">
-        <label className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold font-mono">
+      <div className="p-4 border-b border-zinc-900/90 flex flex-col gap-3">
+        <label className="text-[10px] uppercase tracking-wider text-zinc-400 font-bold font-mono">
           Active Channel Scope
         </label>
-        <div className="grid grid-cols-2 gap-2 bg-zinc-900/50 p-1 rounded-lg border border-zinc-800/80">
+        <div className="grid grid-cols-2 gap-1.5 bg-zinc-900/80 p-1 rounded-xl border border-zinc-800 shadow-inner">
           <button
             onClick={() => setActiveChannel("bestiary")}
-            className={`py-2 px-3 rounded-md text-xs font-semibold transition-all duration-300 ${
+            className={`py-2 px-3 rounded-lg text-xs font-extrabold transition-all duration-200 ${
               activeChannel === "bestiary"
-                ? "bg-amber-500 text-zinc-950 font-bold shadow-md shadow-amber-500/10"
+                ? "bg-gradient-to-r from-amber-400 via-amber-500 to-orange-500 text-zinc-950 shadow-[0_0_12px_rgba(245,158,11,0.3)]"
                 : "text-zinc-400 hover:text-zinc-200"
             }`}
           >
@@ -63,9 +63,9 @@ export default function ProjectSidebar({
           </button>
           <button
             onClick={() => setActiveChannel("calluses")}
-            className={`py-2 px-3 rounded-md text-xs font-semibold transition-all duration-300 ${
+            className={`py-2 px-3 rounded-lg text-xs font-extrabold transition-all duration-200 ${
               activeChannel === "calluses"
-                ? "bg-blue-500 text-white font-bold shadow-md shadow-blue-500/10"
+                ? "bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-[0_0_12px_rgba(59,130,246,0.3)]"
                 : "text-zinc-400 hover:text-zinc-200"
             }`}
           >
@@ -74,9 +74,9 @@ export default function ProjectSidebar({
         </div>
         <button
           onClick={handleNewProject}
-          className="w-full bg-zinc-900 hover:bg-zinc-800 text-zinc-200 py-2 px-4 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 border border-zinc-800"
+          className="w-full bg-zinc-900/90 hover:bg-zinc-800 text-zinc-200 hover:text-white py-2.5 px-4 rounded-xl text-xs font-bold transition-all hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2 border border-zinc-800 shadow-sm"
         >
-          <Plus className="h-3.5 w-3.5" />
+          <Plus className="h-4 w-4 text-amber-400" />
           <span>New Storyboard</span>
         </button>
       </div>
@@ -88,13 +88,13 @@ export default function ProjectSidebar({
         <div className="flex flex-col">
           <button
             onClick={() => setBestiaryOpen(!bestiaryOpen)}
-            className="flex items-center justify-between text-[10px] font-bold text-amber-500/90 uppercase tracking-wider py-2 px-2 hover:bg-zinc-900/20 rounded transition"
+            className="flex items-center justify-between text-[10px] font-extrabold text-amber-400/90 uppercase tracking-wider py-2 px-2.5 hover:bg-zinc-900/40 rounded-lg transition-colors"
           >
             <span className="flex items-center gap-2">
-              {bestiaryOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              {bestiaryOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
               The Illuminated Bestiary
             </span>
-            <span className="bg-amber-500/10 text-amber-400 text-[9px] px-1.5 py-0.5 rounded font-mono border border-amber-500/20">
+            <span className="bg-amber-500/15 text-amber-300 text-[9px] px-2 py-0.5 rounded-full font-mono border border-amber-500/30 font-bold">
               {bestiaryProjects.length}
             </span>
           </button>
@@ -105,22 +105,22 @@ export default function ProjectSidebar({
                 <div
                   key={idx}
                   onClick={() => onSelectProject(p.rel)}
-                  className={`p-3 rounded-lg border cursor-pointer transition-all duration-300 ${
+                  className={`p-3 rounded-xl border cursor-pointer transition-all duration-200 hover:scale-[1.01] ${
                     p.active
-                      ? "bg-amber-500/5 border-amber-500/30 text-amber-400 font-medium shadow-[0_0_15px_rgba(245,158,11,0.03)]"
-                      : "border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/40"
+                      ? "bg-amber-500/10 border-amber-400/60 text-amber-300 font-semibold shadow-[0_0_15px_rgba(245,158,11,0.15)]"
+                      : "border-zinc-900/60 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60 hover:border-zinc-800"
                   }`}
                 >
-                  <div className="text-xs font-semibold truncate flex items-center justify-between gap-2">
+                  <div className="text-xs font-bold truncate flex items-center justify-between gap-2">
                     <span className="truncate">{p.name}</span>
-                    <div className="flex items-center gap-1 shrink-0">
-                      {p.script_locked && <Lock className="h-3 w-3 text-emerald-400" />}
-                      {p.storyboard_approved && <CheckCircle className="h-3 w-3 text-emerald-400" />}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {p.script_locked && <Lock className="h-3 w-3 text-emerald-400 drop-shadow" />}
+                      {p.storyboard_approved && <CheckCircle className="h-3 w-3 text-emerald-400 drop-shadow" />}
                     </div>
                   </div>
-                  <div className="text-[9px] text-zinc-500 truncate font-mono mt-1 flex items-center justify-between">
-                    <span>{p.rel_display}</span>
-                    <span className="text-amber-500/60 font-semibold">{p.beats_count || 0} beats</span>
+                  <div className="text-[9px] text-zinc-500 truncate font-mono mt-1.5 flex items-center justify-between">
+                    <span className="truncate pr-2">{p.rel_display}</span>
+                    <span className="text-amber-400/80 font-bold shrink-0">{p.beats_count || 0} beats</span>
                   </div>
                 </div>
               ))}
@@ -135,13 +135,13 @@ export default function ProjectSidebar({
         <div className="flex flex-col">
           <button
             onClick={() => setCallusesOpen(!callusesOpen)}
-            className="flex items-center justify-between text-[10px] font-bold text-blue-400/90 uppercase tracking-wider py-2 px-2 hover:bg-zinc-900/20 rounded transition"
+            className="flex items-center justify-between text-[10px] font-extrabold text-blue-400/90 uppercase tracking-wider py-2 px-2.5 hover:bg-zinc-900/40 rounded-lg transition-colors"
           >
             <span className="flex items-center gap-2">
-              {callusesOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              {callusesOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
               By the Calluses
             </span>
-            <span className="bg-blue-500/10 text-blue-400 text-[9px] px-1.5 py-0.5 rounded font-mono border border-blue-500/20">
+            <span className="bg-blue-500/15 text-blue-300 text-[9px] px-2 py-0.5 rounded-full font-mono border border-blue-500/30 font-bold">
               {callusesProjects.length}
             </span>
           </button>
@@ -152,22 +152,22 @@ export default function ProjectSidebar({
                 <div
                   key={idx}
                   onClick={() => onSelectProject(p.rel)}
-                  className={`p-3 rounded-lg border cursor-pointer transition-all duration-300 ${
+                  className={`p-3 rounded-xl border cursor-pointer transition-all duration-200 hover:scale-[1.01] ${
                     p.active
-                      ? "bg-blue-500/5 border-blue-500/30 text-blue-400 font-medium shadow-[0_0_15px_rgba(59,130,246,0.03)]"
-                      : "border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/40"
+                      ? "bg-blue-500/10 border-blue-400/60 text-blue-300 font-semibold shadow-[0_0_15px_rgba(59,130,246,0.15)]"
+                      : "border-zinc-900/60 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60 hover:border-zinc-800"
                   }`}
                 >
-                  <div className="text-xs font-semibold truncate flex items-center justify-between gap-2">
+                  <div className="text-xs font-bold truncate flex items-center justify-between gap-2">
                     <span className="truncate">{p.name}</span>
-                    <div className="flex items-center gap-1 shrink-0">
-                      {p.script_locked && <Lock className="h-3 w-3 text-emerald-400" />}
-                      {p.storyboard_approved && <CheckCircle className="h-3 w-3 text-emerald-400" />}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {p.script_locked && <Lock className="h-3 w-3 text-emerald-400 drop-shadow" />}
+                      {p.storyboard_approved && <CheckCircle className="h-3 w-3 text-emerald-400 drop-shadow" />}
                     </div>
                   </div>
-                  <div className="text-[9px] text-zinc-500 truncate font-mono mt-1 flex items-center justify-between">
-                    <span>{p.rel_display}</span>
-                    <span className="text-blue-500/60 font-semibold">{p.beats_count || 0} beats</span>
+                  <div className="text-[9px] text-zinc-500 truncate font-mono mt-1.5 flex items-center justify-between">
+                    <span className="truncate pr-2">{p.rel_display}</span>
+                    <span className="text-blue-400/80 font-bold shrink-0">{p.beats_count || 0} beats</span>
                   </div>
                 </div>
               ))}
