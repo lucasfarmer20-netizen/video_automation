@@ -370,7 +370,7 @@ export default function FlowCanvas({
       onUpdateDuration, onRegenerate, onGenerateSFX, onUpdateGain, onRegenNarration]);
 
   return (
-    <div className="w-full h-full bg-zinc-950/20 border border-zinc-900 rounded-xl overflow-hidden shadow-inner">
+    <div className="w-full h-[650px] bg-zinc-950/85 backdrop-blur-md border border-zinc-800/80 rounded-2xl overflow-hidden shadow-2xl">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -381,8 +381,8 @@ export default function FlowCanvas({
         fitView
         className="text-zinc-200"
       >
-        <Controls className="!bg-zinc-900 !border-zinc-800 !text-zinc-200" />
-        <Background color="#18181b" gap={20} size={1.2} />
+        <Controls className="!bg-zinc-900/90 !backdrop-blur-md !border-zinc-800 !text-zinc-200 !rounded-xl !shadow-xl" />
+        <Background color="#27272a" gap={20} size={1.2} />
       </ReactFlow>
     </div>
   );
