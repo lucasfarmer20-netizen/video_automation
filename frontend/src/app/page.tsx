@@ -895,6 +895,14 @@ export default function WorkspacePage() {
               previewMeta={activeProject.preview_meta ?? null}
               mediaUrl={mediaUrl}
               onUpdateCamera={(sceneId, camera) => handleUpdateField(sceneId, "camera", camera)}
+              onPatchNarration={async (sceneId, patch) => {
+                await post(`/api/shot/${sceneId}`, patch);
+                fetchActiveProject();
+              }}
+              onPatchLayer={patchLayer}
+              onAddLayer={addLayer}
+              onDeleteLayer={deleteLayer}
+              onGenerateLayer={generateLayer}
             />
           ) : activeStep === 4 ? (
             <div className="flex flex-col gap-5">
