@@ -146,6 +146,12 @@ class Shot:
     # the episode default. Kept as a plain dict so adding a look control never
     # needs a manifest migration.
     grade: dict = field(default_factory=dict)
+    # Per-beat trim on top of the episode mix bus (MixConfig), 1.0 = no change.
+    # The episode fader sets the bus level; these seat individual beats against
+    # it. Necessary because the raw stems vary ~13 dB between beats (fal's
+    # stable-audio is inconsistent), which one master fader cannot fix.
+    gain_narration: float = 1.0
+    gain_sfx: float = 1.0
     draft_variations: List[str] = field(default_factory=list)
     draft_image: Optional[str] = None
     video_variations: List[str] = field(default_factory=list)

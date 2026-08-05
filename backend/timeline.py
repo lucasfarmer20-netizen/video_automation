@@ -274,12 +274,16 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
     lvl_music = float(getattr(mix_cfg, "music", 0.20))
 
     for shot, off in zip(sb.shots, offsets):
+        # Bus level x per-beat trim. The trim is what lets a beat whose stem came
+        # back 13 dB hot sit with the rest without moving the whole bus.
+        g_narr = float(getattr(shot, "gain_narration", 1.0) or 1.0)
+        g_sfx = float(getattr(shot, "gain_sfx", 1.0) or 1.0)
         nf = narr_dir / f"{shot.scene_id}.mp3"
         if nf.exists():
-            _place(nf, off, lvl_narr)
+            _place(nf, off, lvl_narr * g_narr)
         xf = sfx_dir / f"{shot.scene_id}.mp3"
         if (shot.sfx or "").strip() and xf.exists():
-            _place(xf, off, lvl_sfx)
+            _place(xf, off, lvl_sfx * g_sfx)
     if sb.music_track:
         mp = config.AUDIO_POOL / sb.music_track
         if mp.exists():

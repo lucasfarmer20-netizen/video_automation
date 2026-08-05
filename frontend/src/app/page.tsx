@@ -880,6 +880,10 @@ export default function WorkspacePage() {
                   await post(`/api/audio/sfx/${sceneId}`);
                   fetchActiveProject();
                 }}
+                onUpdateGain={async (sceneId, field, v) => {
+                  await post(`/api/shot/${sceneId}`, { [field]: v });
+                  fetchActiveProject();
+                }}
               />
             </div>
           ) : activeStep === 1 ? (

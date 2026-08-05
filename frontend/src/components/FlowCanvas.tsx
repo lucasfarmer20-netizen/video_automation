@@ -22,6 +22,13 @@ interface Shot {
   video_clip: string | null;
   image_model?: string | null;
   video_model_key?: string | null;
+  sfx?: string;
+  has_narration?: boolean;
+  has_sfx?: boolean;
+  narration_url?: string | null;
+  sfx_url?: string | null;
+  gain_narration?: number;
+  gain_sfx?: number;
 }
 
 interface FlowCanvasProps {
@@ -30,6 +37,8 @@ interface FlowCanvasProps {
   onUpdateDuration?: (sceneId: string, duration: number) => void;
   onRegenerate?: (sceneId: string) => void;
   onGenerateSFX?: (sceneId: string) => void;
+  /** POST /api/shot/{id} with { gain_narration } or { gain_sfx }. */
+  onUpdateGain?: (sceneId: string, field: "gain_narration" | "gain_sfx", v: number) => void;
   /** Registry label maps, so a badge never shows a model the resolver disowns. */
   imageBackends?: Record<string, string>;
   videoBackends?: Record<string, string>;
@@ -43,10 +52,75 @@ const MOTION_STYLE: Record<string, string> = {
   static: "bg-zinc-800 text-zinc-400 border-zinc-700",
 };
 
+const toDb = (g: number) => (g <= 0.0001 ? -60 : 20 * Math.log10(g));
+const fromDb = (db: number) => (db <= -39.5 ? 0 : Math.pow(10, db / 20));
+
+const TRACK_COLOUR: Record<string, string> = {
+  emerald: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
+  amber: "bg-amber-500/15 text-amber-400 border-amber-500/25",
+};
+
+/** One audio track on a beat node: audition it, and trim it against the bus. */
+function AudioRow({ label, colour, url, present, gain, onGain, absent, hint }: any) {
+  const [playing, setPlaying] = React.useState(false);
+  const ref = React.useRef<HTMLAudioElement | null>(null);
+  // Local while dragging, committed on release. A range input fires onChange for
+  // every pixel of travel, and each commit is a POST -> save_current_project ->
+  // GCS write; dragging across the slider would be ~100 writes.
+  const [local, setLocal] = React.useState<number | null>(null);
+  const db = local ?? toDb(gain ?? 1);
+  const commit = () => {
+    if (local !== null) { onGain?.(fromDb(local)); setLocal(null); }
+  };
+
+  const toggle = () => {
+    if (!url) return;
+    if (!ref.current) {
+      ref.current = new Audio(url);
+      ref.current.onended = () => setPlaying(false);
+    }
+    if (playing) { ref.current.pause(); ref.current.currentTime = 0; setPlaying(false); }
+    else { ref.current.volume = Math.min(1, gain ?? 1); ref.current.play(); setPlaying(true); }
+  };
+
+  return (
+    <div className="flex items-center gap-1.5 text-[9px] font-mono">
+      <span className={`px-1.5 py-0.5 rounded border shrink-0 ${TRACK_COLOUR[colour]}`}>{label}</span>
+      {present ? (
+        <>
+          <button
+            onClick={toggle}
+            title={hint || "Audition this clip"}
+            className="text-zinc-400 hover:text-zinc-100 transition shrink-0 w-4"
+          >
+            {playing ? "■" : "▶"}
+          </button>
+          <input
+            type="range" min={-40} max={12} step={0.5}
+            value={Math.max(-40, Math.min(12, db))}
+            onChange={(e) => setLocal(parseFloat(e.target.value))}
+            onPointerUp={commit}
+            onKeyUp={commit}
+            onBlur={commit}
+            className="flex-1 min-w-0 accent-amber-500 h-1"
+            title="Trim on top of the episode bus level"
+          />
+          <span className={`w-12 text-right tabular-nums shrink-0 ${
+            Math.abs(db) < 0.25 ? "text-zinc-600" : db > 0 ? "text-amber-400" : "text-zinc-400"}`}>
+            {db <= -39.5 ? "−∞" : `${db >= 0 ? "+" : ""}${db.toFixed(1)}`}
+          </span>
+        </>
+      ) : (
+        <span className="text-zinc-600 italic truncate">{absent}</span>
+      )}
+    </div>
+  );
+}
+
 const BeatNode = ({ data }: any) => {
   const locked = !!data.duration_locked;
   return (
-    <div className="bg-zinc-950/90 border border-zinc-800 rounded-xl p-3.5 w-64 shadow-2xl glass-panel text-zinc-300 relative group">
+    <div className="bg-zinc-950/90 border border-zinc-800 rounded-xl p-3.5 w-72 shadow-2xl glass-panel text-zinc-300 relative group">
       <Handle type="target" position={Position.Left} className="!w-2.5 !h-2.5 !bg-amber-500 !border-zinc-950" />
 
       <div className="flex items-center justify-between border-b border-zinc-900 pb-2 mb-2.5">
@@ -108,6 +182,27 @@ const BeatNode = ({ data }: any) => {
         {data.narration || "No voiceover narration script..."}
       </p>
 
+      {/* Audio, split by track. Each carries its own trim because the raw stems
+          vary ~13 dB between beats -- the episode fader sets the bus, these seat
+          individual beats against it. */}
+      <div className="border-t border-zinc-900/60 pt-2 mb-2 flex flex-col gap-1.5">
+        <AudioRow
+          label="A1 VO" colour="emerald"
+          url={data.narrationUrl} present={data.hasNarration}
+          gain={data.gainNarration}
+          onGain={(v: number) => data.onUpdateGain?.(data.scene_id, "gain_narration", v)}
+          absent="not generated"
+        />
+        <AudioRow
+          label="A2 SFX" colour="amber"
+          url={data.sfxUrl} present={data.hasSfx}
+          gain={data.gainSfx}
+          onGain={(v: number) => data.onUpdateGain?.(data.scene_id, "gain_sfx", v)}
+          absent={data.sfxPrompt ? "not generated" : "none for this beat"}
+          hint={data.sfxPrompt}
+        />
+      </div>
+
       <div className="flex items-center gap-1.5 mt-2 border-t border-zinc-900/60 pt-2 text-[9px] font-mono select-none">
         <span className={`w-1.5 h-1.5 rounded-full ${data.has_video ? "bg-emerald-500 shadow-[0_0_8px_#10b981]" : "bg-zinc-700"}`}></span>
         <span className={data.has_video ? "text-zinc-300" : "text-zinc-500"}>
@@ -147,7 +242,7 @@ const BeatNode = ({ data }: any) => {
 
 export default function FlowCanvas({
   shots, mediaUrl, onUpdateDuration, onRegenerate, onGenerateSFX,
-  imageBackends, videoBackends, defaultImageModel
+  imageBackends, videoBackends, defaultImageModel, onUpdateGain
 }: FlowCanvasProps) {
   const nodeTypes = useMemo(() => ({ beatNode: BeatNode }), []);
   const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
@@ -176,9 +271,17 @@ export default function FlowCanvas({
             s.motion_type === "ai_video" && s.video_model_key
               ? (videoBackends?.[s.video_model_key] || s.video_model_key)
               : null,
+          sfxPrompt: s.sfx || "",
+          hasNarration: !!s.has_narration,
+          hasSfx: !!s.has_sfx,
+          narrationUrl: s.narration_url ? mediaUrl(s.narration_url) : null,
+          sfxUrl: s.sfx_url ? mediaUrl(s.sfx_url) : null,
+          gainNarration: s.gain_narration ?? 1.0,
+          gainSfx: s.gain_sfx ?? 1.0,
           onUpdateDuration,
           onRegenerate,
-          onGenerateSFX
+          onGenerateSFX,
+          onUpdateGain
         }
       };
     });
@@ -200,7 +303,7 @@ export default function FlowCanvas({
     setNodes(generatedNodes);
     setEdges(generatedEdges);
   }, [shots, mediaUrl, setNodes, setEdges, imageBackends, videoBackends, defaultImageModel,
-      onUpdateDuration, onRegenerate, onGenerateSFX]);
+      onUpdateDuration, onRegenerate, onGenerateSFX, onUpdateGain]);
 
   return (
     <div className="w-full h-full bg-zinc-950/20 border border-zinc-900 rounded-xl overflow-hidden shadow-inner">

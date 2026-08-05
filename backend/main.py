@@ -765,6 +765,15 @@ def get_active_project():
             # on state nobody reports.
             s_dict["has_narration"] = s.scene_id in narration_stems
             s_dict["has_sfx"] = s.scene_id in sfx_stems
+            # Media-root-relative; the frontend prefixes /media/ exactly once.
+            s_dict["narration_url"] = (
+                config.rel_media_path(ep["narration"] / f"{s.scene_id}.mp3")
+                if s_dict["has_narration"] else None
+            )
+            s_dict["sfx_url"] = (
+                config.rel_media_path(ep["sfx"] / f"{s.scene_id}.mp3")
+                if s_dict["has_sfx"] else None
+            )
             # Manifests still carry legacy values -- raw endpoint strings and
             # keys that were never in the registry (e.g. the dead
             # "fal-ai/kling-video/v3/image-to-video"). The resolver aliases them
@@ -1328,6 +1337,10 @@ async def update_shot(scene_id: str, request: Request):
             shot.flow_hero = bool(data["flow_hero"])
         if "sfx" in data:
             shot.sfx = str(data["sfx"] or "")
+        for k in ("gain_narration", "gain_sfx"):
+            if k in data and data[k] is not None:
+                # 0..4 linear (-inf..+12 dB). Trims sit on top of the episode bus.
+                setattr(shot, k, max(0.0, min(4.0, float(data[k]))))
         if "grade" in data:
             # Sparse: only the keys present differ from the episode grade. Sending
             # null for a key clears the override rather than pinning a value.
