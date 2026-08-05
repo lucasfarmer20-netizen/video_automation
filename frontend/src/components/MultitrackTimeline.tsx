@@ -344,12 +344,12 @@ export default function MultitrackTimeline({
   };
 
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl flex flex-col pt-1">
+    <div className="rounded-2xl glass-surface flex flex-col pt-1">
       {/* Header Controls */}
-      <div className="px-5 py-3.5 border-b border-zinc-900 flex items-center justify-between flex-wrap gap-3 bg-zinc-950">
+      <div className="px-5 py-3.5 border-b border-white/10 flex items-center justify-between flex-wrap gap-3 bg-zinc-950/40 backdrop-blur-md">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse shadow-[0_0_10px_#f59e0b]" />
+            <div className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse neon-glow-amber" />
             <h3 className="text-zinc-100 font-extrabold text-xs uppercase tracking-wider font-mono">
               Timeline Editor
             </h3>
@@ -483,17 +483,17 @@ export default function MultitrackTimeline({
             {/* Laser Playhead with Diamond Head inside visible ruler boundary */}
             {previewUrl && previewMeta && (
               <div
-                className="absolute top-0 bottom-0 w-1 bg-amber-400 shadow-[0_0_12px_#fbbf24] z-30 pointer-events-none transition-all"
+                className="absolute top-0 bottom-0 w-1 neon-laser-line z-30 pointer-events-none transition-all"
                 style={{ left: playhead * pxPerSec }}
               >
-                <div className="absolute top-1 -left-[4px] w-3 h-3 rotate-45 bg-amber-400 border border-amber-100 shadow-[0_0_8px_#f59e0b]" />
+                <div className="absolute top-1 -left-[4px] w-3 h-3 rotate-45 bg-amber-400 border border-amber-100 neon-glow-amber" />
               </div>
             )}
             
             {/* Ruler with Prominent Clickable Beat Markers (Expanded to h-11 = 44px) */}
-            <div className="h-11 border-b border-zinc-900 relative bg-zinc-950 py-1">
+            <div className="h-11 border-b border-white/10 relative bg-zinc-950/60 backdrop-blur-md py-1">
               {ticks.map((t) => (
-                <div key={t} className="absolute top-0 h-full border-l border-zinc-800"
+                <div key={t} className="absolute top-0 h-full border-l border-zinc-800/80"
                      style={{ left: t * pxPerSec }}>
                   <span className="pl-1.5 text-[8px] font-mono text-zinc-500 tabular-nums">{tc(t)}</span>
                 </div>
@@ -509,10 +509,10 @@ export default function MultitrackTimeline({
                     seekToBeat(start);
                   }}
                   title={`Jump playhead to ${shot.scene_id} (${start.toFixed(1)}s)`}
-                  className="absolute bottom-1.5 flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/20 hover:bg-amber-500/40 border border-amber-400/60 text-[9px] font-mono text-amber-300 font-extrabold transition-all duration-150 hover:scale-105 shadow-md z-20 cursor-pointer"
+                  className="absolute bottom-1 flex items-center gap-1.5 px-2.5 py-0.5 rounded-full glass-pill text-[9px] font-mono text-amber-300 font-extrabold transition-all duration-150 hover:scale-105 z-20 cursor-pointer"
                   style={{ left: start * pxPerSec }}
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0 shadow-[0_0_6px_#fbbf24]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0 neon-glow-amber" />
                   <span className="truncate">{shot.scene_id}</span>
                 </button>
               ))}
