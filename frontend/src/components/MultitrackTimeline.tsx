@@ -29,6 +29,8 @@ export interface Shot {
   gain_narration?: number;
   gain_sfx?: number;
   offset_narration?: number;
+  fade_in_narration?: number;
+  fade_out_narration?: number;
   sfx_layers_resolved?: SfxLayer[];
 }
 
@@ -103,10 +105,10 @@ function FadeEnvelope({ fadeIn, fadeOut, duration }: { fadeIn?: number; fadeOut?
   return (
     <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none z-10">
       {fin > 0 && (
-        <polygon points={`0,100 ${finPct},0 0,0`} fill="rgba(0,0,0,0.45)" />
+        <polygon points={`0,100 ${finPct},0 0,0`} fill="rgba(0,0,0,0.5)" />
       )}
       {fout > 0 && (
-        <polygon points={`100,100 ${100 - foutPct},0 100,0`} fill="rgba(0,0,0,0.45)" />
+        <polygon points={`100,100 ${100 - foutPct},0 100,0`} fill="rgba(0,0,0,0.5)" />
       )}
     </svg>
   );
@@ -186,7 +188,7 @@ export default function MultitrackTimeline({
   const [selected, setSelected] = useState<string | null>(null);
   const [drag, setDrag] = useState<{ id: string; dur: number } | null>(null);
 
-  // Audio drag state for offset adjustment
+  // Audio drag state for offset adjustment & fade handle dragging
   const [audioDrag, setAudioDrag] = useState<{
     type: "narration" | "sfx";
     sceneId: string;
@@ -194,6 +196,17 @@ export default function MultitrackTimeline({
     initialOffset: number;
     currentOffset: number;
     startX: number;
+  } | null>(null);
+
+  const [fadeDrag, setFadeDrag] = useState<{
+    type: "narration" | "sfx";
+    sceneId: string;
+    layerId?: string;
+    field: "fade_in" | "fade_out";
+    initialVal: number;
+    currentVal: number;
+    startX: number;
+    dur: number;
   } | null>(null);
 
   const { blocks, total } = useMemo(() => {
@@ -377,7 +390,7 @@ export default function MultitrackTimeline({
       <div className="flex">
         {/* Track headers */}
         <div className="shrink-0 w-28 border-r border-zinc-900 bg-zinc-950/80">
-          <div className="h-6 border-b border-zinc-900" />
+          <div className="h-8 border-b border-zinc-900" />
           
           {/* V1 Header */}
           <div className="h-14 flex items-center gap-1.5 px-2 border-b border-zinc-900 text-[10px] font-mono text-zinc-300">
@@ -438,17 +451,17 @@ export default function MultitrackTimeline({
               </div>
             )}
             
-            {/* Ruler with Clickable Beat Markers */}
-            <div className="h-6 border-b border-zinc-900 relative flex items-center">
+            {/* Ruler with Prominent Clickable Beat Markers */}
+            <div className="h-8 border-b border-zinc-900 relative bg-zinc-950/40">
               {ticks.map((t) => (
                 <div key={t} className="absolute top-0 h-full border-l border-zinc-800/70"
                      style={{ left: t * pxPerSec }}>
-                  <span className="pl-1 text-[9px] font-mono text-zinc-600 tabular-nums">{tc(t)}</span>
+                  <span className="pl-1 text-[8px] font-mono text-zinc-600 tabular-nums">{tc(t)}</span>
                 </div>
               ))}
 
-              {/* Beat Scene ID Markers along ruler */}
-              {blocks.map(({ shot, start, dur }) => (
+              {/* Beat Scene ID Marker Badges along ruler */}
+              {blocks.map(({ shot, start }) => (
                 <button
                   key={`marker-${shot.scene_id}`}
                   onClick={(e) => {
@@ -456,11 +469,12 @@ export default function MultitrackTimeline({
                     setSelected(shot.scene_id);
                     seekToBeat(start);
                   }}
-                  title={`Jump to ${shot.scene_id} (${start.toFixed(1)}s)`}
-                  className="absolute bottom-0 text-[8px] font-mono text-amber-500/80 hover:text-amber-300 hover:bg-amber-500/20 px-1 rounded transition"
-                  style={{ left: start * pxPerSec + 2 }}
+                  title={`Jump playhead to ${shot.scene_id} (${start.toFixed(1)}s)`}
+                  className="absolute top-1 bottom-1 flex items-center gap-1 px-1.5 rounded bg-amber-500/20 hover:bg-amber-500/40 border border-amber-500/50 text-[9px] font-mono text-amber-300 font-bold transition z-10 shadow-sm"
+                  style={{ left: start * pxPerSec }}
                 >
-                  {dur * pxPerSec > 20 ? shot.scene_id : ""}
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                  <span className="truncate">{shot.scene_id}</span>
                 </button>
               ))}
             </div>
@@ -482,21 +496,21 @@ export default function MultitrackTimeline({
                     } ${selected === shot.scene_id ? "ring-2 ring-amber-500 z-10" : "hover:brightness-125"}`}
                     style={{ left: start * pxPerSec, width: Math.max(dur * pxPerSec - 2, 3) }}
                   >
-                    {shot.draft_image && dur * pxPerSec > 40 && (
+                    {shot.draft_image && (
                       <img src={mediaUrl(shot.draft_image)} alt=""
                            className="absolute inset-0 w-full h-full object-cover opacity-45" />
                     )}
-                    <div className="relative flex flex-col justify-between h-full p-0.5">
+                    <div className="relative flex flex-col justify-between h-full p-1">
                       <div className="flex items-center justify-between">
                         <span className="text-[9px] font-mono text-zinc-100 font-bold pl-0.5 drop-shadow">
-                          {dur * pxPerSec > 28 ? shot.scene_id : ""}
+                          {shot.scene_id}
                         </span>
                         {shot.camera?.duration_locked && (
                           <Lock className="h-2.5 w-2.5 text-amber-300 shrink-0" />
                         )}
                       </div>
-                      {dur * pxPerSec > 45 && moveBadge && (
-                        <span className="text-[8px] font-mono text-amber-300/90 bg-black/60 px-1 rounded w-fit drop-shadow">
+                      {moveBadge && (
+                        <span className="text-[8px] font-mono text-amber-200 bg-black/80 px-1 rounded w-fit border border-amber-500/30 backdrop-blur-sm drop-shadow">
                           {moveBadge}
                         </span>
                       )}
@@ -539,7 +553,11 @@ export default function MultitrackTimeline({
                 const env = peaks?.[shot.scene_id]?.narration;
 
                 const isDragging = audioDrag?.type === "narration" && audioDrag.sceneId === shot.scene_id;
+                const isFadeDragging = fadeDrag?.type === "narration" && fadeDrag.sceneId === shot.scene_id;
+                
                 const offsetSec = isDragging ? audioDrag.currentOffset : (shot.offset_narration || 0);
+                const fadeInSec = (isFadeDragging && fadeDrag.field === "fade_in") ? fadeDrag.currentVal : (shot.fade_in_narration || 0);
+                const fadeOutSec = (isFadeDragging && fadeDrag.field === "fade_out") ? fadeDrag.currentVal : (shot.fade_out_narration || 0);
                 const blockLeft = (start + offsetSec) * pxPerSec;
 
                 return (
@@ -576,26 +594,98 @@ export default function MultitrackTimeline({
                     }}
                     title={
                       present
-                        ? `${shot.scene_id} narration (offset: ${offsetSec >= 0 ? "+" : ""}${offsetSec.toFixed(1)}s) - Drag to re-time offset`
+                        ? `${shot.scene_id} narration (offset: ${offsetSec >= 0 ? "+" : ""}${offsetSec.toFixed(1)}s, fade in: ${fadeInSec.toFixed(1)}s, fade out: ${fadeOutSec.toFixed(1)}s) - Drag block for offset, drag top edges for fades`
                         : `${shot.scene_id}: narration not generated yet`
                     }
-                    className={`absolute top-2 bottom-2 rounded border overflow-hidden cursor-grab active:cursor-grabbing ${
+                    className={`group absolute top-2 bottom-2 rounded border overflow-hidden cursor-grab active:cursor-grabbing ${
                       !present ? "border-dashed border-zinc-700 bg-zinc-900/40"
                       : "bg-emerald-500/15 border-emerald-400/40"
                     } ${isDragging ? "ring-2 ring-emerald-400 z-10" : "hover:border-emerald-300"}`}
                     style={{ left: blockLeft, width: Math.max(dur * pxPerSec - 2, 3) }}
                   >
                     {present && <Waveform data={env} colour="rgba(52,211,153,0.75)" />}
+
+                    {/* Fade Ramps Overlay */}
+                    <FadeEnvelope fadeIn={fadeInSec} fadeOut={fadeOutSec} duration={dur} />
+
+                    {/* Interactive Fade Handles (Top Left / Right) */}
+                    <span
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+                        setFadeDrag({
+                          type: "narration",
+                          sceneId: shot.scene_id,
+                          field: "fade_in",
+                          initialVal: shot.fade_in_narration || 0,
+                          currentVal: shot.fade_in_narration || 0,
+                          startX: e.clientX,
+                          dur,
+                        });
+                      }}
+                      onPointerMove={(e) => {
+                        if (!fadeDrag || fadeDrag.type !== "narration" || fadeDrag.sceneId !== shot.scene_id || fadeDrag.field !== "fade_in") return;
+                        const deltaSec = (e.clientX - fadeDrag.startX) / pxPerSec;
+                        const newVal = Math.max(0, Math.min(dur, Math.round((fadeDrag.initialVal + deltaSec) * 10) / 10));
+                        setFadeDrag((prev) => prev ? { ...prev, currentVal: newVal } : null);
+                      }}
+                      onPointerUp={(e) => {
+                        e.stopPropagation();
+                        if (fadeDrag && fadeDrag.type === "narration" && fadeDrag.sceneId === shot.scene_id && fadeDrag.field === "fade_in") {
+                          onPatchNarration?.(shot.scene_id, { fade_in_narration: fadeDrag.currentVal });
+                        }
+                        setFadeDrag(null);
+                      }}
+                      title="Drag to set Fade In duration"
+                      className="absolute top-0 left-0 w-2.5 h-2.5 bg-emerald-400/80 hover:bg-emerald-300 cursor-ew-resize opacity-0 group-hover:opacity-100 transition z-30 rounded-br"
+                    />
+
+                    <span
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+                        setFadeDrag({
+                          type: "narration",
+                          sceneId: shot.scene_id,
+                          field: "fade_out",
+                          initialVal: shot.fade_out_narration || 0,
+                          currentVal: shot.fade_out_narration || 0,
+                          startX: e.clientX,
+                          dur,
+                        });
+                      }}
+                      onPointerMove={(e) => {
+                        if (!fadeDrag || fadeDrag.type !== "narration" || fadeDrag.sceneId !== shot.scene_id || fadeDrag.field !== "fade_out") return;
+                        const deltaSec = (fadeDrag.startX - e.clientX) / pxPerSec;
+                        const newVal = Math.max(0, Math.min(dur, Math.round((fadeDrag.initialVal + deltaSec) * 10) / 10));
+                        setFadeDrag((prev) => prev ? { ...prev, currentVal: newVal } : null);
+                      }}
+                      onPointerUp={(e) => {
+                        e.stopPropagation();
+                        if (fadeDrag && fadeDrag.type === "narration" && fadeDrag.sceneId === shot.scene_id && fadeDrag.field === "fade_out") {
+                          onPatchNarration?.(shot.scene_id, { fade_out_narration: fadeDrag.currentVal });
+                        }
+                        setFadeDrag(null);
+                      }}
+                      title="Drag to set Fade Out duration"
+                      className="absolute top-0 right-0 w-2.5 h-2.5 bg-emerald-400/80 hover:bg-emerald-300 cursor-ew-resize opacity-0 group-hover:opacity-100 transition z-30 rounded-bl"
+                    />
+
                     {present && !env && dur * pxPerSec > 40 && (
                       <span className="absolute inset-0 flex items-center justify-center text-[8px] font-mono text-zinc-500">
                         no waveform
                       </span>
                     )}
-                    {offsetSec !== 0 && (
-                      <span className="absolute left-1 top-0.5 text-[8px] font-mono text-emerald-300/80 bg-black/60 px-1 rounded">
-                        {offsetSec > 0 ? `+${offsetSec.toFixed(1)}s` : `${offsetSec.toFixed(1)}s`}
+                    <div className="absolute inset-0 flex items-center justify-between px-1.5 pointer-events-none z-20">
+                      <span className="text-[8px] font-mono text-emerald-200 font-semibold drop-shadow">
+                        Narration
                       </span>
-                    )}
+                      {offsetSec !== 0 && (
+                        <span className="text-[8px] font-mono text-emerald-300/90 bg-black/60 px-1 rounded ml-1 shrink-0">
+                          {offsetSec > 0 ? `+${offsetSec.toFixed(1)}s` : `${offsetSec.toFixed(1)}s`}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -627,8 +717,14 @@ export default function MultitrackTimeline({
 
                   const layerId = layer?.id || "legacy";
                   const isDragging = audioDrag?.type === "sfx" && audioDrag.sceneId === shot.scene_id && audioDrag.layerId === layerId;
+                  const isFadeDragging = fadeDrag?.type === "sfx" && fadeDrag.sceneId === shot.scene_id && fadeDrag.layerId === layerId;
+
                   const currentLayerOffset = layer ? (layer.offset || 0) : 0;
                   const offsetSec = isDragging ? audioDrag.currentOffset : currentLayerOffset;
+                  
+                  const fadeInSec = (isFadeDragging && fadeDrag.field === "fade_in") ? fadeDrag.currentVal : (layer?.fade_in || 0);
+                  const fadeOutSec = (isFadeDragging && fadeDrag.field === "fade_out") ? fadeDrag.currentVal : (layer?.fade_out || 0);
+
                   const blockLeft = (start + offsetSec) * pxPerSec;
                   const env = lane.index === 0 ? peaks?.[shot.scene_id]?.sfx : undefined;
 
@@ -667,10 +763,10 @@ export default function MultitrackTimeline({
                       }}
                       title={
                         present
-                          ? `${shot.scene_id} SFX ${layer?.label ? `(${layer.label})` : ""}: ${layer?.prompt || shot.sfx} (offset: ${offsetSec >= 0 ? "+" : ""}${offsetSec.toFixed(1)}s) - Drag to re-time offset`
+                          ? `${shot.scene_id} SFX ${layer?.label ? `(${layer.label})` : ""}: ${layer?.prompt || shot.sfx} (offset: ${offsetSec >= 0 ? "+" : ""}${offsetSec.toFixed(1)}s, fade in: ${fadeInSec.toFixed(1)}s, fade out: ${fadeOutSec.toFixed(1)}s) - Drag block for offset, drag top edges for fades`
                           : `${shot.scene_id}: SFX not generated yet`
                       }
-                      className={`absolute top-2 bottom-2 rounded border overflow-hidden ${
+                      className={`group absolute top-2 bottom-2 rounded border overflow-hidden ${
                         layer ? "cursor-grab active:cursor-grabbing" : ""
                       } ${
                         !present ? "border-dashed border-zinc-700 bg-zinc-900/40"
@@ -681,8 +777,77 @@ export default function MultitrackTimeline({
                       {/* Waveform */}
                       {present && <Waveform data={env} colour="rgba(251,191,36,0.65)" />}
 
-                      {/* Fade ramps overlay */}
-                      <FadeEnvelope fadeIn={layer?.fade_in} fadeOut={layer?.fade_out} duration={dur} />
+                      {/* Fade Ramps Overlay */}
+                      <FadeEnvelope fadeIn={fadeInSec} fadeOut={fadeOutSec} duration={dur} />
+
+                      {/* Interactive Fade Handles (Top Left / Right) */}
+                      {layer && (
+                        <>
+                          <span
+                            onPointerDown={(e) => {
+                              e.stopPropagation();
+                              (e.target as HTMLElement).setPointerCapture(e.pointerId);
+                              setFadeDrag({
+                                type: "sfx",
+                                sceneId: shot.scene_id,
+                                layerId,
+                                field: "fade_in",
+                                initialVal: layer.fade_in || 0,
+                                currentVal: layer.fade_in || 0,
+                                startX: e.clientX,
+                                dur,
+                              });
+                            }}
+                            onPointerMove={(e) => {
+                              if (!fadeDrag || fadeDrag.type !== "sfx" || fadeDrag.layerId !== layerId || fadeDrag.field !== "fade_in") return;
+                              const deltaSec = (e.clientX - fadeDrag.startX) / pxPerSec;
+                              const newVal = Math.max(0, Math.min(dur, Math.round((fadeDrag.initialVal + deltaSec) * 10) / 10));
+                              setFadeDrag((prev) => prev ? { ...prev, currentVal: newVal } : null);
+                            }}
+                            onPointerUp={(e) => {
+                              e.stopPropagation();
+                              if (fadeDrag && fadeDrag.type === "sfx" && fadeDrag.layerId === layerId && fadeDrag.field === "fade_in") {
+                                onPatchLayer?.(shot.scene_id, layerId, { fade_in: fadeDrag.currentVal });
+                              }
+                              setFadeDrag(null);
+                            }}
+                            title="Drag to set Fade In duration"
+                            className="absolute top-0 left-0 w-2.5 h-2.5 bg-amber-400/80 hover:bg-amber-300 cursor-ew-resize opacity-0 group-hover:opacity-100 transition z-30 rounded-br"
+                          />
+
+                          <span
+                            onPointerDown={(e) => {
+                              e.stopPropagation();
+                              (e.target as HTMLElement).setPointerCapture(e.pointerId);
+                              setFadeDrag({
+                                type: "sfx",
+                                sceneId: shot.scene_id,
+                                layerId,
+                                field: "fade_out",
+                                initialVal: layer.fade_out || 0,
+                                currentVal: layer.fade_out || 0,
+                                startX: e.clientX,
+                                dur,
+                              });
+                            }}
+                            onPointerMove={(e) => {
+                              if (!fadeDrag || fadeDrag.type !== "sfx" || fadeDrag.layerId !== layerId || fadeDrag.field !== "fade_out") return;
+                              const deltaSec = (fadeDrag.startX - e.clientX) / pxPerSec;
+                              const newVal = Math.max(0, Math.min(dur, Math.round((fadeDrag.initialVal + deltaSec) * 10) / 10));
+                              setFadeDrag((prev) => prev ? { ...prev, currentVal: newVal } : null);
+                            }}
+                            onPointerUp={(e) => {
+                              e.stopPropagation();
+                              if (fadeDrag && fadeDrag.type === "sfx" && fadeDrag.layerId === layerId && fadeDrag.field === "fade_out") {
+                                onPatchLayer?.(shot.scene_id, layerId, { fade_out: fadeDrag.currentVal });
+                              }
+                              setFadeDrag(null);
+                            }}
+                            title="Drag to set Fade Out duration"
+                            className="absolute top-0 right-0 w-2.5 h-2.5 bg-amber-400/80 hover:bg-amber-300 cursor-ew-resize opacity-0 group-hover:opacity-100 transition z-30 rounded-bl"
+                          />
+                        </>
+                      )}
 
                       {/* Label & offset display */}
                       <div className="absolute inset-0 flex items-center justify-between px-1.5 pointer-events-none z-20">
@@ -834,7 +999,7 @@ export default function MultitrackTimeline({
       ) : (
         <div className="px-4 py-2.5 border-t border-zinc-900 text-[11px] text-zinc-600 flex items-center justify-between">
           <span>
-            Select a clip on V1 to retime it or manage SFX layers. Drag audio blocks horizontally to set timing offsets.
+            Select a clip on V1 to retime it or manage SFX layers. Drag audio blocks horizontally to set timing offsets; drag top corners for fades.
           </span>
         </div>
       )}
