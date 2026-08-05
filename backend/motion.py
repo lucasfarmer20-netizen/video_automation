@@ -266,13 +266,20 @@ def _warp_frame(src: np.ndarray, disp: np.ndarray, base_y: np.ndarray,
     """
     zoom, dx, dy = _camera(move, t, zoom_amt, pan_amt)
     cx, cy = out_w / 2.0, out_h / 2.0
-    # Zoom stays fully depth-proportional: a depth-varying *magnification* reads
-    # as depth, which is why push moves already looked right.
-    scale = base_scale * (1.0 + zoom * disp)     # nearer pixels magnify more
-    # Lateral motion does not. Applied fully depth-proportional it shears the
-    # frame (see PARALLAX_GAIN). Rigid translation for every pixel, plus a small
-    # differential around the reference plane.
-    lat = 1.0 + PARALLAX_GAIN * (disp - disp_ref)
+    # Rigid move for every pixel, plus a small depth differential around the
+    # reference plane. Used for BOTH axes.
+    #
+    # Zoom was previously fully depth-proportional (scale = 1 + zoom*disp), which
+    # made the apparent move a hostage to how the depth happened to be
+    # distributed. It looked fine only because the depth was fake: the heuristic
+    # was a vertical ramp with mean 0.5 by construction. With the real model,
+    # plates skew hard toward "far" -- measured mean depth of 0.01-0.20 on real
+    # beats -- so a nominal 22% push rendered as 3.5-7% and stopped reading as
+    # motion. A camera that moves closer moves closer to everything; parallax is
+    # the differential, not the whole move.
+    depth_field = 1.0 + PARALLAX_GAIN * (disp - disp_ref)
+    scale = base_scale * (1.0 + zoom * depth_field)
+    lat = depth_field
     sx = cx + (base_x - cx) / scale - (dx * out_w) * lat
     sy = cy + (base_y - cy) / scale - (dy * out_h) * lat
     coords = [sy, sx]
