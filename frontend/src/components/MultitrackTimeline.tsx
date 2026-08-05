@@ -69,9 +69,9 @@ const MOVE_BADGES: Record<string, string> = {
 };
 
 const TIER_COLOR: Record<string, string> = {
-  parallax: "bg-blue-500/40 border-blue-400/50",
-  ai_video: "bg-purple-500/40 border-purple-400/50",
-  static: "bg-zinc-600/40 border-zinc-500/50",
+  parallax: "bg-gradient-to-r from-blue-900/60 to-blue-800/40 border-blue-500/50 text-blue-200",
+  ai_video: "bg-gradient-to-r from-purple-900/60 to-purple-800/40 border-purple-500/50 text-purple-200",
+  static: "bg-gradient-to-r from-zinc-800/60 to-zinc-700/40 border-zinc-600/50 text-zinc-300",
 };
 
 const tc = (s: number) => {
@@ -79,16 +79,42 @@ const tc = (s: number) => {
   return `${m}:${(s - m * 60).toFixed(1).padStart(4, "0")}`;
 };
 
-/** Peak envelope as an SVG. Normalised per clip, so this shows shape and timing. */
-function Waveform({ data, colour }: { data?: number[]; colour: string }) {
+/** Peak envelope as a smooth SVG gradient. */
+function Waveform({ data, type = "amber" }: { data?: number[]; type?: "emerald" | "amber" | "purple" }) {
   if (!data || !data.length) return null;
   const n = data.length;
   const pts = data.map((v, i) => `${(i / (n - 1)) * 100},${50 - v * 46}`).join(" ")
     + " " + data.map((v, i) => `${((n - 1 - i) / (n - 1)) * 100},${50 + data[n - 1 - i] * 46}`).join(" ");
+
+  const gradientId = `wf-grad-${type}`;
+
   return (
     <svg viewBox="0 0 100 100" preserveAspectRatio="none"
          className="absolute inset-0 w-full h-full pointer-events-none">
-      <polygon points={pts} fill={colour} />
+      <defs>
+        <linearGradient id={gradientId} x1="0%" y1="0%" x2="0%" y2="100%">
+          {type === "emerald" ? (
+            <>
+              <stop offset="0%" stopColor="#34d399" stopOpacity="0.85" />
+              <stop offset="50%" stopColor="#10b981" stopOpacity="0.6" />
+              <stop offset="100%" stopColor="#059669" stopOpacity="0.3" />
+            </>
+          ) : type === "purple" ? (
+            <>
+              <stop offset="0%" stopColor="#e879f9" stopOpacity="0.85" />
+              <stop offset="50%" stopColor="#c084fc" stopOpacity="0.6" />
+              <stop offset="100%" stopColor="#9333ea" stopOpacity="0.3" />
+            </>
+          ) : (
+            <>
+              <stop offset="0%" stopColor="#fde047" stopOpacity="0.9" />
+              <stop offset="50%" stopColor="#fbbf24" stopOpacity="0.65" />
+              <stop offset="100%" stopColor="#ea580c" stopOpacity="0.35" />
+            </>
+          )}
+        </linearGradient>
+      </defs>
+      <polygon points={pts} fill={`url(#${gradientId})`} />
     </svg>
   );
 }
@@ -105,10 +131,10 @@ function FadeEnvelope({ fadeIn, fadeOut, duration }: { fadeIn?: number; fadeOut?
   return (
     <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none z-10">
       {fin > 0 && (
-        <polygon points={`0,100 ${finPct},0 0,0`} fill="rgba(0,0,0,0.5)" />
+        <polygon points={`0,100 ${finPct},0 0,0`} fill="rgba(9,9,11,0.65)" />
       )}
       {fout > 0 && (
-        <polygon points={`100,100 ${100 - foutPct},0 100,0`} fill="rgba(0,0,0,0.5)" />
+        <polygon points={`100,100 ${100 - foutPct},0 100,0`} fill="rgba(9,9,11,0.65)" />
       )}
     </svg>
   );
@@ -118,8 +144,8 @@ const toDb = (g: number) => (g <= 0.0001 ? -60 : 20 * Math.log10(g));
 const fromDb = (db: number) => (db <= -39.5 ? 0 : Math.pow(10, db / 20));
 
 const TONE: Record<string, string> = {
-  emerald: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
-  amber: "bg-amber-500/15 text-amber-400 border-amber-500/25",
+  emerald: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  amber: "bg-amber-500/15 text-amber-300 border-amber-500/30",
 };
 
 /** One track of the selected clip: audition, trim, regenerate. */
@@ -139,39 +165,39 @@ function ClipAudio({ label, tone, url, present, wanted, gain, busy, onGain, onRe
   };
 
   return (
-    <div className="flex items-center gap-2 text-[10px] font-mono">
-      <span className={`px-1.5 py-0.5 rounded border shrink-0 ${TONE[tone]}`}>{label}</span>
+    <div className="flex items-center gap-2.5 text-[10px] font-mono bg-zinc-900/60 backdrop-blur-sm p-2 rounded-lg border border-zinc-800/80">
+      <span className={`px-2 py-0.5 rounded-md border font-semibold shrink-0 shadow-sm ${TONE[tone]}`}>{label}</span>
       {present ? (
         <>
-          <button onClick={toggle} className="text-zinc-400 hover:text-zinc-100 w-4 shrink-0"
-                  title="Audition">{playing ? "■" : <Play className="h-3 w-3" />}</button>
+          <button onClick={toggle} className="text-zinc-400 hover:text-zinc-100 transition-colors w-5 shrink-0 flex items-center justify-center"
+                  title="Audition">{playing ? "■" : <Play className="h-3 w-3 fill-current" />}</button>
           <input type="range" min={-40} max={12} step={0.5}
                  value={Math.max(-40, Math.min(12, db))}
                  onChange={(e) => setLocal(parseFloat(e.target.value))}
                  onPointerUp={commit} onKeyUp={commit} onBlur={commit}
-                 className="w-40 accent-amber-500 h-1" title="Trim on top of the episode bus" />
-          <span className={`w-12 text-right tabular-nums ${
-            Math.abs(db) < 0.25 ? "text-zinc-600" : "text-zinc-300"}`}>
+                 className="w-40 accent-amber-400 h-1.5 rounded-lg cursor-pointer bg-zinc-800" title="Trim on top of the episode bus" />
+          <span className={`w-12 text-right tabular-nums font-semibold ${
+            Math.abs(db) < 0.25 ? "text-zinc-500" : "text-amber-400"}`}>
             {db <= -39.5 ? "−∞" : `${db >= 0 ? "+" : ""}${db.toFixed(1)}`}
           </span>
         </>
       ) : (
-        <span className="text-zinc-600 italic">{wanted ? "not generated" : "none for this beat"}</span>
+        <span className="text-zinc-500 italic">{wanted ? "not generated" : "none for this beat"}</span>
       )}
       {onRegen && wanted && (
         <button onClick={onRegen} disabled={busy}
-          className="ml-1 flex items-center gap-1 px-2 py-1 rounded border border-zinc-800 text-zinc-400 hover:text-zinc-100 hover:border-zinc-700 disabled:opacity-40 transition shrink-0">
-          <RefreshCw className={`h-3 w-3 ${busy ? "animate-spin" : ""}`} />
+          className="ml-1 flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-zinc-800 bg-zinc-950 text-zinc-300 hover:text-zinc-100 hover:border-zinc-700 disabled:opacity-40 transition-all hover:scale-[1.02] active:scale-[0.98] shrink-0 shadow-sm">
+          <RefreshCw className={`h-3 w-3 ${busy ? "animate-spin text-amber-400" : ""}`} />
           {busy ? "working…" : regenLabel}
         </button>
       )}
       {onDelete && (
         <button onClick={onDelete}
-          className="text-zinc-600 hover:text-red-400 p-1 transition shrink-0" title="Delete layer">
-          <Trash2 className="h-3 w-3" />
+          className="text-zinc-500 hover:text-red-400 p-1 transition-colors shrink-0 rounded hover:bg-red-500/10" title="Delete layer">
+          <Trash2 className="h-3.5 w-3.5" />
         </button>
       )}
-      <span className="text-zinc-600 truncate ml-1">{note}</span>
+      <span className="text-zinc-500 truncate ml-auto">{note}</span>
     </div>
   );
 }
@@ -295,7 +321,7 @@ export default function MultitrackTimeline({
     const beats = previewMeta?.beats;
     if (!beats?.length) return null;
     const b = beats.find((x) => playhead >= x.start && playhead < x.start + x.duration);
-    return b ? `${b.scene_id}  ${(playhead - b.start).toFixed(1)}s in` : null;
+    return b ? `${b.scene_id} · ${(playhead - b.start).toFixed(1)}s in` : null;
   }, [playhead, previewMeta]);
 
   const width = Math.max(total * pxPerSec, 320);
@@ -318,38 +344,43 @@ export default function MultitrackTimeline({
   };
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 flex flex-col">
-      <div className="px-4 py-3 border-b border-zinc-900 flex items-center justify-between flex-wrap gap-2">
+    <div className="rounded-2xl border border-zinc-800/80 bg-zinc-950/85 backdrop-blur-md shadow-2xl flex flex-col overflow-hidden">
+      {/* Header Controls */}
+      <div className="px-5 py-3.5 border-b border-zinc-900/90 flex items-center justify-between flex-wrap gap-3 bg-zinc-950/60 backdrop-blur-md">
         <div className="flex items-center gap-3">
-          <h3 className="text-zinc-200 font-bold text-xs uppercase tracking-wider font-mono">
-            Timeline
-          </h3>
-          <span className="text-[10px] font-mono text-zinc-600 bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shadow-[0_0_8px_#f59e0b]" />
+            <h3 className="text-zinc-100 font-bold text-xs uppercase tracking-wider font-mono">
+              Timeline Editor
+            </h3>
+          </div>
+          <span className="text-[10px] font-mono text-zinc-400 bg-zinc-900/90 px-2.5 py-1 rounded-full border border-zinc-800/80 shadow-inner">
             [Space] Play/Pause · [←/→] Jump Beats
           </span>
         </div>
         <div className="flex items-center gap-4 text-[11px] font-mono">
-          <span className="text-zinc-500">{shots.length} beats</span>
-          <span className="text-amber-500 font-bold">{tc(total)} ({(total / 60).toFixed(1)} min)</span>
-          <div className="flex items-center gap-1">
+          <span className="text-zinc-400 font-medium">{shots.length} beats</span>
+          <span className="text-amber-400 font-bold bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20">{tc(total)} ({(total / 60).toFixed(1)} min)</span>
+          <div className="flex items-center gap-1.5 bg-zinc-900/90 px-2 py-1 rounded-full border border-zinc-800">
             <button onClick={() => setPxPerSec((z) => Math.max(1, z - 1))}
-              className="text-zinc-500 hover:text-zinc-200 transition" title="Zoom out">
+              className="text-zinc-400 hover:text-zinc-100 transition-colors p-0.5" title="Zoom out">
               <ZoomOut className="h-3.5 w-3.5" />
             </button>
-            <span className="text-zinc-600 w-10 text-center tabular-nums">{pxPerSec}px/s</span>
+            <span className="text-zinc-300 w-10 text-center tabular-nums font-semibold">{pxPerSec}px/s</span>
             <button onClick={() => setPxPerSec((z) => Math.min(20, z + 1))}
-              className="text-zinc-500 hover:text-zinc-200 transition" title="Zoom in">
+              className="text-zinc-400 hover:text-zinc-100 transition-colors p-0.5" title="Zoom in">
               <ZoomIn className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
       </div>
 
+      {/* Video Preview Card */}
       {previewUrl && (
-        <div className="px-4 py-3 border-b border-zinc-900 flex flex-col gap-2">
+        <div className="px-5 py-3.5 border-b border-zinc-900/90 flex flex-col gap-2.5 bg-zinc-900/30">
           {previewMeta?.stale && (
-            <div className="bg-amber-950/25 border border-amber-500/30 rounded-lg px-3 py-2 text-[11px] text-amber-200/90 font-mono flex gap-2">
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-px text-amber-400" />
+            <div className="bg-amber-950/30 border border-amber-500/40 rounded-xl px-3.5 py-2 text-[11px] text-amber-200/90 font-mono flex gap-2.5 shadow-md">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-amber-400" />
               <span>
                 This preview was built from a different cut
                 ({previewMeta.runtime.toFixed(1)}s vs {previewMeta.live_runtime?.toFixed(1)}s now).
@@ -358,27 +389,31 @@ export default function MultitrackTimeline({
               </span>
             </div>
           )}
-          <div className="flex items-start gap-3">
-            <video
-              ref={videoRef}
-              src={previewUrl}
-              className="w-72 rounded-lg border border-zinc-800 bg-black shrink-0"
-              onTimeUpdate={(e) => setPlayhead((e.target as HTMLVideoElement).currentTime)}
-              onPlay={() => setPlaying(true)}
-              onPause={() => setPlaying(false)}
-              controls
-            />
-            <div className="flex flex-col gap-1.5 text-[11px] font-mono text-zinc-500 pt-1">
+          <div className="flex items-start gap-4">
+            <div className="relative rounded-xl border border-zinc-800 bg-black overflow-hidden shadow-xl shrink-0">
+              <video
+                ref={videoRef}
+                src={previewUrl}
+                className="w-72 h-auto block"
+                onTimeUpdate={(e) => setPlayhead((e.target as HTMLVideoElement).currentTime)}
+                onPlay={() => setPlaying(true)}
+                onPause={() => setPlaying(false)}
+                controls
+              />
+            </div>
+            <div className="flex flex-col gap-2 text-[11px] font-mono text-zinc-400 pt-1">
               <button
                 onClick={() => { const v = videoRef.current; if (!v) return; playing ? v.pause() : v.play(); }}
-                className="flex items-center gap-1.5 px-2 py-1 rounded border border-zinc-800 text-zinc-300 hover:border-zinc-700 transition w-fit"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-zinc-800 bg-zinc-900 text-zinc-200 hover:text-white hover:border-zinc-700 transition-all hover:scale-[1.02] active:scale-[0.98] w-fit shadow-sm"
               >
-                {playing ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-                {playing ? "Pause" : "Play"}
+                {playing ? <Pause className="h-3.5 w-3.5 text-amber-400" /> : <Play className="h-3.5 w-3.5 text-amber-400 fill-current" />}
+                <span className="font-semibold">{playing ? "Pause" : "Play"}</span>
               </button>
-              <span className="tabular-nums text-amber-500">{tc(playhead)}</span>
-              {atPlayhead && <span className="text-zinc-400">{atPlayhead}</span>}
-              <span className="text-zinc-600 leading-relaxed max-w-[16rem]">
+              <div className="flex items-center gap-2">
+                <span className="tabular-nums text-amber-400 font-bold text-xs">{tc(playhead)}</span>
+                {atPlayhead && <span className="text-zinc-300 bg-zinc-900/80 px-2 py-0.5 rounded border border-zinc-800">{atPlayhead}</span>}
+              </div>
+              <span className="text-zinc-500 leading-relaxed max-w-[17rem] text-[10px]">
                 Click anywhere on the tracks or beat markers to seek. Rendering happens on the
                 server — this is the real cut, not a browser mock-up.
               </span>
@@ -387,50 +422,52 @@ export default function MultitrackTimeline({
         </div>
       )}
 
+      {/* Main Track Workspace */}
       <div className="flex">
-        {/* Track headers */}
-        <div className="shrink-0 w-28 border-r border-zinc-900 bg-zinc-950/80">
-          <div className="h-8 border-b border-zinc-900" />
+        {/* Track Headers Column */}
+        <div className="shrink-0 w-32 border-r border-zinc-900 bg-zinc-950/90 backdrop-blur-md z-20">
+          <div className="h-8 border-b border-zinc-900/90" />
           
           {/* V1 Header */}
-          <div className="h-14 flex items-center gap-1.5 px-2 border-b border-zinc-900 text-[10px] font-mono text-zinc-300">
-            <Film className="h-3 w-3 shrink-0" />
+          <div className="h-14 flex items-center gap-2 px-3 border-b border-zinc-900/80 text-[10px] font-mono text-zinc-300 font-semibold">
+            <Film className="h-3.5 w-3.5 shrink-0 text-blue-400" />
             <span className="truncate">V1 Stills</span>
           </div>
 
           {/* A1 Header */}
-          <div className="h-14 flex items-center gap-1.5 px-2 border-b border-zinc-900 text-[10px] font-mono text-emerald-400">
-            <Mic className="h-3 w-3 shrink-0" />
+          <div className="h-14 flex items-center gap-2 px-3 border-b border-zinc-900/80 text-[10px] font-mono text-emerald-400 font-semibold">
+            <Mic className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">A1 Narration</span>
           </div>
 
           {/* A2 SFX Headers (dynamic lanes) */}
           {sfxLaneKeys.map((lane) => (
-            <div key={lane.key} className="h-14 flex items-center justify-between px-2 border-b border-zinc-900 text-[10px] font-mono text-amber-400">
-              <div className="flex items-center gap-1.5 truncate">
-                <Waves className="h-3 w-3 shrink-0" />
+            <div key={lane.key} className="h-14 flex items-center justify-between px-3 border-b border-zinc-900/80 text-[10px] font-mono text-amber-400 font-semibold">
+              <div className="flex items-center gap-2 truncate">
+                <Waves className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate">{lane.label}</span>
               </div>
               {onAddLayer && lane.index === 0 && (
                 <button
                   onClick={() => handleAddLayerPrompt(selected || shots[0]?.scene_id)}
-                  className="hover:text-amber-200 transition text-amber-500/80 p-0.5"
+                  className="hover:text-amber-200 transition-transform hover:scale-110 text-amber-400 p-1 rounded hover:bg-amber-500/20"
                   title="Add sound effect layer (+ layer)"
                 >
-                  <Plus className="h-3 w-3" />
+                  <Plus className="h-3.5 w-3.5" />
                 </button>
               )}
             </div>
           ))}
 
           {/* A3 Header */}
-          <div className="h-14 flex items-center gap-1.5 px-2 border-b border-zinc-900 text-[10px] font-mono text-purple-400">
-            <Music className="h-3 w-3 shrink-0" />
+          <div className="h-14 flex items-center gap-2 px-3 border-b border-zinc-900/80 text-[10px] font-mono text-purple-400 font-semibold">
+            <Music className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">A3 Music</span>
           </div>
         </div>
 
-        <div className="flex-1 overflow-x-auto">
+        {/* Scrollable Tracks Canvas */}
+        <div className="flex-1 overflow-x-auto bg-zinc-950/40">
           <div
             style={{ width }}
             className="relative"
@@ -442,21 +479,22 @@ export default function MultitrackTimeline({
               v.currentTime = Math.max(0, Math.min(previewMeta.runtime, t));
             }}
           >
+            {/* Laser Playhead */}
             {previewUrl && previewMeta && (
               <div
-                className="absolute top-0 bottom-0 w-px bg-amber-400 z-20 pointer-events-none"
+                className="absolute top-0 bottom-0 w-0.5 bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.85)] z-30 pointer-events-none transition-all"
                 style={{ left: playhead * pxPerSec }}
               >
-                <div className="absolute -top-0.5 -left-1 w-2 h-2 rotate-45 bg-amber-400" />
+                <div className="absolute -top-1 -left-[5px] w-3 h-3 rotate-45 bg-amber-400 border border-amber-200 shadow-[0_0_8px_#f59e0b]" />
               </div>
             )}
             
             {/* Ruler with Prominent Clickable Beat Markers */}
-            <div className="h-8 border-b border-zinc-900 relative bg-zinc-950/40">
+            <div className="h-8 border-b border-zinc-900/90 relative bg-zinc-950/80 backdrop-blur-md">
               {ticks.map((t) => (
-                <div key={t} className="absolute top-0 h-full border-l border-zinc-800/70"
+                <div key={t} className="absolute top-0 h-full border-l border-zinc-800/80"
                      style={{ left: t * pxPerSec }}>
-                  <span className="pl-1 text-[8px] font-mono text-zinc-600 tabular-nums">{tc(t)}</span>
+                  <span className="pl-1.5 text-[8px] font-mono text-zinc-500 tabular-nums">{tc(t)}</span>
                 </div>
               ))}
 
@@ -470,17 +508,17 @@ export default function MultitrackTimeline({
                     seekToBeat(start);
                   }}
                   title={`Jump playhead to ${shot.scene_id} (${start.toFixed(1)}s)`}
-                  className="absolute top-1 bottom-1 flex items-center gap-1 px-1.5 rounded bg-amber-500/20 hover:bg-amber-500/40 border border-amber-500/50 text-[9px] font-mono text-amber-300 font-bold transition z-10 shadow-sm"
+                  className="absolute top-1 bottom-1 flex items-center gap-1.5 px-2 rounded-full bg-amber-500/15 hover:bg-amber-500/30 border border-amber-400/40 text-[9px] font-mono text-amber-300 font-bold transition-all duration-150 hover:scale-105 shadow-[0_0_8px_rgba(245,158,11,0.15)] z-10"
                   style={{ left: start * pxPerSec }}
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0 shadow-[0_0_4px_#fbbf24]" />
                   <span className="truncate">{shot.scene_id}</span>
                 </button>
               ))}
             </div>
 
-            {/* V1 — stills */}
-            <div className="h-14 border-b border-zinc-900 relative">
+            {/* V1 — Stills Track */}
+            <div className="h-14 border-b border-zinc-900/80 relative">
               {blocks.map(({ shot, start, dur }) => {
                 const moveBadge = MOVE_BADGES[shot.camera?.move] || shot.camera?.move;
                 return (
@@ -491,26 +529,32 @@ export default function MultitrackTimeline({
                       seekToBeat(start);
                     }}
                     title={`${shot.scene_id} · ${shot.motion_type} · ${shot.camera.move} · ${dur.toFixed(1)}s — Click to select & seek`}
-                    className={`absolute top-1 bottom-1 rounded border overflow-hidden transition ${
+                    className={`absolute top-1 bottom-1 rounded-lg border overflow-hidden transition-all duration-200 ${
                       TIER_COLOR[shot.motion_type] || TIER_COLOR.static
-                    } ${selected === shot.scene_id ? "ring-2 ring-amber-500 z-10" : "hover:brightness-125"}`}
+                    } ${
+                      selected === shot.scene_id
+                        ? "ring-2 ring-amber-400/90 shadow-[0_0_20px_rgba(245,158,11,0.3)] z-10 scale-[1.01]"
+                        : "hover:border-zinc-500 hover:brightness-110 hover:shadow-lg"
+                    }`}
                     style={{ left: start * pxPerSec, width: Math.max(dur * pxPerSec - 2, 3) }}
                   >
                     {shot.draft_image && (
-                      <img src={mediaUrl(shot.draft_image)} alt=""
-                           className="absolute inset-0 w-full h-full object-cover opacity-45" />
+                      <div className="absolute inset-0">
+                        <img src={mediaUrl(shot.draft_image)} alt="" className="w-full h-full object-cover opacity-55" />
+                        <div className="absolute inset-0 bg-gradient-to-t from-zinc-950/90 via-zinc-950/20 to-transparent" />
+                      </div>
                     )}
-                    <div className="relative flex flex-col justify-between h-full p-1">
+                    <div className="relative flex flex-col justify-between h-full p-1.5 z-10">
                       <div className="flex items-center justify-between">
-                        <span className="text-[9px] font-mono text-zinc-100 font-bold pl-0.5 drop-shadow">
+                        <span className="text-[9px] font-mono text-zinc-100 font-bold drop-shadow-md">
                           {shot.scene_id}
                         </span>
                         {shot.camera?.duration_locked && (
-                          <Lock className="h-2.5 w-2.5 text-amber-300 shrink-0" />
+                          <Lock className="h-2.5 w-2.5 text-amber-300 shrink-0 drop-shadow" />
                         )}
                       </div>
                       {moveBadge && (
-                        <span className="text-[8px] font-mono text-amber-200 bg-black/80 px-1 rounded w-fit border border-amber-500/30 backdrop-blur-sm drop-shadow">
+                        <span className="text-[8px] font-mono text-amber-300 bg-zinc-950/85 backdrop-blur-md px-1.5 py-0.5 rounded-md border border-amber-400/40 shadow-sm w-fit drop-shadow">
                           {moveBadge}
                         </span>
                       )}
@@ -537,7 +581,7 @@ export default function MultitrackTimeline({
                         setDrag(null);
                       }}
                       title="Drag to trim duration"
-                      className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-amber-500/0 hover:bg-amber-500/70 transition"
+                      className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-amber-400/0 hover:bg-amber-400/60 transition-colors"
                     />
                   </button>
                 );
@@ -545,7 +589,7 @@ export default function MultitrackTimeline({
             </div>
 
             {/* A1 — Narration Track */}
-            <div className="h-14 border-b border-zinc-900 relative">
+            <div className="h-14 border-b border-zinc-900/80 relative">
               {blocks.map(({ shot, start, dur }) => {
                 const present = shot.has_narration;
                 const wanted = Boolean(shot.narration?.trim());
@@ -597,13 +641,13 @@ export default function MultitrackTimeline({
                         ? `${shot.scene_id} narration (offset: ${offsetSec >= 0 ? "+" : ""}${offsetSec.toFixed(1)}s, fade in: ${fadeInSec.toFixed(1)}s, fade out: ${fadeOutSec.toFixed(1)}s) - Drag block for offset, drag top edges for fades`
                         : `${shot.scene_id}: narration not generated yet`
                     }
-                    className={`group absolute top-2 bottom-2 rounded border overflow-hidden cursor-grab active:cursor-grabbing ${
+                    className={`group absolute top-2 bottom-2 rounded-lg border overflow-hidden cursor-grab active:cursor-grabbing transition-all duration-150 ${
                       !present ? "border-dashed border-zinc-700 bg-zinc-900/40"
-                      : "bg-emerald-500/15 border-emerald-400/40"
-                    } ${isDragging ? "ring-2 ring-emerald-400 z-10" : "hover:border-emerald-300"}`}
+                      : "bg-emerald-500/10 border-emerald-400/40 hover:border-emerald-300 hover:shadow-[0_0_12px_rgba(52,211,153,0.2)]"
+                    } ${isDragging ? "ring-2 ring-emerald-400 shadow-[0_0_15px_rgba(52,211,153,0.3)] z-10" : ""}`}
                     style={{ left: blockLeft, width: Math.max(dur * pxPerSec - 2, 3) }}
                   >
-                    {present && <Waveform data={env} colour="rgba(52,211,153,0.75)" />}
+                    {present && <Waveform data={env} type="emerald" />}
 
                     {/* Fade Ramps Overlay */}
                     <FadeEnvelope fadeIn={fadeInSec} fadeOut={fadeOutSec} duration={dur} />
@@ -637,7 +681,7 @@ export default function MultitrackTimeline({
                         setFadeDrag(null);
                       }}
                       title="Drag to set Fade In duration"
-                      className="absolute top-0 left-0 w-2.5 h-2.5 bg-emerald-400/80 hover:bg-emerald-300 cursor-ew-resize opacity-0 group-hover:opacity-100 transition z-30 rounded-br"
+                      className="absolute top-0 left-0 w-3 h-3 bg-emerald-400 border border-emerald-200 shadow-[0_0_6px_#34d399] cursor-ew-resize opacity-0 group-hover:opacity-100 transition-opacity z-30 rounded-br-md"
                     />
 
                     <span
@@ -668,7 +712,7 @@ export default function MultitrackTimeline({
                         setFadeDrag(null);
                       }}
                       title="Drag to set Fade Out duration"
-                      className="absolute top-0 right-0 w-2.5 h-2.5 bg-emerald-400/80 hover:bg-emerald-300 cursor-ew-resize opacity-0 group-hover:opacity-100 transition z-30 rounded-bl"
+                      className="absolute top-0 right-0 w-3 h-3 bg-emerald-400 border border-emerald-200 shadow-[0_0_6px_#34d399] cursor-ew-resize opacity-0 group-hover:opacity-100 transition-opacity z-30 rounded-bl-md"
                     />
 
                     {present && !env && dur * pxPerSec > 40 && (
@@ -676,12 +720,12 @@ export default function MultitrackTimeline({
                         no waveform
                       </span>
                     )}
-                    <div className="absolute inset-0 flex items-center justify-between px-1.5 pointer-events-none z-20">
-                      <span className="text-[8px] font-mono text-emerald-200 font-semibold drop-shadow">
+                    <div className="absolute inset-0 flex items-center justify-between px-2 pointer-events-none z-20">
+                      <span className="text-[8px] font-mono text-emerald-200 font-bold drop-shadow">
                         Narration
                       </span>
                       {offsetSec !== 0 && (
-                        <span className="text-[8px] font-mono text-emerald-300/90 bg-black/60 px-1 rounded ml-1 shrink-0">
+                        <span className="text-[8px] font-mono text-emerald-300 bg-zinc-950/80 border border-emerald-500/30 px-1 rounded ml-1 shrink-0">
                           {offsetSec > 0 ? `+${offsetSec.toFixed(1)}s` : `${offsetSec.toFixed(1)}s`}
                         </span>
                       )}
@@ -693,7 +737,7 @@ export default function MultitrackTimeline({
 
             {/* A2 — Dynamic Multi-Lane SFX Tracks */}
             {sfxLaneKeys.map((lane) => (
-              <div key={lane.key} className="h-14 border-b border-zinc-900 relative">
+              <div key={lane.key} className="h-14 border-b border-zinc-900/80 relative">
                 {blocks.map(({ shot, start, dur }) => {
                   const resolvedLayers = shot.sfx_layers_resolved;
                   const hasResolved = resolvedLayers && resolvedLayers.length > 0;
@@ -766,16 +810,16 @@ export default function MultitrackTimeline({
                           ? `${shot.scene_id} SFX ${layer?.label ? `(${layer.label})` : ""}: ${layer?.prompt || shot.sfx} (offset: ${offsetSec >= 0 ? "+" : ""}${offsetSec.toFixed(1)}s, fade in: ${fadeInSec.toFixed(1)}s, fade out: ${fadeOutSec.toFixed(1)}s) - Drag block for offset, drag top edges for fades`
                           : `${shot.scene_id}: SFX not generated yet`
                       }
-                      className={`group absolute top-2 bottom-2 rounded border overflow-hidden ${
+                      className={`group absolute top-2 bottom-2 rounded-lg border overflow-hidden transition-all duration-150 ${
                         layer ? "cursor-grab active:cursor-grabbing" : ""
                       } ${
                         !present ? "border-dashed border-zinc-700 bg-zinc-900/40"
-                        : "bg-amber-500/10 border-amber-400/40"
-                      } ${isDragging ? "ring-2 ring-amber-400 z-10" : "hover:border-amber-300"}`}
+                        : "bg-amber-500/10 border-amber-400/40 hover:border-amber-300 hover:shadow-[0_0_12px_rgba(251,191,36,0.2)]"
+                      } ${isDragging ? "ring-2 ring-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.3)] z-10" : ""}`}
                       style={{ left: blockLeft, width: Math.max(dur * pxPerSec - 2, 3) }}
                     >
                       {/* Waveform */}
-                      {present && <Waveform data={env} colour="rgba(251,191,36,0.65)" />}
+                      {present && <Waveform data={env} type="amber" />}
 
                       {/* Fade Ramps Overlay */}
                       <FadeEnvelope fadeIn={fadeInSec} fadeOut={fadeOutSec} duration={dur} />
@@ -812,7 +856,7 @@ export default function MultitrackTimeline({
                               setFadeDrag(null);
                             }}
                             title="Drag to set Fade In duration"
-                            className="absolute top-0 left-0 w-2.5 h-2.5 bg-amber-400/80 hover:bg-amber-300 cursor-ew-resize opacity-0 group-hover:opacity-100 transition z-30 rounded-br"
+                            className="absolute top-0 left-0 w-3 h-3 bg-amber-400 border border-amber-200 shadow-[0_0_6px_#fbbf24] cursor-ew-resize opacity-0 group-hover:opacity-100 transition-opacity z-30 rounded-br-md"
                           />
 
                           <span
@@ -838,24 +882,24 @@ export default function MultitrackTimeline({
                             }}
                             onPointerUp={(e) => {
                               e.stopPropagation();
-                              if (fadeDrag && fadeDrag.type === "sfx" && fadeDrag.layerId === layerId && fadeDrag.field === "fade_out") {
+                              if (fadeDrag && fadeDrag.type === "sfx" && fadeDrag.layerId === layerId && fadeDrag.field !== "fade_out") {
                                 onPatchLayer?.(shot.scene_id, layerId, { fade_out: fadeDrag.currentVal });
                               }
                               setFadeDrag(null);
                             }}
                             title="Drag to set Fade Out duration"
-                            className="absolute top-0 right-0 w-2.5 h-2.5 bg-amber-400/80 hover:bg-amber-300 cursor-ew-resize opacity-0 group-hover:opacity-100 transition z-30 rounded-bl"
+                            className="absolute top-0 right-0 w-3 h-3 bg-amber-400 border border-amber-200 shadow-[0_0_6px_#fbbf24] cursor-ew-resize opacity-0 group-hover:opacity-100 transition-opacity z-30 rounded-bl-md"
                           />
                         </>
                       )}
 
                       {/* Label & offset display */}
-                      <div className="absolute inset-0 flex items-center justify-between px-1.5 pointer-events-none z-20">
-                        <span className="text-[8px] font-mono text-amber-200/90 truncate font-semibold drop-shadow">
+                      <div className="absolute inset-0 flex items-center justify-between px-2 pointer-events-none z-20">
+                        <span className="text-[8px] font-mono text-amber-200 truncate font-semibold drop-shadow">
                           {layer?.label || layer?.prompt || (shot.sfx ? "SFX" : "")}
                         </span>
                         {offsetSec !== 0 && (
-                          <span className="text-[8px] font-mono text-amber-300/90 bg-black/60 px-1 rounded ml-1 shrink-0">
+                          <span className="text-[8px] font-mono text-amber-300 bg-zinc-950/80 border border-amber-500/30 px-1 rounded ml-1 shrink-0">
                             {offsetSec > 0 ? `+${offsetSec.toFixed(1)}s` : `${offsetSec.toFixed(1)}s`}
                           </span>
                         )}
@@ -866,20 +910,20 @@ export default function MultitrackTimeline({
               </div>
             ))}
 
-            {/* A3 — Music */}
-            <div className="h-14 border-b border-zinc-900 relative">
+            {/* A3 — Music Track */}
+            <div className="h-14 border-b border-zinc-900/80 relative">
               {musicTrack ? (
                 <div
-                  className="absolute top-2 bottom-2 left-0 rounded border bg-purple-500/25 border-purple-400/40 flex items-center px-2"
+                  className="absolute top-2 bottom-2 left-0 rounded-lg border bg-purple-500/20 border-purple-400/40 shadow-[0_0_12px_rgba(192,132,252,0.15)] flex items-center px-3"
                   style={{ width: Math.max(total * pxPerSec - 2, 3) }}
                   title={`${musicTrack} — looped to cover the runtime`}
                 >
-                  <span className="text-[9px] font-mono text-purple-200 truncate">
-                    {musicTrack} · looped
+                  <span className="text-[9px] font-mono text-purple-200 font-semibold truncate drop-shadow">
+                    {musicTrack} · looped audio bed
                   </span>
                 </div>
               ) : (
-                <span className="absolute left-2 top-4 text-[10px] font-mono text-zinc-600">
+                <span className="absolute left-3 top-4 text-[10px] font-mono text-zinc-600">
                   no music bed selected
                 </span>
               )}
@@ -890,13 +934,13 @@ export default function MultitrackTimeline({
 
       {/* Inspector for the selected beat */}
       {sel ? (
-        <div className="px-4 py-3 border-t border-zinc-900 flex items-end gap-4 flex-wrap">
+        <div className="px-5 py-4 border-t border-zinc-900/90 flex items-end gap-5 flex-wrap bg-zinc-950/90 backdrop-blur-md">
           <div>
-            <span className="block text-[10px] text-zinc-500 font-mono mb-1">Beat</span>
-            <span className="text-xs font-mono text-amber-500 font-bold">{sel.shot.scene_id}</span>
+            <span className="block text-[10px] text-zinc-400 font-mono mb-1 font-medium">Selected Beat</span>
+            <span className="text-sm font-mono text-amber-400 font-bold bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/30">{sel.shot.scene_id}</span>
           </div>
           <div>
-            <label className="block text-[10px] text-zinc-500 font-mono mb-1">Duration (s)</label>
+            <label className="block text-[10px] text-zinc-400 font-mono mb-1 font-medium">Duration (s)</label>
             <input
               type="number" step={0.1} min={0.2}
               defaultValue={sel.dur} key={`${sel.shot.scene_id}-${sel.dur}`}
@@ -905,15 +949,15 @@ export default function MultitrackTimeline({
                 if (Number.isFinite(v) && Math.abs(v - sel.dur) > 0.05)
                   onUpdateCamera(sel.shot.scene_id, { duration: v });
               }}
-              className="w-20 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-[11px] font-mono"
+              className="w-20 bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1 text-[11px] font-mono focus:border-amber-500 focus:outline-none transition-colors"
             />
           </div>
           <div>
-            <label className="block text-[10px] text-zinc-500 font-mono mb-1">Move</label>
+            <label className="block text-[10px] text-zinc-400 font-mono mb-1 font-medium">Camera Move</label>
             <select
               value={sel.shot.camera.move}
               onChange={(e) => onUpdateCamera(sel.shot.scene_id, { move: e.target.value })}
-              className="bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-[11px] font-mono"
+              className="bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1 text-[11px] font-mono focus:border-amber-500 focus:outline-none transition-colors cursor-pointer"
             >
               {MOVES.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
@@ -921,20 +965,20 @@ export default function MultitrackTimeline({
           <button
             onClick={() => onUpdateCamera(sel.shot.scene_id,
               { duration_locked: !sel.shot.camera.duration_locked })}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-mono transition ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-mono transition-all hover:scale-[1.02] active:scale-[0.98] ${
               sel.shot.camera.duration_locked
-                ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
-                : "border-zinc-800 text-zinc-500 hover:text-zinc-300"}`}
+                ? "border-amber-500/50 bg-amber-500/15 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.2)]"
+                : "border-zinc-800 text-zinc-400 hover:text-zinc-200"}`}
             title="Locked durations survive a narration re-run"
           >
-            {sel.shot.camera.duration_locked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+            {sel.shot.camera.duration_locked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
             {sel.shot.camera.duration_locked ? "Locked" : "Unlocked"}
           </button>
 
           {onAddLayer && (
             <button
               onClick={() => handleAddLayerPrompt(sel.shot.scene_id)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 text-[11px] font-mono transition"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-400/50 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 text-[11px] font-mono transition-all hover:scale-[1.02] active:scale-[0.98] shadow-sm"
               title="Add a new SFX layer to this beat (+ layer)"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -942,11 +986,11 @@ export default function MultitrackTimeline({
             </button>
           )}
 
-          <span className="text-[10px] font-mono text-zinc-600 ml-auto">
+          <span className="text-[10px] font-mono text-zinc-500 ml-auto font-semibold">
             {tc(sel.start)} → {tc(sel.start + sel.dur)}
           </span>
 
-          <div className="w-full border-t border-zinc-900 pt-3 mt-1 flex flex-col gap-2">
+          <div className="w-full border-t border-zinc-900 pt-3.5 mt-1 flex flex-col gap-2.5">
             <ClipAudio
               label="A1 Narration" tone="emerald"
               url={sel.shot.narration_url ? mediaUrl(sel.shot.narration_url) : null}
@@ -997,7 +1041,7 @@ export default function MultitrackTimeline({
           </div>
         </div>
       ) : (
-        <div className="px-4 py-2.5 border-t border-zinc-900 text-[11px] text-zinc-600 flex items-center justify-between">
+        <div className="px-5 py-3 border-t border-zinc-900/90 text-[11px] text-zinc-500 flex items-center justify-between bg-zinc-950/80 backdrop-blur-md">
           <span>
             Select a clip on V1 to retime it or manage SFX layers. Drag audio blocks horizontally to set timing offsets; drag top corners for fades.
           </span>
