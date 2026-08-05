@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
-import { Lock, Unlock, Film, Mic, Waves, Music, ZoomIn, ZoomOut, RefreshCw, Play } from "lucide-react";
+import { Lock, Unlock, Film, Mic, Waves, Music, ZoomIn, ZoomOut, RefreshCw, Play, Pause, AlertTriangle } from "lucide-react";
 
 interface Shot {
   scene_id: string;
@@ -29,6 +29,12 @@ interface MultitrackTimelineProps {
   onRegenNarration?: (sceneId: string) => void;
   onRegenSfx?: (sceneId: string) => void;
   busy?: Record<string, boolean>;
+  /** The server-rendered preview and the timing it was actually built with. */
+  previewUrl?: string | null;
+  previewMeta?: {
+    runtime: number; built_at: number; stale?: boolean; live_runtime?: number;
+    beats: { scene_id: string; start: number; duration: number }[];
+  } | null;
 }
 
 const MOVES = ["static", "push_in", "push_out", "pan_left", "pan_right"];
@@ -127,8 +133,11 @@ function ClipAudio({ label, tone, url, present, wanted, gain, busy, onGain, onRe
 
 export default function MultitrackTimeline({
   shots, musicTrack, mediaUrl, onUpdateCamera, peaks,
-  onUpdateGain, onRegenNarration, onRegenSfx, busy
+  onUpdateGain, onRegenNarration, onRegenSfx, busy, previewUrl, previewMeta
 }: MultitrackTimelineProps) {
+  const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const [playhead, setPlayhead] = useState(0);      // seconds, in PREVIEW time
+  const [playing, setPlaying] = useState(false);
   const [pxPerSec, setPxPerSec] = useState(4);
   const [selected, setSelected] = useState<string | null>(null);
   // Live duration while dragging a clip edge; committed on release so a drag is
@@ -145,6 +154,15 @@ export default function MultitrackTimeline({
     });
     return { blocks: b, total: acc };
   }, [shots, drag]);
+
+  // Resolved through the preview's own beat table, not the live manifest: the
+  // playhead must describe the video that exists, not the cut we would render now.
+  const atPlayhead = React.useMemo(() => {
+    const beats = previewMeta?.beats;
+    if (!beats?.length) return null;
+    const b = beats.find((x) => playhead >= x.start && playhead < x.start + x.duration);
+    return b ? `${b.scene_id}  ${(playhead - b.start).toFixed(1)}s in` : null;
+  }, [playhead, previewMeta]);
 
   const width = Math.max(total * pxPerSec, 320);
   const sel = blocks.find((b) => b.shot.scene_id === selected);
@@ -183,6 +201,48 @@ export default function MultitrackTimeline({
         </div>
       </div>
 
+      {previewUrl && (
+        <div className="px-4 py-3 border-b border-zinc-900 flex flex-col gap-2">
+          {previewMeta?.stale && (
+            <div className="bg-amber-950/25 border border-amber-500/30 rounded-lg px-3 py-2 text-[11px] text-amber-200/90 font-mono flex gap-2">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-px text-amber-400" />
+              <span>
+                This preview was built from a different cut
+                ({previewMeta.runtime.toFixed(1)}s vs {previewMeta.live_runtime?.toFixed(1)}s now).
+                The playhead follows the <em>video</em>, so it will not line up with the
+                beats above until you rebuild the preview.
+              </span>
+            </div>
+          )}
+          <div className="flex items-start gap-3">
+            <video
+              ref={videoRef}
+              src={previewUrl}
+              className="w-72 rounded-lg border border-zinc-800 bg-black shrink-0"
+              onTimeUpdate={(e) => setPlayhead((e.target as HTMLVideoElement).currentTime)}
+              onPlay={() => setPlaying(true)}
+              onPause={() => setPlaying(false)}
+              controls
+            />
+            <div className="flex flex-col gap-1.5 text-[11px] font-mono text-zinc-500 pt-1">
+              <button
+                onClick={() => { const v = videoRef.current; if (!v) return; playing ? v.pause() : v.play(); }}
+                className="flex items-center gap-1.5 px-2 py-1 rounded border border-zinc-800 text-zinc-300 hover:border-zinc-700 transition w-fit"
+              >
+                {playing ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+                {playing ? "Pause" : "Play"}
+              </button>
+              <span className="tabular-nums text-amber-500">{tc(playhead)}</span>
+              {atPlayhead && <span className="text-zinc-400">{atPlayhead}</span>}
+              <span className="text-zinc-600 leading-relaxed max-w-[16rem]">
+                Click anywhere on the tracks to seek. Rendering happens on the
+                server — this is the real cut, not a browser mock-up.
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex">
         {/* Track headers stay put while the tracks scroll. */}
         <div className="shrink-0 w-28 border-r border-zinc-900 bg-zinc-950/80">
@@ -196,7 +256,25 @@ export default function MultitrackTimeline({
         </div>
 
         <div className="flex-1 overflow-x-auto">
-          <div style={{ width }} className="relative">
+          <div
+            style={{ width }}
+            className="relative"
+            onClick={(e) => {
+              const v = videoRef.current;
+              if (!v || !previewMeta) return;
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              const t = (e.clientX - rect.left) / pxPerSec;
+              v.currentTime = Math.max(0, Math.min(previewMeta.runtime, t));
+            }}
+          >
+            {previewUrl && previewMeta && (
+              <div
+                className="absolute top-0 bottom-0 w-px bg-amber-400 z-20 pointer-events-none"
+                style={{ left: playhead * pxPerSec }}
+              >
+                <div className="absolute -top-0.5 -left-1 w-2 h-2 rotate-45 bg-amber-400" />
+              </div>
+            )}
             {/* ruler */}
             <div className="h-6 border-b border-zinc-900 relative">
               {ticks.map((t) => (

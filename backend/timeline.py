@@ -335,6 +335,28 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
                     "-vf", f"scale=-2:{height}", "-c:v", "libx264", "-crf", "30",
                     "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k",
                     "-shortest", str(out)], check=True)
+
+    # The preview's own timing, written beside it. The timeline view is laid out
+    # from LIVE manifest durations, but this file was rendered from whatever they
+    # were at build time -- so a playhead driven by the live manifest would point
+    # at the wrong beat the moment anything is retimed, silently. Mapping video
+    # time through this sidecar instead makes the playhead describe the video
+    # that actually exists, and lets the UI say when the two have diverged.
+    import json as _json
+    meta = {
+        "runtime": round(runtime, 3),
+        "built_at": int(Path(out).stat().st_mtime) if Path(out).exists() else 0,
+        "height": height,
+        "beats": [
+            {"scene_id": s.scene_id, "start": round(o, 3), "duration": round(d, 3)}
+            for s, o, d in zip(sb.shots, offsets, durs)
+        ],
+    }
+    try:
+        (Path(out).parent / "_preview.json").write_text(
+            _json.dumps(meta, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"preview: could not write timing sidecar ({exc})")
     return out, runtime
 
 

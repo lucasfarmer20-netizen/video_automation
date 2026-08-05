@@ -891,6 +891,8 @@ export default function WorkspacePage() {
               onRegenSfx={handleRegenSfx}
               busy={{ narration: jobs["narration"]?.status === "running",
                       sfx: jobs["sfx"]?.status === "running" }}
+              previewUrl={preview_url ? mediaUrl(preview_url) : null}
+              previewMeta={activeProject.preview_meta ?? null}
               mediaUrl={mediaUrl}
               onUpdateCamera={(sceneId, camera) => handleUpdateField(sceneId, "camera", camera)}
             />

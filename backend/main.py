@@ -811,6 +811,23 @@ def get_active_project():
         # "_preview" is already in the render listing above -- no extra stat.
         preview_file = ep["render"] / "_preview.mp4"
         preview_url = config.rel_media_path(preview_file) if "_preview" in rendered_stems else None
+
+        # The preview's own timing, plus whether it still describes this cut.
+        # Comparing the sidecar's per-beat durations to the live manifest is the
+        # only honest staleness check: mtime alone would call a preview stale
+        # after any unrelated manifest write (a gain, a grade, a note).
+        preview_meta = None
+        if preview_url:
+            try:
+                preview_meta = json.loads((ep["render"] / "_preview.json").read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 — a preview built before this existed
+                preview_meta = None
+        if preview_meta:
+            live = [(s.scene_id, round(float(s.camera.duration), 2)) for s in sb.shots]
+            baked = [(b["scene_id"], round(float(b["duration"]), 2))
+                     for b in preview_meta.get("beats", [])]
+            preview_meta["stale"] = live != baked
+            preview_meta["live_runtime"] = round(sum(d for _, d in live), 3)
         
         # Same location timeline.build writes to: the project directory.
         fcpxml_file = config.MANIFEST_PATH.parent / f"{ep['slug']}.fcpxml"
@@ -853,6 +870,7 @@ def get_active_project():
             "motion": asdict(sb.motion),
             "counts": counts,
             "preview_url": preview_url,
+            "preview_meta": preview_meta,
             "fcpxml_ready": fcpxml_ready,
             "ep_slug": ep["slug"],
             "paid_count": paid_count,
