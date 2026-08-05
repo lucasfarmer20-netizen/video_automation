@@ -2231,6 +2231,59 @@ def get_assemble_status():
 
 # --- MEDIA SERVING ENDPOINTS ---
 
+@app.get("/api/audio/peaks")
+def audio_peaks():
+    """Waveform envelopes for every beat's narration and SFX.
+
+    Cached to a sidecar beside the manifest and keyed by (size, mtime) per file,
+    so the expensive decode only happens when a clip actually changes. Without
+    that this is 30 ffmpeg decodes on every visit to the Editing step.
+    """
+    try:
+        sb = get_current_project()
+        ep = config.episode_paths(sb.title)
+        cache_path = config.MANIFEST_PATH.parent / "_peaks_cache.json"
+        try:
+            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — a bad cache must not break the view
+            cache = {}
+
+        out, dirty = {}, False
+        for s in sb.shots:
+            entry = {}
+            for track, d in (("narration", ep["narration"]), ("sfx", ep["sfx"])):
+                f = d / f"{s.scene_id}.mp3"
+                if not f.is_file():
+                    continue
+                st = f.stat()
+                key = f"{s.scene_id}:{track}:{st.st_size}:{int(st.st_mtime)}"
+                if key in cache:
+                    entry[track] = cache[key]
+                else:
+                    env = audio.peaks(f)
+                    if env:
+                        cache[key] = env
+                        entry[track] = env
+                        dirty = True
+            if entry:
+                out[s.scene_id] = entry
+
+        if dirty:
+            # Keep only what this episode currently references, so the sidecar
+            # does not grow without bound as clips are regenerated.
+            live = {f"{sid}:{tr}" for sid, e in out.items() for tr in e}
+            cache = {k: v for k, v in cache.items()
+                     if ":".join(k.split(":")[:2]) in live}
+            try:
+                cache_path.write_text(json.dumps(cache), encoding="utf-8")
+            except Exception as exc:  # noqa: BLE001
+                print(f"peaks: could not write cache ({exc})")
+
+        return {"ok": True, "peaks": out}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
 @app.post("/api/audio/transcode")
 def transcode_audio_endpoint(normalize_sfx: bool = False):
     """Re-encode this episode's uncompressed audio to MP3, in place.

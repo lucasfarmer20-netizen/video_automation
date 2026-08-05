@@ -99,6 +99,7 @@ export default function WorkspacePage() {
   const [chatHistory, setChatHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [metadata, setMetadata] = useState<Metadata | null>(null);
+  const [peaks, setPeaks] = useState<Record<string, any>>({});
   const [voiceStudioOpen, setVoiceStudioOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileRightPanelOpen, setMobileRightPanelOpen] = useState(false);
@@ -146,6 +147,13 @@ export default function WorkspacePage() {
         const md = await m.json();
         setMetadata(md.ok ? md.metadata : null);
       } catch { setMetadata(null); }
+      // Waveform envelopes for the timeline. Cached server-side per clip, so
+      // this is cheap after the first call.
+      try {
+        const pk = await fetch(`${API_BASE}/api/audio/peaks`);
+        const pj = await pk.json();
+        setPeaks(pj.ok ? (pj.peaks || {}) : {});
+      } catch { setPeaks({}); }
     } catch (e) {
       console.error("Failed to load active project details", e);
     } finally {
@@ -835,6 +843,7 @@ export default function WorkspacePage() {
           ) : activeStep === 3 ? (
             <MultitrackTimeline
               shots={project.shots || []}
+              peaks={peaks}
               musicTrack={project.music_track}
               mediaUrl={mediaUrl}
               onUpdateCamera={(sceneId, camera) => handleUpdateField(sceneId, "camera", camera)}

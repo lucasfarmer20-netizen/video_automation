@@ -16,6 +16,8 @@ interface Shot {
 
 interface MultitrackTimelineProps {
   shots: Shot[];
+  /** { scene_id: { narration?: number[], sfx?: number[] } } from /api/audio/peaks */
+  peaks?: Record<string, { narration?: number[]; sfx?: number[] }>;
   musicTrack?: string;
   mediaUrl: (p: string) => string;
   onUpdateCamera: (sceneId: string, camera: Record<string, number | boolean | string>) => void;
@@ -41,8 +43,24 @@ const tc = (s: number) => {
  *  renderer in the browser would drift from the real one and cannot reproduce
  *  the depth-warp parallax. Phase 6 syncs a playhead to the server preview MP4;
  *  until then this is an editor, not a player. */
+/** Peak envelope as an SVG. Normalised per clip, so this shows shape and timing
+ *  -- where the voice actually starts and stops inside its beat -- not level.
+ *  Level is what the trims and the mixer are for. */
+function Waveform({ data, colour }: { data?: number[]; colour: string }) {
+  if (!data || !data.length) return null;
+  const n = data.length;
+  const pts = data.map((v, i) => `${(i / (n - 1)) * 100},${50 - v * 46}`).join(" ")
+    + " " + data.map((v, i) => `${((n - 1 - i) / (n - 1)) * 100},${50 + data[n - 1 - i] * 46}`).join(" ");
+  return (
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none"
+         className="absolute inset-0 w-full h-full pointer-events-none">
+      <polygon points={pts} fill={colour} />
+    </svg>
+  );
+}
+
 export default function MultitrackTimeline({
-  shots, musicTrack, mediaUrl, onUpdateCamera
+  shots, musicTrack, mediaUrl, onUpdateCamera, peaks
 }: MultitrackTimelineProps) {
   const [pxPerSec, setPxPerSec] = useState(4);
   const [selected, setSelected] = useState<string | null>(null);
@@ -152,17 +170,28 @@ export default function MultitrackTimeline({
                   const present = kind === "narration" ? shot.has_narration : shot.has_sfx;
                   const wanted = kind === "narration" ? Boolean(shot.narration?.trim()) : Boolean(shot.sfx?.trim());
                   if (!wanted) return null;
+                  const env = peaks?.[shot.scene_id]?.[kind];
                   return (
                     <div
                       key={shot.scene_id}
                       title={present ? `${shot.scene_id} ${kind}` : `${shot.scene_id}: ${kind} not generated yet`}
-                      className={`absolute top-2 bottom-2 rounded border ${
+                      className={`absolute top-2 bottom-2 rounded border overflow-hidden ${
                         !present ? "border-dashed border-zinc-700 bg-zinc-900/40"
-                        : kind === "narration" ? "bg-emerald-500/30 border-emerald-400/40"
-                        : "bg-amber-500/25 border-amber-400/40"
+                        : kind === "narration" ? "bg-emerald-500/15 border-emerald-400/40"
+                        : "bg-amber-500/10 border-amber-400/40"
                       }`}
                       style={{ left: start * pxPerSec, width: Math.max(dur * pxPerSec - 2, 3) }}
-                    />
+                    >
+                      {present && (
+                        <Waveform data={env}
+                          colour={kind === "narration" ? "rgba(52,211,153,0.75)" : "rgba(251,191,36,0.65)"} />
+                      )}
+                      {present && !env && dur * pxPerSec > 40 && (
+                        <span className="absolute inset-0 flex items-center justify-center text-[8px] font-mono text-zinc-500">
+                          no waveform
+                        </span>
+                      )}
+                    </div>
                   );
                 })}
               </div>

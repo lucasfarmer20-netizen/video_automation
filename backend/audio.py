@@ -173,6 +173,37 @@ def sample_voice(text: str, voice_id: str | None = None,
     return bytes(buf)
 
 
+def peaks(path: Path, buckets: int = 240) -> list[float]:
+    """Downsampled 0..1 peak envelope for a clip, for drawing a waveform.
+
+    Decodes via ffmpeg to raw 8 kHz mono PCM rather than librosa: this runs over
+    30 clips per episode and librosa's mp3 path is an order of magnitude slower
+    for a result that gets reduced to a few hundred numbers anyway.
+    """
+    import subprocess
+    import numpy as np
+    path = Path(path)
+    if not path.is_file() or path.stat().st_size == 0:
+        return []
+    proc = subprocess.run(
+        [_ffmpeg_bin(), "-v", "error", "-i", str(path),
+         "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", "8000", "-"],
+        capture_output=True,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        return []
+    y = np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+    if y.size == 0:
+        return []
+    n = min(buckets, y.size)
+    edges = np.linspace(0, y.size, n + 1, dtype=int)
+    env = [float(np.abs(y[a:b]).max()) if b > a else 0.0 for a, b in zip(edges[:-1], edges[1:])]
+    top = max(env) or 1.0
+    # Normalised per clip: this is for seeing shape and timing, not level. Level
+    # is what the trim sliders and the mixer are for.
+    return [round(v / top, 3) for v in env]
+
+
 def sync_durations(storyboard: Storyboard | None = None, pad: float = 0.8,
                    min_dur: float = 3.0, report: dict | None = None) -> int:
     """Fit each shot's ``camera.duration`` to its narration clip (VO length + pad).
