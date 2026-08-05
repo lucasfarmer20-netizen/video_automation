@@ -12,6 +12,7 @@ import {
   Edge
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import AudioNode from "./AudioNode";
 
 interface Shot {
   scene_id: string;
@@ -29,6 +30,14 @@ interface Shot {
   sfx_url?: string | null;
   gain_narration?: number;
   gain_sfx?: number;
+  offset_narration?: number;
+  fade_in_narration?: number;
+  fade_out_narration?: number;
+  sfx_layers_resolved?: Array<{
+    id: string; prompt?: string; label?: string; source?: string;
+    gain?: number; offset?: number; fade_in?: number; fade_out?: number;
+    url?: string | null;
+  }>;
 }
 
 interface FlowCanvasProps {
@@ -38,6 +47,12 @@ interface FlowCanvasProps {
   onRegenerate?: (sceneId: string) => void;
   onGenerateSFX?: (sceneId: string) => void;
   onRegenNarration?: (sceneId: string) => void;
+  /** POST /api/shot/{id} for narration, /layers for a layer. */
+  onPatchNarration?: (sceneId: string, patch: Record<string, number>) => void;
+  onPatchLayer?: (sceneId: string, layerId: string, patch: Record<string, number>) => void;
+  onGenerateLayer?: (sceneId: string, layerId: string) => void;
+  onDeleteLayer?: (sceneId: string, layerId: string) => void;
+  onUploadLayer?: (sceneId: string) => void;
   /** POST /api/shot/{id} with { gain_narration } or { gain_sfx }. */
   onUpdateGain?: (sceneId: string, field: "gain_narration" | "gain_sfx", v: number) => void;
   /** Registry label maps, so a badge never shows a model the resolver disowns. */
@@ -249,9 +264,10 @@ const BeatNode = ({ data }: any) => {
 
 export default function FlowCanvas({
   shots, mediaUrl, onUpdateDuration, onRegenerate, onGenerateSFX,
-  imageBackends, videoBackends, defaultImageModel, onUpdateGain, onRegenNarration
+  imageBackends, videoBackends, defaultImageModel, onUpdateGain, onRegenNarration,
+  onPatchNarration, onPatchLayer, onGenerateLayer, onDeleteLayer, onUploadLayer
 }: FlowCanvasProps) {
-  const nodeTypes = useMemo(() => ({ beatNode: BeatNode }), []);
+  const nodeTypes = useMemo(() => ({ beatNode: BeatNode, audioNode: AudioNode }), []);
   const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
   // Node layout is regenerated whenever `shots` changes, which would otherwise
@@ -259,55 +275,95 @@ export default function FlowCanvas({
   const positions = useRef<Record<string, { x: number; y: number }>>({});
 
   useEffect(() => {
-    const generatedNodes = shots.map((s, idx) => {
+    const COL = 300, VO_Y = 300, SFX_Y = 470, ROW = 190;
+    const nodes: any[] = [];
+    const edges: Edge[] = [];
+
+    shots.forEach((s, idx) => {
+      const x = idx * COL + 50;
       const imgKey = (s.image_model || defaultImageModel || "").trim();
-      return {
+      nodes.push({
         id: s.scene_id,
         type: "beatNode",
-        position: positions.current[s.scene_id] ?? { x: idx * 300 + 50, y: 150 },
+        position: positions.current[s.scene_id] ?? { x, y: 60 },
         data: {
-          scene_id: s.scene_id,
-          motion_type: s.motion_type,
-          narration: s.narration,
+          scene_id: s.scene_id, motion_type: s.motion_type, narration: s.narration,
           thumbnail: s.draft_image ? mediaUrl(s.draft_image) : null,
           has_video: !!s.video_clip,
-          duration: s.camera.duration,
-          duration_locked: s.camera.duration_locked,
+          duration: s.camera.duration, duration_locked: s.camera.duration_locked,
           imageLabel: imgKey ? (imageBackends?.[imgKey] || imgKey) : null,
-          videoLabel:
-            s.motion_type === "ai_video" && s.video_model_key
-              ? (videoBackends?.[s.video_model_key] || s.video_model_key)
-              : null,
-          sfxPrompt: s.sfx || "",
-          hasNarration: !!s.has_narration,
-          hasSfx: !!s.has_sfx,
-          narrationUrl: s.narration_url ? mediaUrl(s.narration_url) : null,
-          sfxUrl: s.sfx_url ? mediaUrl(s.sfx_url) : null,
-          gainNarration: s.gain_narration ?? 1.0,
-          gainSfx: s.gain_sfx ?? 1.0,
-          onUpdateDuration,
-          onRegenerate,
-          onGenerateSFX,
-          onUpdateGain,
-          onRegenNarration
-        }
-      };
+          videoLabel: s.motion_type === "ai_video" && s.video_model_key
+            ? (videoBackends?.[s.video_model_key] || s.video_model_key) : null,
+          onUpdateDuration, onRegenerate,
+        },
+      });
+
+      // Narration as its own node, hung below its beat.
+      if ((s.narration || "").trim()) {
+        const nid = `${s.scene_id}::vo`;
+        nodes.push({
+          id: nid, type: "audioNode",
+          position: positions.current[nid] ?? { x, y: VO_Y },
+          data: {
+            kind: "narration", scene_id: s.scene_id, label: `${s.scene_id} narration`,
+            url: s.narration_url ? mediaUrl(s.narration_url) : null,
+            gain: s.gain_narration ?? 1, offset: s.offset_narration ?? 0,
+            fade_in: s.fade_in_narration ?? 0, fade_out: s.fade_out_narration ?? 0,
+            prompt: "", source: "",
+            onPatch: (patch: Record<string, number>) => {
+              // Narration lives on the shot, not in a layer list, so its keys
+              // are named differently on the wire.
+              const map: Record<string, string> = {
+                gain: "gain_narration", offset: "offset_narration",
+                fade_in: "fade_in_narration", fade_out: "fade_out_narration",
+              };
+              const out: Record<string, number> = {};
+              for (const [k, v] of Object.entries(patch)) out[map[k] || k] = v;
+              onPatchNarration?.(s.scene_id, out);
+            },
+            onGenerate: onRegenNarration ? () => onRegenNarration(s.scene_id) : undefined,
+          },
+        });
+        edges.push({ id: `e-${nid}`, source: s.scene_id, target: nid, type: "default",
+                     style: { stroke: "#10b981", strokeWidth: 1.2, strokeDasharray: "4 3" } });
+      }
+
+      // One node per SFX layer -- a layer you cannot address is a layer you
+      // cannot tune, which is the whole point of layering.
+      (s.sfx_layers_resolved || []).forEach((lay, li) => {
+        const lid = `${s.scene_id}::sfx::${lay.id}`;
+        nodes.push({
+          id: lid, type: "audioNode",
+          position: positions.current[lid] ?? { x, y: SFX_Y + li * ROW },
+          data: {
+            kind: "sfx", scene_id: s.scene_id, layer_id: lay.id,
+            label: lay.label || lay.prompt || `layer ${li + 1}`,
+            prompt: lay.prompt || "", source: lay.source || "",
+            url: lay.url ? mediaUrl(lay.url) : null,
+            gain: lay.gain ?? 1, offset: lay.offset ?? 0,
+            fade_in: lay.fade_in ?? 0, fade_out: lay.fade_out ?? 0,
+            onPatch: (patch: Record<string, number>) => onPatchLayer?.(s.scene_id, lay.id, patch),
+            onGenerate: onGenerateLayer ? () => onGenerateLayer(s.scene_id, lay.id) : undefined,
+            onDelete: onDeleteLayer ? () => onDeleteLayer(s.scene_id, lay.id) : undefined,
+            onUpload: onUploadLayer ? () => onUploadLayer(s.scene_id) : undefined,
+          },
+        });
+        edges.push({ id: `e-${lid}`, source: s.scene_id, target: lid, type: "default",
+                     style: { stroke: "#f59e0b", strokeWidth: 1.2, strokeDasharray: "4 3" } });
+      });
+
+      if (idx < shots.length - 1) {
+        edges.push({
+          id: `e-${s.scene_id}-${shots[idx + 1].scene_id}`,
+          source: s.scene_id, target: shots[idx + 1].scene_id,
+          type: "default", animated: true,
+          style: { stroke: "#f59e0b", strokeWidth: 1.5 },
+        });
+      }
     });
 
-    const generatedEdges: Edge[] = [];
-    for (let i = 0; i < shots.length - 1; i++) {
-      generatedEdges.push({
-        id: `e-${shots[i].scene_id}-${shots[i + 1].scene_id}`,
-        source: shots[i].scene_id,
-        target: shots[i + 1].scene_id,
-        // Bezier, per 00_dashboard_overview.jpg. React Flow's "default" edge is
-        // the bezier curve; "smoothstep" was the squared-off orthogonal one.
-        type: "default",
-        animated: true,
-        style: { stroke: "#f59e0b", strokeWidth: 1.5 }
-      });
-    }
-
+    const generatedNodes = nodes;
+    const generatedEdges = edges;
     setNodes(generatedNodes);
     setEdges(generatedEdges);
   }, [shots, mediaUrl, setNodes, setEdges, imageBackends, videoBackends, defaultImageModel,

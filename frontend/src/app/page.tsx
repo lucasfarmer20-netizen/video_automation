@@ -351,6 +351,33 @@ export default function WorkspacePage() {
   const handleRegenNarration = async (sceneId: string) => {
     await post(`/api/audio/narration/${sceneId}`);
   };
+  const patchLayer = async (sceneId: string, layerId: string, patch: Record<string, number>) => {
+    await post(`/api/shot/${sceneId}/layers`, { id: layerId, ...patch });
+    fetchActiveProject();
+  };
+  const generateLayer = async (sceneId: string, layerId: string) => {
+    await post(`/api/shot/${sceneId}/layers/${layerId}/generate`);
+  };
+  const deleteLayer = async (sceneId: string, layerId: string) => {
+    if (!window.confirm("Remove this layer from the mix? The audio file is kept on disk.")) return;
+    await post(`/api/shot/${sceneId}/layers/${layerId}/delete`);
+    fetchActiveProject();
+  };
+  const uploadLayer = (sceneId: string) => {
+    const el = document.createElement("input");
+    el.type = "file";
+    el.accept = ".mp3,.wav,.m4a,.ogg,.flac,audio/*";
+    el.onchange = async (e) => {
+      const f = (e.target as HTMLInputElement).files?.[0];
+      if (f) { await postFile(`/api/shot/${sceneId}/layers/upload`, f); fetchActiveProject(); }
+    };
+    el.click();
+  };
+  const addLayer = async (sceneId: string, prompt: string) => {
+    await post(`/api/shot/${sceneId}/layers`, { prompt, label: prompt.slice(0, 30) });
+    fetchActiveProject();
+  };
+
   const handleRegenSfx = async (sceneId: string) => {
     await post(`/api/audio/sfx/${sceneId}`);
     fetchActiveProject();
@@ -910,6 +937,14 @@ export default function WorkspacePage() {
                 }}
                 onUpdateGain={handleUpdateGain}
                 onRegenNarration={handleRegenNarration}
+                onPatchNarration={async (sceneId, patch) => {
+                  await post(`/api/shot/${sceneId}`, patch);
+                  fetchActiveProject();
+                }}
+                onPatchLayer={patchLayer}
+                onGenerateLayer={generateLayer}
+                onDeleteLayer={deleteLayer}
+                onUploadLayer={uploadLayer}
               />
             </div>
           ) : activeStep === 1 ? (

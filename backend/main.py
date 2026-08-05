@@ -774,6 +774,17 @@ def get_active_project():
                 config.rel_media_path(ep["sfx"] / f"{s.scene_id}.mp3")
                 if s_dict["has_sfx"] else None
             )
+            # Resolved layers with playable urls, so the node graph does not need
+            # one request per beat to draw them.
+            resolved = []
+            for lay in audio.resolve_sfx_layers(s, ep["sfx"]):
+                d = asdict(lay)
+                f = Path(lay.file) if lay.file else (ep["sfx"] / f"{s.scene_id}.mp3")
+                if not f.is_absolute():
+                    f = config.resolve_media(str(f), s.scene_id) or f
+                d["url"] = config.rel_media_path(f) if f and Path(f).is_file() else None
+                resolved.append(d)
+            s_dict["sfx_layers_resolved"] = resolved
             # Manifests still carry legacy values -- raw endpoint strings and
             # keys that were never in the registry (e.g. the dead
             # "fal-ai/kling-video/v3/image-to-video"). The resolver aliases them
