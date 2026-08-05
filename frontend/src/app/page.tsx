@@ -894,6 +894,7 @@ export default function WorkspacePage() {
               previewUrl={preview_url ? mediaUrl(preview_url) : null}
               previewMeta={activeProject.preview_meta ?? null}
               mediaUrl={mediaUrl}
+              onAssemble={handleAssemble}
               onUpdateCamera={(sceneId, camera) => handleUpdateField(sceneId, "camera", camera)}
               onPatchNarration={async (sceneId, patch) => {
                 await post(`/api/shot/${sceneId}`, patch);

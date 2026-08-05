@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useMemo, useEffect } from "react";
-import { Lock, Unlock, Film, Mic, Waves, Music, ZoomIn, ZoomOut, RefreshCw, Play, Pause, AlertTriangle, Plus, Trash2 } from "lucide-react";
+import { Lock, Unlock, Film, Mic, Waves, Music, ZoomIn, ZoomOut, RefreshCw, Play, Pause, AlertTriangle, Plus, Trash2, Maximize2, Minimize2 } from "lucide-react";
 
 export interface SfxLayer {
   id: string;
@@ -56,6 +56,7 @@ export interface MultitrackTimelineProps {
   onAddLayer?: (sceneId: string, prompt: string) => void;
   onDeleteLayer?: (sceneId: string, layerId: string) => void;
   onGenerateLayer?: (sceneId: string, layerId: string) => void;
+  onAssemble?: (stage: string) => void;
 }
 
 const MOVES = ["static", "push_in", "push_out", "pan_left", "pan_right"];
@@ -205,7 +206,7 @@ function ClipAudio({ label, tone, url, present, wanted, gain, busy, onGain, onRe
 export default function MultitrackTimeline({
   shots, musicTrack, mediaUrl, onUpdateCamera, peaks,
   onUpdateGain, onRegenNarration, onRegenSfx, busy, previewUrl, previewMeta,
-  onPatchNarration, onPatchLayer, onAddLayer, onDeleteLayer, onGenerateLayer
+  onPatchNarration, onPatchLayer, onAddLayer, onDeleteLayer, onGenerateLayer, onAssemble
 }: MultitrackTimelineProps) {
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const [playhead, setPlayhead] = useState(0);
@@ -213,6 +214,7 @@ export default function MultitrackTimeline({
   const [pxPerSec, setPxPerSec] = useState(4);
   const [selected, setSelected] = useState<string | null>(null);
   const [drag, setDrag] = useState<{ id: string; dur: number } | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Audio drag state for offset adjustment & fade handle dragging
   const [audioDrag, setAudioDrag] = useState<{
@@ -246,7 +248,7 @@ export default function MultitrackTimeline({
     return { blocks: b, total: acc };
   }, [shots, drag]);
 
-  // Keyboard Shortcuts (Space for Play/Pause, Left/Right Arrows to jump beats)
+  // Keyboard Shortcuts (Space for Play/Pause, Left/Right Arrows to jump beats, Esc to exit Fullscreen)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const active = document.activeElement;
@@ -259,7 +261,10 @@ export default function MultitrackTimeline({
         return;
       }
 
-      if (e.code === "Space") {
+      if (e.code === "Escape" && isFullscreen) {
+        e.preventDefault();
+        setIsFullscreen(false);
+      } else if (e.code === "Space") {
         e.preventDefault();
         const v = videoRef.current;
         if (v) {
@@ -294,7 +299,7 @@ export default function MultitrackTimeline({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [blocks]);
+  }, [blocks, isFullscreen]);
 
   // Determine maximum SFX lanes across all shots
   const sfxLanesCount = useMemo(() => {
@@ -344,18 +349,22 @@ export default function MultitrackTimeline({
   };
 
   return (
-    <div className="rounded-2xl glass-surface flex flex-col pt-1">
+    <div className={`rounded-2xl glass-surface flex flex-col pt-1 transition-all duration-300 ${
+      isFullscreen
+        ? "fixed inset-0 z-50 p-4 md:p-6 bg-zinc-950/95 backdrop-blur-2xl overflow-y-auto flex flex-col w-screen h-screen rounded-none border-none"
+        : "relative"
+    }`}>
       {/* Header Controls */}
       <div className="px-5 py-3.5 border-b border-white/10 flex items-center justify-between flex-wrap gap-3 bg-zinc-950/40 backdrop-blur-md">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse neon-glow-amber" />
             <h3 className="text-zinc-100 font-extrabold text-xs uppercase tracking-wider font-mono">
-              Timeline Editor
+              Timeline Editor {isFullscreen && "(Fullscreen NLE Studio)"}
             </h3>
           </div>
           <span className="text-[10px] font-mono text-zinc-400 bg-zinc-900 px-3 py-1 rounded-full border border-zinc-800">
-            [Space] Play/Pause · [←/→] Jump Beats
+            [Space] Play/Pause · [←/→] Jump Beats · [Esc] Exit Fullscreen
           </span>
         </div>
         <div className="flex items-center gap-4 text-[11px] font-mono">
@@ -372,6 +381,14 @@ export default function MultitrackTimeline({
               <ZoomIn className="h-3.5 w-3.5" />
             </button>
           </div>
+          <button
+            onClick={() => setIsFullscreen(!isFullscreen)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-zinc-800 bg-zinc-900/90 hover:bg-zinc-800 text-zinc-200 hover:text-white transition-all text-[11px] font-mono font-bold shadow-sm active:scale-95"
+            title={isFullscreen ? "Exit Fullscreen (Esc)" : "Expand Fullscreen Canvas"}
+          >
+            {isFullscreen ? <Minimize2 className="h-3.5 w-3.5 text-amber-400" /> : <Maximize2 className="h-3.5 w-3.5 text-amber-400" />}
+            <span>{isFullscreen ? "Exit Fullscreen" : "Fullscreen NLE"}</span>
+          </button>
         </div>
       </div>
 
@@ -379,43 +396,67 @@ export default function MultitrackTimeline({
       {previewUrl && (
         <div className="px-5 py-3.5 border-b border-zinc-900 flex flex-col gap-2.5 bg-zinc-950/60">
           {previewMeta?.stale && (
-            <div className="bg-amber-950/30 border border-amber-500/40 rounded-xl px-3.5 py-2 text-[11px] text-amber-200/90 font-mono flex gap-2.5 shadow-md">
-              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-amber-400" />
-              <span>
-                This preview was built from a different cut
-                ({previewMeta.runtime.toFixed(1)}s vs {previewMeta.live_runtime?.toFixed(1)}s now).
-                The playhead follows the <em>video</em>, so it will not line up with the
-                beats above until you rebuild the preview.
-              </span>
+            <div className="bg-amber-950/30 border border-amber-500/40 rounded-xl px-3.5 py-2.5 text-[11px] text-amber-200/90 font-mono flex items-center justify-between gap-3 shadow-md flex-wrap">
+              <div className="flex items-center gap-2.5">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+                <span>
+                  Preview out of sync ({previewMeta.runtime.toFixed(1)}s vs {previewMeta.live_runtime?.toFixed(1)}s live cut). Rebuild proxy to sync playhead.
+                </span>
+              </div>
+              {onAssemble && (
+                <button
+                  onClick={() => onAssemble("preview")}
+                  disabled={busy?.preview}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 transition text-[11px] font-mono font-bold shrink-0 shadow-md disabled:opacity-50"
+                  title="Re-render server video preview proxy to reflect latest trims and edits"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${busy?.preview ? "animate-spin" : ""}`} />
+                  <span>{busy?.preview ? "Rebuilding Proxy..." : "⚡ Rebuild Preview Proxy"}</span>
+                </button>
+              )}
             </div>
           )}
-          <div className="flex items-start gap-4">
-            <div className="relative rounded-xl border border-zinc-800 bg-black overflow-hidden shadow-xl shrink-0">
+          <div className="flex items-start gap-4 flex-wrap">
+            <div className={`relative rounded-xl border border-zinc-800 bg-black overflow-hidden shadow-xl shrink-0 transition-all ${
+              isFullscreen ? "w-[440px] md:w-[540px]" : "w-72"
+            }`}>
               <video
                 ref={videoRef}
                 src={previewUrl}
-                className="w-72 h-auto block"
+                className="w-full h-auto block"
                 onTimeUpdate={(e) => setPlayhead((e.target as HTMLVideoElement).currentTime)}
                 onPlay={() => setPlaying(true)}
                 onPause={() => setPlaying(false)}
                 controls
               />
             </div>
-            <div className="flex flex-col gap-2 text-[11px] font-mono text-zinc-400 pt-1">
-              <button
-                onClick={() => { const v = videoRef.current; if (!v) return; playing ? v.pause() : v.play(); }}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-zinc-700 bg-zinc-900 text-zinc-100 hover:text-white transition-all hover:scale-[1.02] active:scale-[0.98] w-fit shadow-sm"
-              >
-                {playing ? <Pause className="h-3.5 w-3.5 text-amber-400" /> : <Play className="h-3.5 w-3.5 text-amber-400 fill-current" />}
-                <span className="font-bold">{playing ? "Pause" : "Play"}</span>
-              </button>
-              <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-2 text-[11px] font-mono text-zinc-400 pt-1 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => { const v = videoRef.current; if (!v) return; playing ? v.pause() : v.play(); }}
+                  className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg border border-zinc-700 bg-zinc-900 text-zinc-100 hover:text-white transition-all hover:scale-[1.02] active:scale-[0.98] w-fit shadow-sm"
+                >
+                  {playing ? <Pause className="h-3.5 w-3.5 text-amber-400" /> : <Play className="h-3.5 w-3.5 text-amber-400 fill-current" />}
+                  <span className="font-bold">{playing ? "Pause" : "Play"}</span>
+                </button>
+                {onAssemble && (
+                  <button
+                    onClick={() => onAssemble("preview")}
+                    disabled={busy?.preview}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 transition-all text-[11px] font-mono font-bold shadow-sm disabled:opacity-50"
+                    title="Re-render server video preview proxy to reflect latest trims and edits"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${busy?.preview ? "animate-spin" : ""}`} />
+                    <span>{busy?.preview ? "Rebuilding Proxy..." : "⚡ Rebuild Preview Proxy"}</span>
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 mt-1">
                 <span className="tabular-nums text-amber-400 font-extrabold text-xs">{tc(playhead)}</span>
                 {atPlayhead && <span className="text-zinc-300 bg-zinc-900 px-2.5 py-0.5 rounded-md border border-zinc-800 font-bold">{atPlayhead}</span>}
               </div>
-              <span className="text-zinc-500 leading-relaxed max-w-[17rem] text-[10px]">
-                Click anywhere on the tracks or beat markers to seek. Rendering happens on the
-                server — this is the real cut, not a browser mock-up.
+              <span className="text-zinc-500 leading-relaxed max-w-md mt-0.5">
+                Click anywhere on the tracks or beat markers to seek. Edits are persisted live to GCS manifest; click ⚡ Rebuild Preview Proxy to sync the video stream.
               </span>
             </div>
           </div>
