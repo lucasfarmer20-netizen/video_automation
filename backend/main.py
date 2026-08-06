@@ -2103,6 +2103,165 @@ def approve_endpoint():
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 
+@app.get("/api/roughcut/plan")
+def roughcut_plan():
+    """What the rough cut would do right now, step by step.
+
+    The pipeline has a fixed dependency order and the UI made you discover it by
+    moving between tabs. This states it plainly: what is done, what runs next,
+    and what is blocking.
+    """
+    try:
+        sb = get_current_project()
+        ep = config.episode_paths(sb.title)
+
+        def _stems(d):
+            try:
+                return {p.stem for p in d.iterdir() if p.is_file()}
+            except OSError:
+                return set()
+
+        stills = sum(1 for s in sb.shots if s.draft_image)
+        narr = len(_stems(ep["narration"]) & {s.scene_id for s in sb.shots})
+        rendered = len(_stems(ep["render"]) & {s.scene_id for s in sb.shots})
+        n = len(sb.shots)
+        slug = ep["slug"]
+
+        steps = [
+            {"key": "drafts", "label": "Draft stills",
+             "done": n > 0 and stills >= n, "detail": f"{stills}/{n}",
+             "blocked": None if n else "This project has no beats yet."},
+            {"key": "approve", "label": "Approve storyboard",
+             "done": bool(sb.storyboard_approved), "detail": "",
+             "blocked": None if stills >= n and n else "Every beat needs a still first.",
+             "manual": True},
+            {"key": "narration", "label": "Record narration",
+             "done": n > 0 and narr >= n, "detail": f"{narr}/{n}",
+             "blocked": None if sb.script_locked or sb.storyboard_approved
+                        else "Lock the script first."},
+            {"key": "render", "label": "Render beats",
+             "done": n > 0 and rendered >= n, "detail": f"{rendered}/{n}",
+             "blocked": None if sb.storyboard_approved else "Approve the storyboard first."},
+            {"key": "preview", "label": "Build preview",
+             "done": "_preview" in _stems(ep["render"]), "detail": "",
+             "blocked": None if rendered else "Render the beats first."},
+            {"key": "timeline", "label": "Export timeline",
+             "done": (config.MANIFEST_PATH.parent / f"{slug}.fcpxml").is_file(), "detail": "",
+             "blocked": None if rendered else "Render the beats first."},
+        ]
+        nxt = next((s for s in steps if not s["done"]), None)
+        return {"ok": True, "steps": steps,
+                "next": nxt["key"] if nxt else None,
+                "complete": nxt is None,
+                "blocked_on": nxt["blocked"] if nxt else None,
+                "needs_human": bool(nxt and nxt.get("manual"))}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/assemble/rough_cut")
+def build_rough_cut(force_paid: bool = False):
+    """Run everything needed for a rough cut, in dependency order, in one job.
+
+    Each step is skipped when its output already exists, so this is safe to press
+    again after a failure or a partial run -- it picks up where it stopped rather
+    than regenerating (and re-billing) what is already there.
+
+    It deliberately STOPS at the storyboard gate rather than approving on your
+    behalf. Approval is where render budget is allocated, and a one-button build
+    that silently cleared it would defeat the only spend control in the pipeline.
+    """
+    try:
+        sb = get_current_project()
+        if not sb.shots:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": "This project has no beats. Draft a storyboard first."})
+
+        def fn():
+            ep = config.episode_paths(sb.title)
+            note = lambda m: log_job("rough_cut", m)
+
+            def have(d, ids):
+                try:
+                    return {p.stem for p in d.iterdir() if p.is_file()} & ids
+                except OSError:
+                    return set()
+
+            ids = {s.scene_id for s in sb.shots}
+            n = len(sb.shots)
+
+            # 1 — stills
+            missing = [s for s in sb.shots if not s.draft_image]
+            if missing:
+                note(f"[1/5] Generating stills for {len(missing)} beat(s) ...")
+                assets.generate_drafts(sb, n=3, backend=sb.render.backend,
+                                       save_fn=save_current_project, log=note)
+                for s in sb.shots:
+                    if s.draft_variations and s.chosen_variation is None:
+                        s.chosen_variation = 0
+                        s.draft_image = s.draft_variations[0]
+                save_current_project(sb)
+            else:
+                note(f"[1/5] Stills: all {n} beats already illustrated.")
+
+            # 2 — the gate. Not ours to clear.
+            if not sb.storyboard_approved:
+                note("")
+                note("STOPPED at the storyboard gate.")
+                note("Approve the storyboard in Step 1 to allocate render budget, "
+                     "then press Build rough cut again — it resumes from here.")
+                return
+
+            # 3 — narration, then SFX
+            if not sb.script_locked:
+                sb.script_locked = True
+                save_current_project(sb)
+                note("Script locked (the storyboard is approved).")
+            have_narr = have(ep["narration"], ids)
+            if len(have_narr) < n:
+                note(f"[2/5] Recording narration for {n - len(have_narr)} beat(s) ...")
+                audio.synthesize_narration(sb)
+                report: dict = {}
+                audio.sync_durations(sb, report=report)
+                save_current_project(sb)
+                for o in report.get("overrun", []):
+                    note(f"  !! {o['scene_id']}: locked at {o['duration']:.1f}s but its "
+                         f"narration runs {o['vo']:.1f}s — the voice will overrun.")
+            else:
+                note(f"[2/5] Narration: all {n} beats already voiced.")
+
+            sfx_dir = ep["sfx"]
+            sfx_dir.mkdir(parents=True, exist_ok=True)
+            wanted = [s for s in sb.shots if (s.sfx or "").strip()]
+            todo = [s for s in wanted if not (sfx_dir / f"{s.scene_id}.mp3").exists()]
+            if todo:
+                note(f"[3/5] Generating ambience for {len(todo)} beat(s) ...")
+                for s in todo:
+                    try:
+                        audio.generate_sfx_fal(s.sfx, sfx_dir / f"{s.scene_id}.mp3",
+                                               duration_seconds=s.camera.duration)
+                    except Exception as exc:  # noqa: BLE001
+                        note(f"  !! {s.scene_id} SFX failed: {exc}")
+            else:
+                note(f"[3/5] Ambience: {len(wanted)} beat(s) already generated.")
+
+            # 4 — render
+            note("[4/5] Rendering beats ...")
+            generate_fal_and_render(sb, force_paid=force_paid)
+
+            # 5 — assemble
+            note("[5/5] Building the preview and the Resolve timeline ...")
+            out, runtime = timeline.build_preview(sb)
+            timeline.build(sb)
+            note(f"Rough cut ready: {_safe_rel_path(out)} ({runtime:.1f}s, "
+                 f"~{runtime/60:.1f} min). FCPXML exported.")
+
+        start_job("rough_cut", fn)
+        return {"ok": True, "stage": "rough_cut"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
 @app.post("/api/assemble/{stage}")
 def run_assemble_endpoint(stage: str, force_paid: bool = False):
     try:

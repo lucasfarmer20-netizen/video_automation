@@ -27,6 +27,7 @@ import BeatCard from "../components/BeatCard";
 import FlowCanvas from "../components/FlowCanvas";
 import MultitrackTimeline from "../components/MultitrackTimeline";
 import Lightbox, { LightboxState } from "../components/Lightbox";
+import RoughCutPanel from "../components/RoughCutPanel";
 import GradePanel, { Grade } from "../components/GradePanel";
 import MetadataPanel, { Metadata } from "../components/MetadataPanel";
 import VoiceStudioModal from "../components/VoiceStudioModal";
@@ -866,6 +867,20 @@ Moved to: ${res.moved_to}`);
 
         {/* Central timeline editor */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 flex flex-col gap-6 w-full">
+
+          <RoughCutPanel
+            running={jobs["rough_cut"]?.status === "running"}
+            logLine={jobs["rough_cut"]?.log?.trim().split(/\n/).pop()}
+            refreshKey={`${counts.stills}-${counts.narration}-${counts.rendered}-${project.storyboard_approved}`}
+            fetchPlan={async () => {
+              try {
+                const r = await fetch(`${API_BASE}/api/roughcut/plan`);
+                return r.ok ? await r.json() : null;
+              } catch { return null; }
+            }}
+            onBuild={async () => { await post("/api/assemble/rough_cut"); }}
+            onGoApprove={() => setActiveStep(1)}
+          />
 
           <StepHeader
             active={activeStep}
