@@ -215,6 +215,26 @@ export default function MultitrackTimeline({
   const [selected, setSelected] = useState<string | null>(null);
   const [drag, setDrag] = useState<{ id: string; dur: number } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFloatingPlayer, setIsFloatingPlayer] = useState(true);
+  const [playerMinimized, setPlayerMinimized] = useState(false);
+
+  const handleZoomIn = () => {
+    setPxPerSec((z) => {
+      if (z < 10) return z + 2;
+      if (z < 30) return z + 5;
+      if (z < 80) return z + 15;
+      return Math.min(200, z + 25);
+    });
+  };
+
+  const handleZoomOut = () => {
+    setPxPerSec((z) => {
+      if (z <= 10) return Math.max(1, z - 2);
+      if (z <= 30) return z - 5;
+      if (z <= 80) return z - 15;
+      return Math.max(1, z - 25);
+    });
+  };
 
   // Audio drag state for offset adjustment & fade handle dragging
   const [audioDrag, setAudioDrag] = useState<{
@@ -388,7 +408,7 @@ export default function MultitrackTimeline({
   return (
     <div className={`rounded-2xl glass-surface flex flex-col pt-1 transition-all duration-300 ${
       isFullscreen
-        ? "fixed inset-0 z-50 p-4 md:p-6 bg-zinc-950/95 backdrop-blur-2xl overflow-y-auto flex flex-col w-screen h-screen rounded-none border-none"
+        ? "fixed inset-0 z-50 p-4 md:p-6 bg-zinc-950/98 backdrop-blur-3xl overflow-y-auto flex flex-col w-screen h-screen rounded-none border-none"
         : "relative"
     }`}>
       {/* Header Controls */}
@@ -397,27 +417,46 @@ export default function MultitrackTimeline({
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse neon-glow-amber" />
             <h3 className="text-zinc-100 font-extrabold text-xs uppercase tracking-wider font-mono">
-              Timeline Editor {isFullscreen && "(Fullscreen NLE Studio)"}
+              Timeline Editor {isFullscreen && "(Fullscreen Infinite NLE Studio)"}
             </h3>
           </div>
           <span className="text-[10px] font-mono text-zinc-400 bg-zinc-900 px-3 py-1 rounded-full border border-zinc-800">
             [Space] Play/Pause · [←/→] Jump Beats · [Esc] Exit Fullscreen
           </span>
         </div>
-        <div className="flex items-center gap-4 text-[11px] font-mono">
+        <div className="flex items-center gap-3 text-[11px] font-mono flex-wrap">
           <span className="text-zinc-400 font-semibold">{shots.length} beats</span>
           <span className="text-amber-400 font-extrabold bg-amber-500/15 px-3 py-1 rounded-full border border-amber-500/30">{tc(total)} ({(total / 60).toFixed(1)} min)</span>
+          
+          {/* Zoom Presets & Controls */}
           <div className="flex items-center gap-1.5 bg-zinc-900 px-2.5 py-1 rounded-full border border-zinc-800">
-            <button onClick={() => setPxPerSec((z) => Math.max(1, z - 1))}
+            <button onClick={handleZoomOut}
               className="text-zinc-400 hover:text-zinc-100 transition-colors p-0.5" title="Zoom out">
               <ZoomOut className="h-3.5 w-3.5" />
             </button>
-            <span className="text-zinc-200 w-10 text-center tabular-nums font-bold">{pxPerSec}px/s</span>
-            <button onClick={() => setPxPerSec((z) => Math.min(20, z + 1))}
+            <span className="text-zinc-200 min-w-12 text-center tabular-nums font-bold">{pxPerSec}px/s</span>
+            <button onClick={handleZoomIn}
               className="text-zinc-400 hover:text-zinc-100 transition-colors p-0.5" title="Zoom in">
               <ZoomIn className="h-3.5 w-3.5" />
             </button>
           </div>
+
+          <div className="hidden xl:flex items-center gap-1 bg-zinc-950/80 p-1 rounded-full border border-zinc-800 text-[10px]">
+            {[4, 12, 30, 80, 150].map((preset) => (
+              <button
+                key={preset}
+                onClick={() => setPxPerSec(preset)}
+                className={`px-2 py-0.5 rounded-full font-bold transition-all ${
+                  pxPerSec === preset
+                    ? "bg-amber-500 text-zinc-950 font-extrabold shadow-sm"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {preset}px/s
+              </button>
+            ))}
+          </div>
+
           <button
             onClick={() => setIsFullscreen(!isFullscreen)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-zinc-800 bg-zinc-900/90 hover:bg-zinc-800 text-zinc-200 hover:text-white transition-all text-[11px] font-mono font-bold shadow-sm active:scale-95"
@@ -429,74 +468,114 @@ export default function MultitrackTimeline({
         </div>
       </div>
 
-      {/* Video Preview Card */}
+      {/* Floating Picture-in-Picture Preview Player Widget */}
       {previewUrl && (
-        <div className="px-5 py-3.5 border-b border-zinc-900 flex flex-col gap-2.5 bg-zinc-950/60">
-          {previewMeta?.stale && (
-            <div className="bg-amber-950/30 border border-amber-500/40 rounded-xl px-3.5 py-2.5 text-[11px] text-amber-200/90 font-mono flex items-center justify-between gap-3 shadow-md flex-wrap">
-              <div className="flex items-center gap-2.5">
-                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
-                <span>
-                  Preview out of sync ({previewMeta.runtime.toFixed(1)}s vs {previewMeta.live_runtime?.toFixed(1)}s live cut). Rebuild proxy to sync playhead.
-                </span>
+        <div className={`transition-all duration-300 ${
+          isFullscreen || isFloatingPlayer
+            ? playerMinimized
+              ? "fixed bottom-6 right-6 z-50 glass-surface px-4 py-2.5 rounded-full border border-amber-500/40 shadow-2xl flex items-center gap-3"
+              : "fixed top-20 right-6 z-50 w-80 sm:w-96 glass-surface p-3.5 rounded-2xl border border-white/20 shadow-2xl flex flex-col gap-2.5 backdrop-blur-3xl animate-in fade-in zoom-in-95"
+            : "px-5 py-3.5 border-b border-zinc-900 flex flex-col gap-2.5 bg-zinc-950/60"
+        }`}>
+          {/* Minimized Pill Bar */}
+          {(isFullscreen || isFloatingPlayer) && playerMinimized ? (
+            <div className="flex items-center gap-3 w-full justify-between font-mono text-xs">
+              <div className="flex items-center gap-2 cursor-pointer" onClick={() => setPlayerMinimized(false)}>
+                <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                <span className="font-extrabold text-zinc-100">Preview Player</span>
+                <span className="text-amber-400 font-bold">{tc(playhead)}</span>
               </div>
-              {onAssemble && (
-                <button
-                  onClick={() => onAssemble("preview")}
-                  disabled={busy?.preview}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 transition text-[11px] font-mono font-bold shrink-0 shadow-md disabled:opacity-50"
-                  title="Re-render server video preview proxy to reflect latest trims and edits"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${busy?.preview ? "animate-spin" : ""}`} />
-                  <span>{busy?.preview ? "Rebuilding Proxy..." : "⚡ Rebuild Preview Proxy"}</span>
-                </button>
-              )}
-            </div>
-          )}
-          <div className="flex items-start gap-4 flex-wrap">
-            <div className={`relative rounded-xl border border-zinc-800 bg-black overflow-hidden shadow-xl shrink-0 transition-all ${
-              isFullscreen ? "w-[440px] md:w-[540px]" : "w-72"
-            }`}>
-              <video
-                ref={videoRef}
-                src={previewUrl}
-                className="w-full h-auto block"
-                onTimeUpdate={(e) => setPlayhead((e.target as HTMLVideoElement).currentTime)}
-                onPlay={() => setPlaying(true)}
-                onPause={() => setPlaying(false)}
-                controls
-              />
-            </div>
-            <div className="flex flex-col gap-2 text-[11px] font-mono text-zinc-400 pt-1 flex-1">
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => { const v = videoRef.current; if (!v) return; playing ? v.pause() : v.play(); }}
-                  className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg border border-zinc-700 bg-zinc-900 text-zinc-100 hover:text-white transition-all hover:scale-[1.02] active:scale-[0.98] w-fit shadow-sm"
+                  className="p-1.5 rounded-full bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition"
+                  title="Play / Pause"
                 >
-                  {playing ? <Pause className="h-3.5 w-3.5 text-amber-400" /> : <Play className="h-3.5 w-3.5 text-amber-400 fill-current" />}
-                  <span className="font-bold">{playing ? "Pause" : "Play"}</span>
+                  {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 fill-current" />}
                 </button>
-                {onAssemble && (
-                  <button
-                    onClick={() => onAssemble("preview")}
-                    disabled={busy?.preview}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 transition-all text-[11px] font-mono font-bold shadow-sm disabled:opacity-50"
-                    title="Re-render server video preview proxy to reflect latest trims and edits"
-                  >
-                    <RefreshCw className={`h-3.5 w-3.5 ${busy?.preview ? "animate-spin" : ""}`} />
-                    <span>{busy?.preview ? "Rebuilding Proxy..." : "⚡ Rebuild Preview Proxy"}</span>
-                  </button>
-                )}
+                <button
+                  onClick={() => setPlayerMinimized(false)}
+                  className="p-1 text-zinc-400 hover:text-zinc-100 transition"
+                  title="Expand Floating Player"
+                >
+                  <Maximize2 className="h-3.5 w-3.5" />
+                </button>
               </div>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="tabular-nums text-amber-400 font-extrabold text-xs">{tc(playhead)}</span>
-                {atPlayhead && <span className="text-zinc-300 bg-zinc-900 px-2.5 py-0.5 rounded-md border border-zinc-800 font-bold">{atPlayhead}</span>}
-              </div>
-              <span className="text-zinc-500 leading-relaxed max-w-md mt-0.5">
-                Click anywhere on the tracks or beat markers to seek. Edits are persisted live to GCS manifest; click ⚡ Rebuild Preview Proxy to sync the video stream.
-              </span>
             </div>
-          </div>
+          ) : (
+            <>
+              {/* Header inside floating widget */}
+              <div className="flex items-center justify-between text-xs font-mono">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                  <span className="font-extrabold text-zinc-100 uppercase tracking-wider">Preview Proxy</span>
+                  <span className="text-amber-400 font-bold tabular-nums">{tc(playhead)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {onAssemble && (
+                    <button
+                      onClick={() => onAssemble("preview")}
+                      disabled={busy?.preview}
+                      className="p-1 rounded-md bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition border border-amber-500/30 text-[10px]"
+                      title="Rebuild server preview proxy"
+                    >
+                      <RefreshCw className={`h-3 w-3 ${busy?.preview ? "animate-spin" : ""}`} />
+                    </button>
+                  )}
+                  {(isFullscreen || isFloatingPlayer) && (
+                    <button
+                      onClick={() => setPlayerMinimized(true)}
+                      className="p-1 text-zinc-400 hover:text-zinc-100 transition"
+                      title="Minimize to Floating Pill"
+                    >
+                      <Minimize2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {previewMeta?.stale && (
+                <div className="bg-amber-950/40 border border-amber-500/40 rounded-lg px-2.5 py-1.5 text-[10px] text-amber-200/90 font-mono flex items-center justify-between gap-2 shadow-inner">
+                  <div className="flex items-center gap-1.5 truncate">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+                    <span className="truncate">Cut changed · Rebuild proxy</span>
+                  </div>
+                  {onAssemble && (
+                    <button
+                      onClick={() => onAssemble("preview")}
+                      disabled={busy?.preview}
+                      className="px-2 py-0.5 rounded bg-amber-500 text-zinc-950 font-bold text-[9px] hover:bg-amber-400 transition shrink-0"
+                    >
+                      Rebuild
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div className="relative rounded-xl border border-zinc-800 bg-black overflow-hidden shadow-xl w-full">
+                <video
+                  ref={videoRef}
+                  src={previewUrl}
+                  className="w-full h-auto block max-h-[220px] object-contain"
+                  onTimeUpdate={(e) => setPlayhead((e.target as HTMLVideoElement).currentTime)}
+                  onPlay={() => setPlaying(true)}
+                  onPause={() => setPlaying(false)}
+                  controls
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-2 text-[10px] font-mono text-zinc-400 pt-0.5">
+                <button
+                  onClick={() => { const v = videoRef.current; if (!v) return; playing ? v.pause() : v.play(); }}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-zinc-700 bg-zinc-900 text-zinc-100 hover:text-white transition-all font-bold"
+                >
+                  {playing ? <Pause className="h-3 w-3 text-amber-400" /> : <Play className="h-3 w-3 text-amber-400 fill-current" />}
+                  <span>{playing ? "Pause" : "Play"}</span>
+                </button>
+                {atPlayhead && <span className="text-zinc-300 bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800 font-bold truncate max-w-[160px]">{atPlayhead}</span>}
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -546,9 +625,9 @@ export default function MultitrackTimeline({
         </div>
 
         {/* Scrollable Tracks Canvas */}
-        <div className="flex-1 overflow-x-auto bg-zinc-950">
+        <div className="flex-1 overflow-x-auto bg-zinc-950/80">
           <div
-            style={{ width }}
+            style={{ minWidth: `calc(${width}px + 70vw)`, width: `calc(${width}px + 70vw)` }}
             className="relative"
             onClick={(e) => {
               const v = videoRef.current;
