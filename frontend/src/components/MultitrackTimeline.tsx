@@ -222,14 +222,25 @@ export default function MultitrackTimeline({
   const [selected, setSelected] = useState<string | null>(null);
   const [drag, setDrag] = useState<{ id: string; dur: number } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [trackH, setTrackH] = useState(40);              // px per track row
+  const wheelProxyRef = React.useRef<(e: WheelEvent) => void>(() => {});
+  const [trackH, setTrackH] = useState(80);              // px per track row
   // Floating player position. Defaults clear of the right sidebar, which is why
   // a "floating" panel at right-6 read as docked.
   const [playerPos, setPlayerPos] = useState({ x: 40, y: 96 });
-  const playerDrag = React.useRef<{ dx: number; dy: number } | null>(null);
+  const playerDrag = React.useRef<{ dx: number; dy: number; lastX?: number; lastY?: number } | null>(null);
   const [mounted, setMounted] = useState(false);
   React.useEffect(() => setMounted(true), []);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  // The wheel listener must be non-passive to preventDefault, and it must be
+  // bound the instant the node exists. A callback ref does both without
+  // depending on effect ordering; the proxy keeps it pointing at the latest
+  // handler so it never closes over a stale zoom level.
+  const bindScroll = React.useCallback((node: HTMLDivElement | null) => {
+    const proxy = (e: WheelEvent) => wheelProxyRef.current(e);
+    if (scrollRef.current) scrollRef.current.removeEventListener("wheel", proxy);
+    scrollRef.current = node;
+    if (node) node.addEventListener("wheel", proxy, { passive: false });
+  }, []);
   const [followPlayhead, setFollowPlayhead] = useState(true);
   // Set while we are scrolling programmatically, so our own scroll events do not
   // read as the user grabbing the bar.
@@ -435,7 +446,7 @@ export default function MultitrackTimeline({
   React.useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const onWheel = (ev: WheelEvent) => {
+    wheelProxyRef.current = (ev: WheelEvent) => {
       // Shift = scroll horizontally (the standard escape hatch). Alt = taller or
       // shorter rows. Anything else zooms, because that is what the wheel is for
       // on a timeline and requiring a modifier made it feel broken.
@@ -447,7 +458,6 @@ export default function MultitrackTimeline({
       }
       zoomAt(ev.clientX, ev.deltaY < 0 ? 1 : -1);
     };
-    el.addEventListener("wheel", onWheel, { passive: false });
 
     const onUserScroll = () => {
       if (autoScrolling.current) return;
@@ -456,7 +466,6 @@ export default function MultitrackTimeline({
     el.addEventListener("wheel", onUserScroll, { passive: true });
     el.addEventListener("pointerdown", onUserScroll);
     return () => {
-      el.removeEventListener("wheel", onWheel);
       el.removeEventListener("wheel", onUserScroll);
       el.removeEventListener("pointerdown", onUserScroll);
     };
@@ -546,12 +555,24 @@ export default function MultitrackTimeline({
           }}
           onPointerMove={(e) => {
             if (!playerDrag.current) return;
-            setPlayerPos({
-              x: Math.max(0, Math.min(window.innerWidth - 120, e.clientX - playerDrag.current.dx)),
-              y: Math.max(0, Math.min(window.innerHeight - 60, e.clientY - playerDrag.current.dy)),
-            });
+            // Write the DOM directly during the gesture. setState here re-rendered
+            // the entire timeline -- every clip, waveform and lane -- on every
+            // pointer move, which is what made dragging feel like treacle.
+            const x = Math.max(0, Math.min(window.innerWidth - 120, e.clientX - playerDrag.current.dx));
+            const y = Math.max(0, Math.min(window.innerHeight - 60, e.clientY - playerDrag.current.dy));
+            playerDrag.current.lastX = x;
+            playerDrag.current.lastY = y;
+            const el = e.currentTarget as HTMLElement;
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
           }}
-          onPointerUp={() => { playerDrag.current = null; }}>
+          onPointerUp={() => {
+            // Commit once, so the position survives the next render.
+            if (playerDrag.current?.lastX !== undefined) {
+              setPlayerPos({ x: playerDrag.current.lastX, y: playerDrag.current.lastY! });
+            }
+            playerDrag.current = null;
+          }}>
             {/* Minimized Pill Bar */}
             {(isFullscreen || isFloatingPlayer) && playerMinimized ? (
               <div className="flex items-center gap-3 w-full justify-between font-mono text-xs">
@@ -693,7 +714,7 @@ export default function MultitrackTimeline({
           {/* Row height. Zoom only widened clips before; short rows stay short
               no matter how far you zoom in, which is useless for reading a
               waveform. */}
-          <div className="hidden lg:flex items-center gap-1 bg-zinc-950/80 px-2 py-1 rounded-full border border-zinc-800 text-[10px] font-mono text-zinc-400">
+          <div className="flex items-center gap-1 bg-zinc-950/80 px-2 py-1 rounded-full border border-zinc-800 text-[10px] font-mono text-zinc-400">
             <span className="text-zinc-500">rows</span>
             <input
               type="range" min={24} max={220} step={4} value={trackH}
@@ -775,13 +796,13 @@ export default function MultitrackTimeline({
           <div className="h-9 border-b border-zinc-900" />
           
           {/* V1 Header */}
-          <div className="h-[var(--trk)] flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-blue-300 font-extrabold bg-blue-950/20">
+          <div style={{ height: trackH }} className="flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-blue-300 font-extrabold bg-blue-950/20">
             <Film className="h-3.5 w-3.5 shrink-0 text-blue-400" />
             <span className="truncate">V1 Stills</span>
           </div>
 
           {/* A1 Header */}
-          <div className="h-[var(--trk)] flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-emerald-300 font-extrabold bg-emerald-950/20">
+          <div style={{ height: trackH }} className="flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-emerald-300 font-extrabold bg-emerald-950/20">
             <Mic className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
             <span className="truncate">A1 VO</span>
             <BusBtns bus="narration" />
@@ -789,7 +810,7 @@ export default function MultitrackTimeline({
 
           {/* A2 SFX Headers (dynamic lanes) */}
           {sfxLaneKeys.map((lane) => (
-            <div key={lane.key} className="h-[var(--trk)] flex items-center justify-between px-3 border-b border-zinc-900 text-[10px] font-mono text-amber-300 font-extrabold bg-amber-950/20">
+            <div key={lane.key} style={{ height: trackH }} className="flex items-center justify-between px-3 border-b border-zinc-900 text-[10px] font-mono text-amber-300 font-extrabold bg-amber-950/20">
               <div className="flex items-center gap-2 truncate">
                 <Waves className="h-3.5 w-3.5 shrink-0 text-amber-400" />
                 <span className="truncate">{lane.label}</span>
@@ -808,7 +829,7 @@ export default function MultitrackTimeline({
           ))}
 
           {/* A3 Header */}
-          <div className="h-[var(--trk)] flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-purple-300 font-extrabold bg-purple-950/20">
+          <div style={{ height: trackH }} className="flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-purple-300 font-extrabold bg-purple-950/20">
             <Music className="h-3.5 w-3.5 shrink-0 text-purple-400" />
             <span className="truncate">A3 Music</span>
             <BusBtns bus="music" />
@@ -816,7 +837,7 @@ export default function MultitrackTimeline({
         </div>
 
         {/* Scrollable Tracks Canvas */}
-        <div ref={scrollRef} className="flex-1 min-w-0 overflow-x-auto bg-zinc-950/80">
+        <div ref={bindScroll} className="flex-1 min-w-0 overflow-x-auto bg-zinc-950/80">
           <div
             style={{ minWidth: `calc(${width}px + 70vw)`, width: `calc(${width}px + 70vw)` }}
             className="relative"
@@ -867,7 +888,7 @@ export default function MultitrackTimeline({
             </div>
 
             {/* V1 — Stills Track */}
-            <div className="h-[var(--trk)] border-b border-zinc-900 relative bg-slate-950/40">
+            <div style={{ height: trackH }} className="border-b border-zinc-900 relative bg-slate-950/40">
               {blocks.map(({ shot, start, dur }) => {
                 const moveBadge = MOVE_BADGES[shot.camera?.move] || shot.camera?.move;
                 return (
@@ -939,7 +960,7 @@ export default function MultitrackTimeline({
             </div>
 
             {/* A1 — Narration Track */}
-            <div className="h-[var(--trk)] border-b border-zinc-900 relative bg-emerald-950/20">
+            <div style={{ height: trackH }} className="border-b border-zinc-900 relative bg-emerald-950/20">
               {blocks.map(({ shot, start, dur }) => {
                 const present = shot.has_narration;
                 const wanted = Boolean(shot.narration?.trim());
@@ -1088,7 +1109,7 @@ export default function MultitrackTimeline({
 
             {/* A2 — Dynamic Multi-Lane SFX Tracks */}
             {sfxLaneKeys.map((lane) => (
-              <div key={lane.key} className="h-[var(--trk)] border-b border-zinc-900 relative bg-amber-950/20">
+              <div key={lane.key} style={{ height: trackH }} className="border-b border-zinc-900 relative bg-amber-950/20">
                 {blocks.map(({ shot, start, dur }) => {
                   const resolvedLayers = shot.sfx_layers_resolved;
                   const hasResolved = resolvedLayers && resolvedLayers.length > 0;
@@ -1263,7 +1284,7 @@ export default function MultitrackTimeline({
             ))}
 
             {/* A3 — Music Track */}
-            <div className="h-[var(--trk)] border-b border-zinc-900 relative bg-purple-950/20">
+            <div style={{ height: trackH }} className="border-b border-zinc-900 relative bg-purple-950/20">
               {musicTrack ? (
                 <div
                   className="absolute top-2 bottom-2 left-0 rounded-lg border bg-purple-950/80 border-purple-400/50 shadow-[0_0_15px_rgba(192,132,252,0.2)] flex items-center px-3"
