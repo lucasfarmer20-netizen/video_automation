@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useMemo, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { Lock, Unlock, Film, Mic, Waves, Music, ZoomIn, ZoomOut, RefreshCw, Play, Pause, AlertTriangle, Plus, Trash2, Maximize2, Minimize2, Crosshair } from "lucide-react";
 
 export interface SfxLayer {
@@ -215,6 +216,8 @@ export default function MultitrackTimeline({
   const [selected, setSelected] = useState<string | null>(null);
   const [drag, setDrag] = useState<{ id: string; dur: number } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  React.useEffect(() => setMounted(true), []);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const [followPlayhead, setFollowPlayhead] = useState(true);
   // Set while we are scrolling programmatically, so our own scroll events do not
@@ -373,6 +376,23 @@ export default function MultitrackTimeline({
     return p.start + frac * p.duration;
   }, [previewMeta, blocks, pxPerSec]);
 
+  const zoomAt = React.useCallback((clientX: number, dir: -1 | 1) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const cursorX = clientX - rect.left + el.scrollLeft;   // px into the timeline
+    const tAtCursor = cursorX / pxPerSec;                  // live seconds under the pointer
+    setPxPerSec((z) => {
+      const next = Math.max(1, Math.min(200, dir > 0 ? z * 1.15 : z / 1.15));
+      // Re-anchor after React paints at the new scale.
+      requestAnimationFrame(() => {
+        const e2 = scrollRef.current;
+        if (e2) e2.scrollLeft = Math.max(0, tAtCursor * next - (clientX - rect.left));
+      });
+      return next;
+    });
+  }, [pxPerSec]);
+
   // Keep the playhead on screen while it moves. Without this the timeline is
   // unusable at the higher zooms: at 200 px/s a ~1200px viewport shows about six
   // seconds of a five-and-a-half minute episode, so the playhead leaves the
@@ -404,6 +424,13 @@ export default function MultitrackTimeline({
   React.useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    const onWheel = (ev: WheelEvent) => {
+      if (!(ev.ctrlKey || ev.metaKey)) return;   // plain wheel still scrolls
+      ev.preventDefault();
+      zoomAt(ev.clientX, ev.deltaY < 0 ? 1 : -1);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+
     const onUserScroll = () => {
       if (autoScrolling.current) return;
       if (playing) setFollowPlayhead(false);
@@ -411,10 +438,11 @@ export default function MultitrackTimeline({
     el.addEventListener("wheel", onUserScroll, { passive: true });
     el.addEventListener("pointerdown", onUserScroll);
     return () => {
+      el.removeEventListener("wheel", onWheel);
       el.removeEventListener("wheel", onUserScroll);
       el.removeEventListener("pointerdown", onUserScroll);
     };
-  }, [playing]);
+  }, [playing, zoomAt]);
 
   /** Preview time at the start of the beat before/after the playhead. */
   const beatSeek = React.useCallback((dir: -1 | 1, cur: number): number | null => {
@@ -454,7 +482,122 @@ export default function MultitrackTimeline({
     }
   };
 
-  return (
+  // Rendered through a portal when floating: an ancestor with backdrop-filter
+  // (.glass-surface) becomes the containing block for position:fixed, so a
+  // "floating" player was being pinned inside the timeline card instead of the
+  // viewport. Portalling to <body> escapes that.
+  const playerFloats = isFullscreen || isFloatingPlayer;
+  const playerNode = previewUrl ? (
+  <div className={`transition-all duration-300 ${
+            isFullscreen || isFloatingPlayer
+              ? playerMinimized
+                ? "fixed bottom-6 right-6 z-50 glass-surface px-4 py-2.5 rounded-full border border-amber-500/40 shadow-2xl flex items-center gap-3"
+                : "fixed top-20 right-6 z-50 w-80 sm:w-96 glass-surface p-3.5 rounded-2xl border border-white/20 shadow-2xl flex flex-col gap-2.5 backdrop-blur-3xl animate-in fade-in zoom-in-95"
+              : "px-5 py-3.5 border-b border-zinc-900 flex flex-col gap-2.5 bg-zinc-950/60"
+          }`}>
+            {/* Minimized Pill Bar */}
+            {(isFullscreen || isFloatingPlayer) && playerMinimized ? (
+              <div className="flex items-center gap-3 w-full justify-between font-mono text-xs">
+                <div className="flex items-center gap-2 cursor-pointer" onClick={() => setPlayerMinimized(false)}>
+                  <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                  <span className="font-extrabold text-zinc-100">Preview Player</span>
+                  <span className="text-amber-400 font-bold">{tc(playhead)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => { const v = videoRef.current; if (!v) return; playing ? v.pause() : v.play(); }}
+                    className="p-1.5 rounded-full bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition"
+                    title="Play / Pause"
+                  >
+                    {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 fill-current" />}
+                  </button>
+                  <button
+                    onClick={() => setPlayerMinimized(false)}
+                    className="p-1 text-zinc-400 hover:text-zinc-100 transition"
+                    title="Expand Floating Player"
+                  >
+                    <Maximize2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Header inside floating widget */}
+                <div className="flex items-center justify-between text-xs font-mono">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                    <span className="font-extrabold text-zinc-100 uppercase tracking-wider">Preview Proxy</span>
+                    <span className="text-amber-400 font-bold tabular-nums">{tc(playhead)}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {onAssemble && (
+                      <button
+                        onClick={() => onAssemble("preview")}
+                        disabled={busy?.preview}
+                        className="p-1 rounded-md bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition border border-amber-500/30 text-[10px]"
+                        title="Rebuild server preview proxy"
+                      >
+                        <RefreshCw className={`h-3 w-3 ${busy?.preview ? "animate-spin" : ""}`} />
+                      </button>
+                    )}
+                    {(isFullscreen || isFloatingPlayer) && (
+                      <button
+                        onClick={() => setPlayerMinimized(true)}
+                        className="p-1 text-zinc-400 hover:text-zinc-100 transition"
+                        title="Minimize to Floating Pill"
+                      >
+                        <Minimize2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {previewMeta?.stale && (
+                  <div className="bg-amber-950/40 border border-amber-500/40 rounded-lg px-2.5 py-1.5 text-[10px] text-amber-200/90 font-mono flex items-center justify-between gap-2 shadow-inner">
+                    <div className="flex items-center gap-1.5 truncate">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+                      <span className="truncate">Cut changed · Rebuild proxy</span>
+                    </div>
+                    {onAssemble && (
+                      <button
+                        onClick={() => onAssemble("preview")}
+                        disabled={busy?.preview}
+                        className="px-2 py-0.5 rounded bg-amber-500 text-zinc-950 font-bold text-[9px] hover:bg-amber-400 transition shrink-0"
+                      >
+                        Rebuild
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                <div className="relative rounded-xl border border-zinc-800 bg-black overflow-hidden shadow-xl w-full">
+                  <video
+                    ref={videoRef}
+                    src={previewUrl}
+                    className="w-full h-auto block max-h-[220px] object-contain"
+                    onTimeUpdate={(e) => setPlayhead((e.target as HTMLVideoElement).currentTime)}
+                    onPlay={() => setPlaying(true)}
+                    onPause={() => setPlaying(false)}
+                    controls
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-2 text-[10px] font-mono text-zinc-400 pt-0.5">
+                  <button
+                    onClick={() => { const v = videoRef.current; if (!v) return; playing ? v.pause() : v.play(); }}
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-zinc-700 bg-zinc-900 text-zinc-100 hover:text-white transition-all font-bold"
+                  >
+                    {playing ? <Pause className="h-3 w-3 text-amber-400" /> : <Play className="h-3 w-3 text-amber-400 fill-current" />}
+                    <span>{playing ? "Pause" : "Play"}</span>
+                  </button>
+                  {atPlayhead && <span className="text-zinc-300 bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800 font-bold truncate max-w-[160px]">{atPlayhead}</span>}
+                </div>
+              </>
+            )}
+          </div>
+  ) : null;
+
+  const shell = (
     <div className={`rounded-2xl glass-surface flex flex-col pt-1 transition-all duration-300 ${
       isFullscreen
         ? "fixed inset-0 z-50 p-4 md:p-6 bg-zinc-950/98 backdrop-blur-3xl overflow-y-auto flex flex-col w-screen h-screen rounded-none border-none"
@@ -533,118 +676,12 @@ export default function MultitrackTimeline({
       </div>
 
       {/* Floating Picture-in-Picture Preview Player Widget */}
-      {previewUrl && (
-        <div className={`transition-all duration-300 ${
-          isFullscreen || isFloatingPlayer
-            ? playerMinimized
-              ? "fixed bottom-6 right-6 z-50 glass-surface px-4 py-2.5 rounded-full border border-amber-500/40 shadow-2xl flex items-center gap-3"
-              : "fixed top-20 right-6 z-50 w-80 sm:w-96 glass-surface p-3.5 rounded-2xl border border-white/20 shadow-2xl flex flex-col gap-2.5 backdrop-blur-3xl animate-in fade-in zoom-in-95"
-            : "px-5 py-3.5 border-b border-zinc-900 flex flex-col gap-2.5 bg-zinc-950/60"
-        }`}>
-          {/* Minimized Pill Bar */}
-          {(isFullscreen || isFloatingPlayer) && playerMinimized ? (
-            <div className="flex items-center gap-3 w-full justify-between font-mono text-xs">
-              <div className="flex items-center gap-2 cursor-pointer" onClick={() => setPlayerMinimized(false)}>
-                <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-                <span className="font-extrabold text-zinc-100">Preview Player</span>
-                <span className="text-amber-400 font-bold">{tc(playhead)}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => { const v = videoRef.current; if (!v) return; playing ? v.pause() : v.play(); }}
-                  className="p-1.5 rounded-full bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition"
-                  title="Play / Pause"
-                >
-                  {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 fill-current" />}
-                </button>
-                <button
-                  onClick={() => setPlayerMinimized(false)}
-                  className="p-1 text-zinc-400 hover:text-zinc-100 transition"
-                  title="Expand Floating Player"
-                >
-                  <Maximize2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
-          ) : (
-            <>
-              {/* Header inside floating widget */}
-              <div className="flex items-center justify-between text-xs font-mono">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-                  <span className="font-extrabold text-zinc-100 uppercase tracking-wider">Preview Proxy</span>
-                  <span className="text-amber-400 font-bold tabular-nums">{tc(playhead)}</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  {onAssemble && (
-                    <button
-                      onClick={() => onAssemble("preview")}
-                      disabled={busy?.preview}
-                      className="p-1 rounded-md bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition border border-amber-500/30 text-[10px]"
-                      title="Rebuild server preview proxy"
-                    >
-                      <RefreshCw className={`h-3 w-3 ${busy?.preview ? "animate-spin" : ""}`} />
-                    </button>
-                  )}
-                  {(isFullscreen || isFloatingPlayer) && (
-                    <button
-                      onClick={() => setPlayerMinimized(true)}
-                      className="p-1 text-zinc-400 hover:text-zinc-100 transition"
-                      title="Minimize to Floating Pill"
-                    >
-                      <Minimize2 className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {previewMeta?.stale && (
-                <div className="bg-amber-950/40 border border-amber-500/40 rounded-lg px-2.5 py-1.5 text-[10px] text-amber-200/90 font-mono flex items-center justify-between gap-2 shadow-inner">
-                  <div className="flex items-center gap-1.5 truncate">
-                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-400" />
-                    <span className="truncate">Cut changed · Rebuild proxy</span>
-                  </div>
-                  {onAssemble && (
-                    <button
-                      onClick={() => onAssemble("preview")}
-                      disabled={busy?.preview}
-                      className="px-2 py-0.5 rounded bg-amber-500 text-zinc-950 font-bold text-[9px] hover:bg-amber-400 transition shrink-0"
-                    >
-                      Rebuild
-                    </button>
-                  )}
-                </div>
-              )}
-
-              <div className="relative rounded-xl border border-zinc-800 bg-black overflow-hidden shadow-xl w-full">
-                <video
-                  ref={videoRef}
-                  src={previewUrl}
-                  className="w-full h-auto block max-h-[220px] object-contain"
-                  onTimeUpdate={(e) => setPlayhead((e.target as HTMLVideoElement).currentTime)}
-                  onPlay={() => setPlaying(true)}
-                  onPause={() => setPlaying(false)}
-                  controls
-                />
-              </div>
-
-              <div className="flex items-center justify-between gap-2 text-[10px] font-mono text-zinc-400 pt-0.5">
-                <button
-                  onClick={() => { const v = videoRef.current; if (!v) return; playing ? v.pause() : v.play(); }}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-zinc-700 bg-zinc-900 text-zinc-100 hover:text-white transition-all font-bold"
-                >
-                  {playing ? <Pause className="h-3 w-3 text-amber-400" /> : <Play className="h-3 w-3 text-amber-400 fill-current" />}
-                  <span>{playing ? "Pause" : "Play"}</span>
-                </button>
-                {atPlayhead && <span className="text-zinc-300 bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800 font-bold truncate max-w-[160px]">{atPlayhead}</span>}
-              </div>
-            </>
-          )}
-        </div>
-      )}
+      {playerNode && (playerFloats && mounted
+        ? createPortal(playerNode, document.body)
+        : playerNode)}
 
       {/* Main Track Workspace */}
-      <div className="flex">
+      <div className={`flex ${isFullscreen ? "flex-1 min-h-0" : ""}`}>
         {/* Track Headers Column */}
         <div className="shrink-0 w-32 border-r border-zinc-900 bg-zinc-950 z-20">
           {/* Header ruler blank cell matched to h-11 height */}
@@ -689,7 +726,7 @@ export default function MultitrackTimeline({
         </div>
 
         {/* Scrollable Tracks Canvas */}
-        <div ref={scrollRef} className="flex-1 overflow-x-auto bg-zinc-950/80">
+        <div ref={scrollRef} className="flex-1 min-w-0 overflow-x-auto bg-zinc-950/80">
           <div
             style={{ minWidth: `calc(${width}px + 70vw)`, width: `calc(${width}px + 70vw)` }}
             className="relative"
@@ -1271,4 +1308,8 @@ export default function MultitrackTimeline({
       )}
     </div>
   );
+
+  // Fullscreen must escape the same backdrop-filter containing block, or
+  // `fixed inset-0` is measured against the timeline card rather than the screen.
+  return isFullscreen && mounted ? createPortal(shell, document.body) : shell;
 }
