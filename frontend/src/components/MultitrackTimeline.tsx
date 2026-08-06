@@ -228,6 +228,8 @@ export default function MultitrackTimeline({
   // a "floating" panel at right-6 read as docked.
   const [playerPos, setPlayerPos] = useState({ x: 40, y: 96 });
   const playerDrag = React.useRef<{ dx: number; dy: number; lastX?: number; lastY?: number } | null>(null);
+  const lineRef = React.useRef<HTMLDivElement | null>(null);
+  const lastTick = React.useRef(0);
   const [mounted, setMounted] = useState(false);
   React.useEffect(() => setMounted(true), []);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
@@ -653,7 +655,25 @@ export default function MultitrackTimeline({
                     ref={videoRef}
                     src={previewUrl}
                     className="w-full h-auto block max-h-[220px] object-contain"
-                    onTimeUpdate={(e) => setPlayhead((e.target as HTMLVideoElement).currentTime)}
+                    onTimeUpdate={(e) => {
+                      const tNow = (e.target as HTMLVideoElement).currentTime;
+                      // Move the line directly: re-rendering the timeline to
+                      // nudge one div meant rebuilding every clip, lane and
+                      // waveform several times a second, which is what made
+                      // playback and dragging feel heavy.
+                      if (lineRef.current) lineRef.current.style.left = `${previewToX(tNow)}px`;
+                      // State only drives the timecode and the beat label, so it
+                      // can tick far more slowly than the line moves.
+                      if (Math.abs(tNow - lastTick.current) > 0.45) {
+                        lastTick.current = tNow;
+                        setPlayhead(tNow);
+                      }
+                    }}
+                    onSeeked={(e) => {
+                      const tNow = (e.target as HTMLVideoElement).currentTime;
+                      lastTick.current = tNow;
+                      setPlayhead(tNow);
+                    }}
                     onPlay={() => setPlaying(true)}
                     onPause={() => setPlaying(false)}
                     controls
@@ -793,7 +813,7 @@ export default function MultitrackTimeline({
         {/* Track Headers Column */}
         <div className="shrink-0 w-32 border-r border-zinc-900 bg-zinc-950 z-20">
           {/* Header ruler blank cell matched to h-11 height */}
-          <div className="h-9 border-b border-zinc-900" />
+          <div className="h-11 border-b border-zinc-900" />
           
           {/* V1 Header */}
           <div style={{ height: trackH }} className="flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-blue-300 font-extrabold bg-blue-950/20">
@@ -852,7 +872,8 @@ export default function MultitrackTimeline({
             {/* Laser Playhead with Diamond Head inside visible ruler boundary */}
             {previewUrl && previewMeta && (
               <div
-                className="absolute top-0 bottom-0 w-1 neon-laser-line z-30 pointer-events-none transition-all"
+                ref={lineRef}
+                className="absolute top-0 bottom-0 w-1 neon-laser-line z-30 pointer-events-none"
                 style={{ left: previewToX(playhead) }}
               >
                 <div className="absolute top-1 -left-[4px] w-3 h-3 rotate-45 bg-amber-400 border border-amber-100 neon-glow-amber" />
