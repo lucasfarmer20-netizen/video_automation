@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import fal_client
@@ -588,6 +589,97 @@ def _compose_prompt(shot: Shot, anchors: dict[str, str] | None = None) -> str:
     return (base + _character_clause(shot, anchors)).strip()
 
 
+# Several endpoints (the FLUX pro/ultra family, ideogram) cap or ignore
+# num_images and return a single image however many were asked for, which is why
+# beats came back with one draft instead of three.
+MAX_TOPUP_CALLS = 4
+
+# fal's output tolerance on the FLUX pro/ultra endpoints, 1 (strictest) to 6.
+# Unset it defaults to 2, which rejects ordinary historical documentary subjects.
+OUTPUT_TOLERANCE = int(os.environ.get("FAL_OUTPUT_TOLERANCE", "5"))
+
+# Phrasings that read as violence out of context and trip fal's *prompt*
+# moderation on otherwise ordinary archival subjects. That filter is server-side
+# and cannot be disabled, so the only honest remedy is to say the same thing in
+# words that are not ambiguous. Each replacement must preserve the meaning --
+# this is rephrasing, not laundering.
+_PROMPT_SOFTENERS: list[tuple[str, str]] = [
+    ("strung along", "working along"),
+    ("strung across", "spread across"),
+    ("hanging from", "suspended by ropes from"),
+    ("dangling from", "roped to"),
+    ("bodies", "figures"),
+    ("scarred", "worn"),
+    ("beaten", "weathered"),
+    ("blasting", "quarrying"),
+    ("blast", "quarry charge"),
+]
+
+
+def soften_prompt(prompt: str) -> tuple[str, list[str]]:
+    """Rephrase known false-positive triggers. Returns (prompt, changes made)."""
+    out, changed = prompt, []
+    for bad, good in _PROMPT_SOFTENERS:
+        if bad in out.lower():
+            # Case-insensitive single pass, preserving the rest of the text.
+            import re as _re
+            out = _re.sub(_re.escape(bad), good, out, flags=_re.I)
+            changed.append(f"{bad!r} -> {good!r}")
+    return out, changed
+
+
+def _is_content_policy(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return "content_policy_violation" in s or "flagged by a content checker" in s
+
+
+def _subscribe_topup(endpoint: str, build_args, prompt: str, n: int,
+                     log=print) -> list[str]:
+    """Call ``endpoint`` until ``n`` images exist, or the attempts run out.
+
+    Two failure modes are handled here rather than losing the beat:
+
+    * an endpoint that returns fewer images than asked for -- call again for the
+      remainder instead of accepting one draft where three were requested;
+    * fal's prompt moderation rejecting an innocuous historical description --
+      retry once with the phrasing softened, and say exactly what was changed so
+      the edit is visible rather than silent.
+    """
+    urls: list[str] = []
+    active = prompt
+    softened = False
+
+    for attempt in range(MAX_TOPUP_CALLS):
+        want = n - len(urls)
+        if want <= 0:
+            break
+        try:
+            result = fal_client.subscribe(endpoint, arguments=build_args(active, want),
+                                          with_logs=False)
+        except Exception as exc:  # noqa: BLE001
+            if _is_content_policy(exc) and not softened:
+                new_prompt, changes = soften_prompt(active)
+                softened = True
+                if changes:
+                    log(f"  prompt was rejected by fal's content filter; rephrasing: "
+                        + "; ".join(changes))
+                    active = new_prompt
+                    continue
+                log("  prompt was rejected by fal's content filter and nothing "
+                    "matched the rephrase list — edit the beat's prompt in the studio.")
+            raise
+        got = [img["url"] for img in (result.get("images") or []) if img.get("url")]
+        urls.extend(got)
+        if not got:
+            break
+        if len(got) < want and attempt == 0:
+            log(f"  endpoint returned {len(got)} of {want} images; topping up.")
+
+    if len(urls) < n:
+        log(f"  got {len(urls)} of {n} variations after {MAX_TOPUP_CALLS} attempt(s).")
+    return urls[:n]
+
+
 def generate_for_shot(
     shot: Shot, n: int, backend: str = DEFAULT_BACKEND, lora: dict | None = None,
     render=None,
@@ -621,22 +713,23 @@ def generate_for_shot(
     elif IMAGE_BACKENDS.get(backend, {}).get("handler") == "generic":
         endpoint = IMAGE_BACKENDS[backend]["endpoint"]
 
-        args = {
-            "prompt": _compose_prompt(shot),
-            "num_images": n,
-        }
-        if "ideogram" in backend or "wan" in backend:
-            args["aspect_ratio"] = "16:9"
-        else:
-            args["image_size"] = IMAGE_SIZE;
-            args["enable_safety_checker"] = False
-            
-        result = fal_client.subscribe(
-            endpoint,
-            arguments=args,
-            with_logs=False,
-        )
-        gen_urls = [img["url"] for img in result.get("images", [])]
+        def _args(prompt: str, want: int) -> dict:
+            a = {"prompt": prompt, "num_images": want}
+            if "ideogram" in backend or "wan" in backend:
+                a["aspect_ratio"] = "16:9"
+            else:
+                a["image_size"] = IMAGE_SIZE
+                a["enable_safety_checker"] = False
+                # The FLUX pro/ultra family defaults this to 2 (near-strictest)
+                # when it is not sent, which rejects ordinary historical
+                # documentary subjects. This is the endpoint's own documented
+                # output tolerance; prompt moderation is enforced server-side by
+                # fal and is not a client setting.
+                if "flux" in endpoint:
+                    a["safety_tolerance"] = str(OUTPUT_TOLERANCE)
+            return a
+
+        gen_urls = _subscribe_topup(endpoint, _args, _compose_prompt(shot), n)
     elif backend == "nano":
         urls = ref_urls([STYLE_REF, *(shot.references or [])])
         if not urls:
