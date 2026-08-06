@@ -10,6 +10,7 @@ import base64
 import os
 import re
 import json
+import datetime as _dt
 import shutil
 import subprocess
 import tempfile
@@ -246,7 +247,10 @@ def _scan_projects() -> list[dict]:
             # Prune heavy/irrelevant subtrees. "assets" is only pruned inside a
             # project directory — a top-level /gcs/assets is where new_project
             # puts things, so pruning it unconditionally hid those projects.
-            skip = set(IGNORE_DIRS) | {"references", "source"}
+            # _trash holds retired projects. They keep their manifests, so
+            # without this they reappear in the sidebar the moment they are
+            # deleted -- and the studio could be pointed back at one.
+            skip = set(IGNORE_DIRS) | {"references", "source", "_trash"}
             if is_project_dir:
                 skip.add("assets")
             dirnames[:] = [d for d in dirnames if d not in skip and not d.startswith(".")]
@@ -908,6 +912,112 @@ async def select_project(request: Request):
 
         set_active_manifest_path(str(p))
         return {"ok": True}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+# Directories that sit beside projects and are shared by all of them. A delete
+# must never be able to name one of these as its target.
+_PROTECTED_DIRS = {"audio_pool", "models", "_trash", "_inspect", "references"}
+
+
+@app.post("/api/project/delete")
+async def delete_project(request: Request):
+    """Retire a project by moving it to _trash/. Not an unlink.
+
+    A finished episode is 15-25 dollars of paid generation and hours of review.
+    Deleting it outright means one mis-click destroys work that cannot be
+    regenerated identically, so this moves the directory aside and reports where
+    it went. ``purge: true`` removes it permanently, and is deliberately a second
+    explicit decision rather than a flag on the first.
+    """
+    try:
+        data = await request.json()
+        rel_path = (data.get("rel") or "").strip()
+        confirm = (data.get("confirm") or "").strip()
+        purge = bool(data.get("purge"))
+        if not rel_path:
+            raise HTTPException(status_code=400, detail="Missing project path")
+
+        p = Path(rel_path).resolve()
+        roots = [WORKSPACE_ROOT.resolve()]
+        gcs_root = Path("/gcs")
+        if gcs_root.exists():
+            roots.append(gcs_root.resolve())
+        root = next((r for r in roots if r in p.parents), None)
+        if root is None:
+            raise HTTPException(status_code=400, detail="Project path is outside the workspace")
+        if p.name != "storyboard_manifest.json" or not p.is_file():
+            raise HTTPException(status_code=404, detail="No project manifest at that path")
+
+        target = p.parent
+        # The manifest must live in a project directory, never a channel folder,
+        # a shared directory, or a workspace root itself.
+        if target in roots or target.name in _PROTECTED_DIRS:
+            raise HTTPException(status_code=400,
+                                detail=f"Refusing to delete {target.name}: not a project directory")
+        if target.parent in roots and target.name in _PROTECTED_DIRS:
+            raise HTTPException(status_code=400, detail="Refusing to delete a shared directory")
+        # Never delete a directory that contains OTHER projects. A stray manifest
+        # dropped in a channel folder would otherwise make that folder the
+        # target, taking every episode inside it along.
+        nested = [m for m in target.rglob("storyboard_manifest.json") if m.resolve() != p]
+        if nested:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Refusing: {target.name} contains {len(nested)} other project(s). "
+                       f"Delete them individually.",
+            )
+
+        # Typed confirmation, matched against the project's own title or folder
+        # name. A destructive action should require naming the thing.
+        try:
+            title = (manifest.load(p).title or "").strip()
+        except Exception:  # noqa: BLE001 — an unreadable manifest is still deletable
+            title = ""
+        expected = {title.lower(), target.name.lower()} - {""}
+        if confirm.lower() not in expected:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Type the project name to confirm. Expected one of: "
+                       f"{', '.join(sorted(expected)) or target.name}",
+            )
+
+        size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
+        was_active = config.MANIFEST_PATH.resolve() == p
+
+        if purge:
+            shutil.rmtree(target)
+            moved_to = None
+        else:
+            trash = root / "_trash"
+            trash.mkdir(parents=True, exist_ok=True)
+            stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+            dest = trash / f"{target.parent.name}__{target.name}__{stamp}"
+            shutil.move(str(target), str(dest))
+            moved_to = _safe_rel_path(dest)
+
+        # Never leave the studio pointed at a directory that no longer exists.
+        if was_active:
+            remaining = [
+                m for m in root.glob("*/*/storyboard_manifest.json")
+                if m.parent.name not in _PROTECTED_DIRS
+            ]
+            if remaining:
+                set_active_manifest_path(str(remaining[0].resolve()))
+            else:
+                config.set_active_manifest(root / "storyboard_manifest.json")
+
+        return {
+            "ok": True,
+            "deleted": target.name,
+            "purged": purge,
+            "moved_to": moved_to,
+            "bytes": size,
+            "was_active": was_active,
+        }
     except HTTPException as he:
         raise he
     except Exception as e:

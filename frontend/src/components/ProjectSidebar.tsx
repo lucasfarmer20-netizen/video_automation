@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { Folder, Film, CheckCircle, Lock, Plus, ChevronDown, ChevronRight, Eye } from "lucide-react";
+import { Folder, Film, CheckCircle, Lock, Plus, ChevronDown, ChevronRight, Eye, Trash2 } from "lucide-react";
 
 interface Project {
   name: string;
@@ -21,12 +21,15 @@ interface ProjectSidebarProps {
   onCreateProject: (name: string, channel: string) => void;
   activeChannel: "bestiary" | "calluses";
   setActiveChannel: (channel: "bestiary" | "calluses") => void;
+  /** Retires a project: the server moves it to _trash rather than unlinking. */
+  onDeleteProject?: (rel: string, name: string) => void;
 }
 
 export default function ProjectSidebar({
   projects,
   activeProjectId,
   onSelectProject,
+  onDeleteProject,
   onCreateProject,
   activeChannel,
   setActiveChannel
@@ -120,6 +123,15 @@ export default function ProjectSidebar({
                   </div>
                   <div className="text-[9px] text-zinc-500 truncate font-mono mt-1.5 flex items-center justify-between">
                     <span className="truncate pr-2">{p.rel_display}</span>
+                    {onDeleteProject && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onDeleteProject(p.rel, p.name); }}
+                        title="Delete this storyboard (moved to _trash, not erased)"
+                        className="shrink-0 mr-2 text-zinc-700 hover:text-red-400 transition"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    )}
                     <span className="text-amber-400/80 font-bold shrink-0">{p.beats_count || 0} beats</span>
                   </div>
                 </div>
@@ -167,6 +179,15 @@ export default function ProjectSidebar({
                   </div>
                   <div className="text-[9px] text-zinc-500 truncate font-mono mt-1.5 flex items-center justify-between">
                     <span className="truncate pr-2">{p.rel_display}</span>
+                    {onDeleteProject && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onDeleteProject(p.rel, p.name); }}
+                        title="Delete this storyboard (moved to _trash, not erased)"
+                        className="shrink-0 mr-2 text-zinc-700 hover:text-red-400 transition"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    )}
                     <span className="text-blue-400/80 font-bold shrink-0">{p.beats_count || 0} beats</span>
                   </div>
                 </div>

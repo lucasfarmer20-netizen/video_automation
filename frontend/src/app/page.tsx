@@ -302,6 +302,29 @@ export default function WorkspacePage() {
     }
   };
 
+  const handleDeleteProject = async (rel: string, name: string) => {
+    // Typed confirmation, matched server-side against the project's own title or
+    // folder name. Naming the thing you are destroying is the point.
+    const typed = window.prompt(
+      `Delete "${name}"?
+
+This moves the whole storyboard — stills, renders, narration, ` +
+      `SFX and exports — into _trash. It is recoverable from there, but the studio will ` +
+      `forget it.
+
+Type the project name to confirm:`
+    );
+    if (!typed) return;
+    const res = await post("/api/project/delete", { rel, confirm: typed });
+    if (res.ok) {
+      const mb = (res.bytes / 1048576).toFixed(1);
+      alert(`Deleted "${res.deleted}" (${mb} MB).
+Moved to: ${res.moved_to}`);
+      fetchProjects();
+      fetchActiveProject();
+    }
+  };
+
   const handleCreateProject = async (name: string, channel: string) => {
     setLoading(true);
     const data = await post("/api/project/new", { name, channel });
@@ -819,6 +842,7 @@ export default function WorkspacePage() {
               setMobileSidebarOpen(false);
             }}
             onCreateProject={handleCreateProject}
+            onDeleteProject={handleDeleteProject}
             activeChannel={activeChannel}
             setActiveChannel={setActiveChannel}
           />
