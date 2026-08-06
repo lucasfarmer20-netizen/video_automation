@@ -222,6 +222,11 @@ export default function MultitrackTimeline({
   const [selected, setSelected] = useState<string | null>(null);
   const [drag, setDrag] = useState<{ id: string; dur: number } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [trackH, setTrackH] = useState(40);              // px per track row
+  // Floating player position. Defaults clear of the right sidebar, which is why
+  // a "floating" panel at right-6 read as docked.
+  const [playerPos, setPlayerPos] = useState({ x: 40, y: 96 });
+  const playerDrag = React.useRef<{ dx: number; dy: number } | null>(null);
   const [mounted, setMounted] = useState(false);
   React.useEffect(() => setMounted(true), []);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
@@ -431,8 +436,15 @@ export default function MultitrackTimeline({
     const el = scrollRef.current;
     if (!el) return;
     const onWheel = (ev: WheelEvent) => {
-      if (!(ev.ctrlKey || ev.metaKey)) return;   // plain wheel still scrolls
+      // Shift = scroll horizontally (the standard escape hatch). Alt = taller or
+      // shorter rows. Anything else zooms, because that is what the wheel is for
+      // on a timeline and requiring a modifier made it feel broken.
+      if (ev.shiftKey) return;
       ev.preventDefault();
+      if (ev.altKey) {
+        setTrackH((h) => Math.max(24, Math.min(220, h + (ev.deltaY < 0 ? 6 : -6))));
+        return;
+      }
       zoomAt(ev.clientX, ev.deltaY < 0 ? 1 : -1);
     };
     el.addEventListener("wheel", onWheel, { passive: false });
@@ -517,12 +529,29 @@ export default function MultitrackTimeline({
   const playerFloats = isFullscreen || isFloatingPlayer;
   const playerNode = previewUrl ? (
   <div className={`transition-all duration-300 ${
-            isFullscreen || isFloatingPlayer
+            playerFloats
               ? playerMinimized
-                ? "fixed bottom-6 right-6 z-50 glass-surface px-4 py-2.5 rounded-full border border-amber-500/40 shadow-2xl flex items-center gap-3"
-                : "fixed top-20 right-6 z-50 w-80 sm:w-96 glass-surface p-3.5 rounded-2xl border border-white/20 shadow-2xl flex flex-col gap-2.5 backdrop-blur-3xl animate-in fade-in zoom-in-95"
+                ? "fixed z-[70] glass-surface px-4 py-2.5 rounded-full border border-amber-500/40 shadow-2xl flex items-center gap-3 cursor-grab active:cursor-grabbing"
+                : "fixed z-[70] w-80 sm:w-96 glass-surface p-3.5 rounded-2xl border border-amber-400/30 shadow-2xl flex flex-col gap-2.5 backdrop-blur-3xl"
               : "px-5 py-3.5 border-b border-zinc-900 flex flex-col gap-2.5 bg-zinc-950/60"
-          }`}>
+          }`}
+          style={playerFloats ? { left: playerPos.x, top: playerPos.y } : undefined}
+          onPointerDown={(e) => {
+            if (!playerFloats) return;
+            // Only the panel chrome drags; controls inside keep working.
+            const tag = (e.target as HTMLElement).tagName;
+            if (["BUTTON", "INPUT", "VIDEO", "SELECT", "TEXTAREA", "A"].includes(tag)) return;
+            (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+            playerDrag.current = { dx: e.clientX - playerPos.x, dy: e.clientY - playerPos.y };
+          }}
+          onPointerMove={(e) => {
+            if (!playerDrag.current) return;
+            setPlayerPos({
+              x: Math.max(0, Math.min(window.innerWidth - 120, e.clientX - playerDrag.current.dx)),
+              y: Math.max(0, Math.min(window.innerHeight - 60, e.clientY - playerDrag.current.dy)),
+            });
+          }}
+          onPointerUp={() => { playerDrag.current = null; }}>
             {/* Minimized Pill Bar */}
             {(isFullscreen || isFloatingPlayer) && playerMinimized ? (
               <div className="flex items-center gap-3 w-full justify-between font-mono text-xs">
@@ -641,7 +670,7 @@ export default function MultitrackTimeline({
             </h3>
           </div>
           <span className="text-[10px] font-mono text-zinc-400 bg-zinc-900 px-3 py-1 rounded-full border border-zinc-800">
-            [Space] Play/Pause · [←/→] Jump Beats · [Esc] Exit Fullscreen
+            [Space] Play · [←/→] Beats · [Esc] Exit · wheel Zoom · Alt+wheel Rows · Shift+wheel Scroll
           </span>
         </div>
         <div className="flex items-center gap-3 text-[11px] font-mono flex-wrap">
@@ -660,6 +689,35 @@ export default function MultitrackTimeline({
               <ZoomIn className="h-3.5 w-3.5" />
             </button>
           </div>
+
+          {/* Row height. Zoom only widened clips before; short rows stay short
+              no matter how far you zoom in, which is useless for reading a
+              waveform. */}
+          <div className="hidden lg:flex items-center gap-1 bg-zinc-950/80 px-2 py-1 rounded-full border border-zinc-800 text-[10px] font-mono text-zinc-400">
+            <span className="text-zinc-500">rows</span>
+            <input
+              type="range" min={24} max={220} step={4} value={trackH}
+              onChange={(e) => setTrackH(parseInt(e.target.value, 10))}
+              className="w-16 accent-amber-500 h-1"
+              title="Track height (Alt + wheel over the timeline)"
+            />
+            <span className="tabular-nums w-7 text-right">{trackH}</span>
+          </div>
+
+          {previewUrl && (
+            <button
+              onClick={() => setIsFloatingPlayer((f) => !f)}
+              title={isFloatingPlayer ? "Dock the preview into the panel" : "Pop the preview out — drag it anywhere"}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] font-bold transition-all ${
+                isFloatingPlayer
+                  ? "bg-amber-500 border-amber-400 text-zinc-950"
+                  : "bg-zinc-950/80 border-zinc-800 text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {isFloatingPlayer ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
+              {isFloatingPlayer ? "Dock" : "Pop out"}
+            </button>
+          )}
 
           <button
             onClick={() => setFollowPlayhead((f) => !f)}
@@ -709,20 +767,21 @@ export default function MultitrackTimeline({
         : playerNode)}
 
       {/* Main Track Workspace */}
-      <div className={`flex ${isFullscreen ? "flex-1 min-h-0" : ""}`}>
+      <div className={`flex ${isFullscreen ? "flex-1 min-h-0" : ""}`}
+           style={{ ["--trk" as never]: `${trackH}px` }}>
         {/* Track Headers Column */}
         <div className="shrink-0 w-32 border-r border-zinc-900 bg-zinc-950 z-20">
           {/* Header ruler blank cell matched to h-11 height */}
           <div className="h-9 border-b border-zinc-900" />
           
           {/* V1 Header */}
-          <div className="h-10 flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-blue-300 font-extrabold bg-blue-950/20">
+          <div className="h-[var(--trk)] flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-blue-300 font-extrabold bg-blue-950/20">
             <Film className="h-3.5 w-3.5 shrink-0 text-blue-400" />
             <span className="truncate">V1 Stills</span>
           </div>
 
           {/* A1 Header */}
-          <div className="h-10 flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-emerald-300 font-extrabold bg-emerald-950/20">
+          <div className="h-[var(--trk)] flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-emerald-300 font-extrabold bg-emerald-950/20">
             <Mic className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
             <span className="truncate">A1 VO</span>
             <BusBtns bus="narration" />
@@ -730,7 +789,7 @@ export default function MultitrackTimeline({
 
           {/* A2 SFX Headers (dynamic lanes) */}
           {sfxLaneKeys.map((lane) => (
-            <div key={lane.key} className="h-10 flex items-center justify-between px-3 border-b border-zinc-900 text-[10px] font-mono text-amber-300 font-extrabold bg-amber-950/20">
+            <div key={lane.key} className="h-[var(--trk)] flex items-center justify-between px-3 border-b border-zinc-900 text-[10px] font-mono text-amber-300 font-extrabold bg-amber-950/20">
               <div className="flex items-center gap-2 truncate">
                 <Waves className="h-3.5 w-3.5 shrink-0 text-amber-400" />
                 <span className="truncate">{lane.label}</span>
@@ -749,7 +808,7 @@ export default function MultitrackTimeline({
           ))}
 
           {/* A3 Header */}
-          <div className="h-10 flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-purple-300 font-extrabold bg-purple-950/20">
+          <div className="h-[var(--trk)] flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-purple-300 font-extrabold bg-purple-950/20">
             <Music className="h-3.5 w-3.5 shrink-0 text-purple-400" />
             <span className="truncate">A3 Music</span>
             <BusBtns bus="music" />
@@ -808,7 +867,7 @@ export default function MultitrackTimeline({
             </div>
 
             {/* V1 — Stills Track */}
-            <div className="h-10 border-b border-zinc-900 relative bg-slate-950/40">
+            <div className="h-[var(--trk)] border-b border-zinc-900 relative bg-slate-950/40">
               {blocks.map(({ shot, start, dur }) => {
                 const moveBadge = MOVE_BADGES[shot.camera?.move] || shot.camera?.move;
                 return (
@@ -880,7 +939,7 @@ export default function MultitrackTimeline({
             </div>
 
             {/* A1 — Narration Track */}
-            <div className="h-10 border-b border-zinc-900 relative bg-emerald-950/20">
+            <div className="h-[var(--trk)] border-b border-zinc-900 relative bg-emerald-950/20">
               {blocks.map(({ shot, start, dur }) => {
                 const present = shot.has_narration;
                 const wanted = Boolean(shot.narration?.trim());
@@ -1029,7 +1088,7 @@ export default function MultitrackTimeline({
 
             {/* A2 — Dynamic Multi-Lane SFX Tracks */}
             {sfxLaneKeys.map((lane) => (
-              <div key={lane.key} className="h-10 border-b border-zinc-900 relative bg-amber-950/20">
+              <div key={lane.key} className="h-[var(--trk)] border-b border-zinc-900 relative bg-amber-950/20">
                 {blocks.map(({ shot, start, dur }) => {
                   const resolvedLayers = shot.sfx_layers_resolved;
                   const hasResolved = resolvedLayers && resolvedLayers.length > 0;
@@ -1204,7 +1263,7 @@ export default function MultitrackTimeline({
             ))}
 
             {/* A3 — Music Track */}
-            <div className="h-10 border-b border-zinc-900 relative bg-purple-950/20">
+            <div className="h-[var(--trk)] border-b border-zinc-900 relative bg-purple-950/20">
               {musicTrack ? (
                 <div
                   className="absolute top-2 bottom-2 left-0 rounded-lg border bg-purple-950/80 border-purple-400/50 shadow-[0_0_15px_rgba(192,132,252,0.2)] flex items-center px-3"
