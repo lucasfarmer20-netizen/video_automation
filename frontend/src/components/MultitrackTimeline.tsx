@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useMemo, useEffect } from "react";
-import { Lock, Unlock, Film, Mic, Waves, Music, ZoomIn, ZoomOut, RefreshCw, Play, Pause, AlertTriangle, Plus, Trash2, Maximize2, Minimize2 } from "lucide-react";
+import { Lock, Unlock, Film, Mic, Waves, Music, ZoomIn, ZoomOut, RefreshCw, Play, Pause, AlertTriangle, Plus, Trash2, Maximize2, Minimize2, Crosshair } from "lucide-react";
 
 export interface SfxLayer {
   id: string;
@@ -215,6 +215,12 @@ export default function MultitrackTimeline({
   const [selected, setSelected] = useState<string | null>(null);
   const [drag, setDrag] = useState<{ id: string; dur: number } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  const [followPlayhead, setFollowPlayhead] = useState(true);
+  // Set while we are scrolling programmatically, so our own scroll events do not
+  // read as the user grabbing the bar.
+  const autoScrolling = React.useRef(false);
+
   const [isFloatingPlayer, setIsFloatingPlayer] = useState(true);
   const [playerMinimized, setPlayerMinimized] = useState(false);
 
@@ -367,6 +373,49 @@ export default function MultitrackTimeline({
     return p.start + frac * p.duration;
   }, [previewMeta, blocks, pxPerSec]);
 
+  // Keep the playhead on screen while it moves. Without this the timeline is
+  // unusable at the higher zooms: at 200 px/s a ~1200px viewport shows about six
+  // seconds of a five-and-a-half minute episode, so the playhead leaves the
+  // screen within moments of pressing play and never returns.
+  React.useEffect(() => {
+    if (!followPlayhead) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const x = previewToX(playhead);
+    const left = el.scrollLeft;
+    const right = left + el.clientWidth;
+    // A margin so the playhead is not pinned to the very edge, and so a clip
+    // just ahead of it stays readable.
+    const margin = Math.min(160, el.clientWidth * 0.2);
+    if (x < left + margin || x > right - margin) {
+      autoScrolling.current = true;
+      el.scrollTo({
+        left: Math.max(0, x - el.clientWidth / 2),
+        behavior: playing ? "smooth" : "auto",
+      });
+      // Clear on the next frame; "smooth" keeps firing scroll events after this
+      // but they are ours, and re-arming on each playhead tick is enough.
+      requestAnimationFrame(() => { autoScrolling.current = false; });
+    }
+  }, [playhead, followPlayhead, previewToX, playing]);
+
+  // Grabbing the scrollbar mid-playback means you want to look somewhere else;
+  // yanking the view back would fight you.
+  React.useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onUserScroll = () => {
+      if (autoScrolling.current) return;
+      if (playing) setFollowPlayhead(false);
+    };
+    el.addEventListener("wheel", onUserScroll, { passive: true });
+    el.addEventListener("pointerdown", onUserScroll);
+    return () => {
+      el.removeEventListener("wheel", onUserScroll);
+      el.removeEventListener("pointerdown", onUserScroll);
+    };
+  }, [playing]);
+
   /** Preview time at the start of the beat before/after the playhead. */
   const beatSeek = React.useCallback((dir: -1 | 1, cur: number): number | null => {
     const pb = previewMeta?.beats;
@@ -440,6 +489,21 @@ export default function MultitrackTimeline({
               <ZoomIn className="h-3.5 w-3.5" />
             </button>
           </div>
+
+          <button
+            onClick={() => setFollowPlayhead((f) => !f)}
+            title={followPlayhead
+              ? "Following the playhead — scrolling away while playing turns this off"
+              : "Not following. Turn on to keep the playhead on screen."}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] font-bold transition-all ${
+              followPlayhead
+                ? "bg-amber-500 border-amber-400 text-zinc-950 shadow-[0_0_10px_rgba(245,158,11,0.3)]"
+                : "bg-zinc-950/80 border-zinc-800 text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            <Crosshair className="h-3 w-3" />
+            Follow
+          </button>
 
           <div className="hidden xl:flex items-center gap-1 bg-zinc-950/80 p-1 rounded-full border border-zinc-800 text-[10px]">
             {[4, 12, 30, 80, 150].map((preset) => (
@@ -625,7 +689,7 @@ export default function MultitrackTimeline({
         </div>
 
         {/* Scrollable Tracks Canvas */}
-        <div className="flex-1 overflow-x-auto bg-zinc-950/80">
+        <div ref={scrollRef} className="flex-1 overflow-x-auto bg-zinc-950/80">
           <div
             style={{ minWidth: `calc(${width}px + 70vw)`, width: `calc(${width}px + 70vw)` }}
             className="relative"
