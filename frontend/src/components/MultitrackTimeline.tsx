@@ -493,7 +493,19 @@ export default function MultitrackTimeline({
   }, [playhead, previewMeta]);
 
   const width = Math.max(total * pxPerSec, 320);
-  const sel = blocks.find((b) => b.shot.scene_id === selected);
+  // Fall back to the beat under the playhead so the inspector always shows the
+  // beat you are HEARING. Per-beat volume was reachable only by selecting a
+  // clip first, which is the wrong default while listening -- you notice a level
+  // is wrong during playback, not before it.
+  const selExplicit = blocks.find((b) => b.shot.scene_id === selected);
+  const atHead = React.useMemo(() => {
+    const pb = previewMeta?.beats;
+    if (!pb?.length) return undefined;
+    const b = pb.find((x) => playhead >= x.start && playhead < x.start + x.duration);
+    return b ? blocks.find((k) => k.shot.scene_id === b.scene_id) : undefined;
+  }, [playhead, previewMeta, blocks]);
+  const sel = selExplicit ?? atHead;
+  const selIsAuto = !selExplicit && !!atHead;
 
   const tickEvery = pxPerSec >= 6 ? 15 : pxPerSec >= 3 ? 30 : 60;
   const ticks = Array.from({ length: Math.floor(total / tickEvery) + 1 }, (_, i) => i * tickEvery);
@@ -1330,7 +1342,9 @@ export default function MultitrackTimeline({
       {sel ? (
         <div className="px-5 py-4 border-t border-zinc-900 flex items-end gap-5 flex-wrap bg-zinc-950">
           <div>
-            <span className="block text-[10px] text-zinc-400 font-mono mb-1 font-semibold">Selected Beat</span>
+            <span className="block text-[10px] text-zinc-400 font-mono mb-1 font-semibold">
+              {selIsAuto ? "Beat at playhead" : "Selected Beat"}
+            </span>
             <span className="text-sm font-mono text-amber-400 font-bold bg-amber-500/15 px-2.5 py-1 rounded-md border border-amber-500/40 shadow-sm">{sel.shot.scene_id}</span>
           </div>
           <div>
@@ -1437,7 +1451,7 @@ export default function MultitrackTimeline({
       ) : (
         <div className="px-5 py-3 border-t border-zinc-900 text-[11px] text-zinc-500 flex items-center justify-between bg-zinc-950">
           <span>
-            Select a clip on V1 to retime it or manage SFX layers. Drag audio blocks horizontally to set timing offsets; drag top corners for fades.
+            Play, or select a clip on V1, to tune its levels, timing and SFX layers. Drag audio blocks horizontally to set timing offsets; drag top corners for fades.
           </span>
         </div>
       )}
