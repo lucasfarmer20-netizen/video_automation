@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo, useEffect } from "react";
 import { createPortal } from "react-dom";
+import { GainPill, FxPills } from "./ClipBadges";
 import { Lock, Unlock, Film, Mic, Waves, Music, ZoomIn, ZoomOut, RefreshCw, Play, Pause, AlertTriangle, Plus, Trash2, Maximize2, Minimize2, Crosshair } from "lucide-react";
 
 export interface SfxLayer {
@@ -33,6 +34,7 @@ export interface Shot {
   fade_in_narration?: number;
   fade_out_narration?: number;
   sfx_layers_resolved?: SfxLayer[];
+  fx?: string[];
 }
 
 export interface MultitrackTimelineProps {
@@ -48,6 +50,10 @@ export interface MultitrackTimelineProps {
   busy?: Record<string, boolean>;
   /** The server-rendered preview and the timing it was actually built with. */
   previewUrl?: string | null;
+  mix?: { narration: number; sfx: number; music: number;
+          mute_narration?: boolean; mute_sfx?: boolean; mute_music?: boolean;
+          solo?: string } | null;
+  onSetMix?: (patch: Record<string, unknown>) => void;
   previewMeta?: {
     runtime: number; built_at: number; stale?: boolean; live_runtime?: number;
     beats: { scene_id: string; start: number; duration: number }[];
@@ -206,7 +212,7 @@ function ClipAudio({ label, tone, url, present, wanted, gain, busy, onGain, onRe
 
 export default function MultitrackTimeline({
   shots, musicTrack, mediaUrl, onUpdateCamera, peaks,
-  onUpdateGain, onRegenNarration, onRegenSfx, busy, previewUrl, previewMeta,
+  onUpdateGain, onRegenNarration, onRegenSfx, busy, previewUrl, previewMeta, mix, onSetMix,
   onPatchNarration, onPatchLayer, onAddLayer, onDeleteLayer, onGenerateLayer, onAssemble
 }: MultitrackTimelineProps) {
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
@@ -486,6 +492,28 @@ export default function MultitrackTimeline({
   // (.glass-surface) becomes the containing block for position:fixed, so a
   // "floating" player was being pinned inside the timeline card instead of the
   // viewport. Portalling to <body> escapes that.
+  // Mute + solo per bus. Wired to /api/mix, honoured by build_preview.
+  const BusBtns = ({ bus }: { bus: "narration" | "sfx" | "music" }) => {
+    const muted = !!(mix as any)?.[`mute_${bus}`];
+    const soloed = mix?.solo === bus;
+    return (
+      <span className="ml-auto flex items-center gap-0.5 shrink-0">
+        <button
+          onClick={(e) => { e.stopPropagation(); onSetMix?.({ [`mute_${bus}`]: !muted }); }}
+          title={muted ? "Unmute" : "Mute this bus"}
+          className={`w-4 h-4 rounded text-[8px] font-extrabold leading-none transition ${
+            muted ? "bg-red-500 text-zinc-950" : "bg-zinc-800 text-zinc-500 hover:text-zinc-200"}`}
+        >M</button>
+        <button
+          onClick={(e) => { e.stopPropagation(); onSetMix?.({ solo: soloed ? "" : bus }); }}
+          title={soloed ? "Un-solo" : "Solo — silences the other buses"}
+          className={`w-4 h-4 rounded text-[8px] font-extrabold leading-none transition ${
+            soloed ? "bg-amber-400 text-zinc-950" : "bg-zinc-800 text-zinc-500 hover:text-zinc-200"}`}
+        >S</button>
+      </span>
+    );
+  };
+
   const playerFloats = isFullscreen || isFloatingPlayer;
   const playerNode = previewUrl ? (
   <div className={`transition-all duration-300 ${
@@ -685,26 +713,28 @@ export default function MultitrackTimeline({
         {/* Track Headers Column */}
         <div className="shrink-0 w-32 border-r border-zinc-900 bg-zinc-950 z-20">
           {/* Header ruler blank cell matched to h-11 height */}
-          <div className="h-11 border-b border-zinc-900" />
+          <div className="h-9 border-b border-zinc-900" />
           
           {/* V1 Header */}
-          <div className="h-14 flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-blue-300 font-extrabold bg-blue-950/20">
+          <div className="h-10 flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-blue-300 font-extrabold bg-blue-950/20">
             <Film className="h-3.5 w-3.5 shrink-0 text-blue-400" />
             <span className="truncate">V1 Stills</span>
           </div>
 
           {/* A1 Header */}
-          <div className="h-14 flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-emerald-300 font-extrabold bg-emerald-950/20">
+          <div className="h-10 flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-emerald-300 font-extrabold bg-emerald-950/20">
             <Mic className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
-            <span className="truncate">A1 Narration</span>
+            <span className="truncate">A1 VO</span>
+            <BusBtns bus="narration" />
           </div>
 
           {/* A2 SFX Headers (dynamic lanes) */}
           {sfxLaneKeys.map((lane) => (
-            <div key={lane.key} className="h-14 flex items-center justify-between px-3 border-b border-zinc-900 text-[10px] font-mono text-amber-300 font-extrabold bg-amber-950/20">
+            <div key={lane.key} className="h-10 flex items-center justify-between px-3 border-b border-zinc-900 text-[10px] font-mono text-amber-300 font-extrabold bg-amber-950/20">
               <div className="flex items-center gap-2 truncate">
                 <Waves className="h-3.5 w-3.5 shrink-0 text-amber-400" />
                 <span className="truncate">{lane.label}</span>
+                {lane.index === 0 && <BusBtns bus="sfx" />}
               </div>
               {onAddLayer && lane.index === 0 && (
                 <button
@@ -719,9 +749,10 @@ export default function MultitrackTimeline({
           ))}
 
           {/* A3 Header */}
-          <div className="h-14 flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-purple-300 font-extrabold bg-purple-950/20">
+          <div className="h-10 flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-purple-300 font-extrabold bg-purple-950/20">
             <Music className="h-3.5 w-3.5 shrink-0 text-purple-400" />
             <span className="truncate">A3 Music</span>
+            <BusBtns bus="music" />
           </div>
         </div>
 
@@ -777,7 +808,7 @@ export default function MultitrackTimeline({
             </div>
 
             {/* V1 — Stills Track */}
-            <div className="h-14 border-b border-zinc-900 relative bg-slate-950/40">
+            <div className="h-10 border-b border-zinc-900 relative bg-slate-950/40">
               {blocks.map(({ shot, start, dur }) => {
                 const moveBadge = MOVE_BADGES[shot.camera?.move] || shot.camera?.move;
                 return (
@@ -808,6 +839,7 @@ export default function MultitrackTimeline({
                         <span className="text-[9px] font-mono text-zinc-100 font-extrabold drop-shadow-md">
                           {shot.scene_id}
                         </span>
+                        <FxPills fx={shot.fx} wide={dur * pxPerSec > 90} />
                         {shot.camera?.duration_locked && (
                           <Lock className="h-2.5 w-2.5 text-amber-300 shrink-0 drop-shadow" />
                         )}
@@ -848,7 +880,7 @@ export default function MultitrackTimeline({
             </div>
 
             {/* A1 — Narration Track */}
-            <div className="h-14 border-b border-zinc-900 relative bg-emerald-950/20">
+            <div className="h-10 border-b border-zinc-900 relative bg-emerald-950/20">
               {blocks.map(({ shot, start, dur }) => {
                 const present = shot.has_narration;
                 const wanted = Boolean(shot.narration?.trim());
@@ -907,6 +939,7 @@ export default function MultitrackTimeline({
                     style={{ left: blockLeft, width: Math.max(dur * pxPerSec - 2, 3) }}
                   >
                     {present && <Waveform data={env} type="emerald" />}
+                    <GainPill gain={shot.gain_narration ?? 1} />
 
                     {/* Fade Ramps Overlay */}
                     <FadeEnvelope fadeIn={fadeInSec} fadeOut={fadeOutSec} duration={dur} />
@@ -996,7 +1029,7 @@ export default function MultitrackTimeline({
 
             {/* A2 — Dynamic Multi-Lane SFX Tracks */}
             {sfxLaneKeys.map((lane) => (
-              <div key={lane.key} className="h-14 border-b border-zinc-900 relative bg-amber-950/20">
+              <div key={lane.key} className="h-10 border-b border-zinc-900 relative bg-amber-950/20">
                 {blocks.map(({ shot, start, dur }) => {
                   const resolvedLayers = shot.sfx_layers_resolved;
                   const hasResolved = resolvedLayers && resolvedLayers.length > 0;
@@ -1079,6 +1112,7 @@ export default function MultitrackTimeline({
                     >
                       {/* Waveform */}
                       {present && <Waveform data={env} type="amber" />}
+                      <GainPill gain={layer?.gain ?? 1} />
 
                       {/* Fade Ramps Overlay */}
                       <FadeEnvelope fadeIn={fadeInSec} fadeOut={fadeOutSec} duration={dur} />
@@ -1170,7 +1204,7 @@ export default function MultitrackTimeline({
             ))}
 
             {/* A3 — Music Track */}
-            <div className="h-14 border-b border-zinc-900 relative bg-purple-950/20">
+            <div className="h-10 border-b border-zinc-900 relative bg-purple-950/20">
               {musicTrack ? (
                 <div
                   className="absolute top-2 bottom-2 left-0 rounded-lg border bg-purple-950/80 border-purple-400/50 shadow-[0_0_15px_rgba(192,132,252,0.2)] flex items-center px-3"

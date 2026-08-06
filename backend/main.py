@@ -1159,6 +1159,14 @@ async def update_mix(request: Request):
         for key in ("narration", "sfx", "music"):
             if key in data and data[key] is not None:
                 setattr(sb.mix, key, max(0.0, min(2.0, float(data[key]))))
+        for key in ("mute_narration", "mute_sfx", "mute_music"):
+            if key in data and data[key] is not None:
+                setattr(sb.mix, key, bool(data[key]))
+        if "solo" in data:
+            s = str(data["solo"] or "").strip().lower()
+            if s and s not in ("narration", "sfx", "music"):
+                raise HTTPException(status_code=400, detail=f"Unknown solo bus: {s}")
+            sb.mix.solo = s
         save_current_project(sb)
         return {"ok": True, "mix": asdict(sb.mix)}
     except Exception as e:

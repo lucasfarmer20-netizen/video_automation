@@ -128,6 +128,13 @@ class MixConfig:
     narration: float = 1.0
     sfx: float = 0.15
     music: float = 0.20
+    # Bus mutes, and solo. Solo wins over mute: soloing SFX silences the others
+    # whatever their mute state, which is what every mixer does and what makes
+    # solo useful for checking whether ambience carries a beat on its own.
+    mute_narration: bool = False
+    mute_sfx: bool = False
+    mute_music: bool = False
+    solo: str = ""              # "" | narration | sfx | music
 
 
 @dataclass

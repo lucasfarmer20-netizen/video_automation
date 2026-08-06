@@ -277,9 +277,20 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
     # Levels come from the manifest (Storyboard.mix) so they are tunable per
     # episode instead of being frozen into the renderer.
     mix_cfg = getattr(sb, "mix", None)
-    lvl_narr = float(getattr(mix_cfg, "narration", 1.0))
-    lvl_sfx = float(getattr(mix_cfg, "sfx", 0.15))
-    lvl_music = float(getattr(mix_cfg, "music", 0.20))
+    solo = (getattr(mix_cfg, "solo", "") or "").strip()
+
+    def _bus(name: str, level: float) -> float:
+        """Level after solo and mute. Solo wins: it is the point of solo."""
+        if solo:
+            return level if solo == name else 0.0
+        return 0.0 if getattr(mix_cfg, f"mute_{name}", False) else level
+
+    lvl_narr = _bus("narration", float(getattr(mix_cfg, "narration", 1.0)))
+    lvl_sfx = _bus("sfx", float(getattr(mix_cfg, "sfx", 0.15)))
+    lvl_music = _bus("music", float(getattr(mix_cfg, "music", 0.20)))
+    if solo or lvl_narr == 0 or lvl_sfx == 0 or lvl_music == 0:
+        print(f"mix: narration={lvl_narr:.2f} sfx={lvl_sfx:.2f} music={lvl_music:.2f}"
+              + (f" (solo: {solo})" if solo else " (muted buses)"))
 
     for shot, off in zip(sb.shots, offsets):
         # Bus level x per-beat trim. The trim is what lets a beat whose stem came
