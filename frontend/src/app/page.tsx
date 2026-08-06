@@ -96,6 +96,8 @@ export default function WorkspacePage() {
   // Last known script_draft status, readable from the polling interval (which
   // closes over the initial `jobs` value and so cannot see current state).
   const scriptDraftStatus = useRef<string | undefined>(undefined);
+  // Consecutive polls in which a running script_draft went missing.
+  const draftMisses = useRef(0);
   const [dismissedErrors, setDismissedErrors] = useState<Record<string, string>>({});
   const [chatHistory, setChatHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -177,8 +179,15 @@ export default function WorkspacePage() {
       // cold start wipes it. Previously the running job just disappeared from
       // the UI with no error, which is indistinguishable from "the script I
       // generated never saved" — say so instead of silently dropping it.
+      // A running draft vanishing from the registry usually means the server
+      // restarted and lost it. But a single failed or slow poll looks identical,
+      // and calling it dead on the first miss produced an error popup for a job
+      // that was still running happily. Require several consecutive misses.
+      if (prevStatus === "running" && !serverJobs.script_draft) draftMisses.current += 1;
+      else draftMisses.current = 0;
+
       const nextJobs =
-        prevStatus === "running" && !serverJobs.script_draft
+        draftMisses.current >= 4
           ? {
               ...serverJobs,
               script_draft: {
@@ -199,9 +208,11 @@ export default function WorkspacePage() {
         if (nextJobs.script_draft?.status === "done") {
           fetchActiveProject();
           fetchProjects();
-        } else if (nextJobs.script_draft?.status === "error") {
-          alert("⚠️ Script drafting failed! Review the error log at the top of your workspace.");
         }
+        // No alert on failure: JobBanners already shows the error with its full
+        // traceback, and a modal that says "look at the banner" is worse than the
+        // banner -- it blocks the page and, when it misfired, appeared with no
+        // corresponding error to look at.
       }
     } catch (e) {
       console.error("Failed to poll background jobs", e);

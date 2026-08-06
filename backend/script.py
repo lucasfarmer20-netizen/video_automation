@@ -24,6 +24,12 @@ DEFAULT_MODEL = os.environ.get("SCRIPT_MODEL", "claude-opus-5")
 # above ~16k or the SDK trips its own HTTP timeout guard.
 MAX_TOKENS = 32000
 
+# Hard ceiling on a single draft request. High effort across 15-40 beats
+# genuinely runs for minutes, so this is deliberately generous; its job is to
+# guarantee the call ends rather than hanging the worker thread forever with the
+# UI stuck on "running" and no way to tell a stall from slow work.
+STREAM_TIMEOUT = float(os.environ.get("SCRIPT_TIMEOUT_SECONDS", "900"))
+
 BESTIARY_SYSTEM_PROMPT = """\
 You are Vesper — the researcher-narrator of "The Illuminated Bestiary," a folklore DOCUMENTARY channel. Vesper is an authoritative, deeply curious ethnographic researcher and academic investigator who tracks a folkloric entity the way a field anthropologist would: through the archival record and the evidence, not a campfire story. Your register is investigation, never fiction.
 
@@ -370,6 +376,11 @@ def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anth
     client = _client(client)
     _log(f"Requesting script draft from Claude ({model}) ...")
 
+    import time as _time
+    started = _time.monotonic()
+    last_report = started
+    chars = 0
+
     with client.messages.stream(
         model=model,
         max_tokens=MAX_TOKENS,
@@ -379,8 +390,25 @@ def _request_storyboard(messages: list[dict], model: str, client: anthropic.Anth
             "effort": "high",
             "format": {"type": "json_schema", "schema": SCRIPT_SCHEMA},
         },
+        # Without a deadline a stalled connection hangs this thread forever: the
+        # job stays "running" with no further output and cannot be told apart
+        # from a slow generation. A 15-beat storyboard at high effort genuinely
+        # takes minutes, so the ceiling is generous -- it exists to guarantee the
+        # job ends, not to cut work short.
+        timeout=STREAM_TIMEOUT,
     ) as stream:
+        # Consume the text stream rather than blocking on get_final_message(), so
+        # the job log shows the draft arriving. Silence for several minutes and a
+        # hang looked identical before this.
+        for piece in stream.text_stream:
+            chars += len(piece)
+            now = _time.monotonic()
+            if now - last_report >= 20:
+                last_report = now
+                _log(f"  ... {chars:,} characters after {now - started:.0f}s")
         response = stream.get_final_message()
+
+    _log(f"Draft received: {chars:,} characters in {_time.monotonic() - started:.0f}s.")
 
     if response.stop_reason == "refusal":
         raise RuntimeError(
