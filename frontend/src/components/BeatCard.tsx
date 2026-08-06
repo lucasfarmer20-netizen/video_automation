@@ -62,6 +62,8 @@ interface BeatCardProps {
   onEditImage: (sceneId: string, idx: number, promptText: string) => void;
   onDeleteVideo: (sceneId: string, idx: number) => void;
   onSelectVariation: (sceneId: string, idx: number) => void;
+  /** Opens the full-size take viewer at this variation. */
+  onOpenImage?: (sceneId: string, images: string[], idx: number, chosen: number | null) => void;
   onSelectVideoVariation: (sceneId: string, idx: number) => void;
   onSendShotChat: (sceneId: string, text: string, chatHistory: Message[]) => Promise<{ reply: string, refined_prompt?: string, refined_motion_prompt?: string } | null>;
   onApplyRefinedPrompts: (sceneId: string, refinedPrompt: string | null, refinedMotionPrompt: string | null) => void;
@@ -83,6 +85,7 @@ export default function BeatCard({
   onEditImage,
   onDeleteVideo,
   onSelectVariation,
+  onOpenImage,
   onSelectVideoVariation,
   onSendShotChat,
   onApplyRefinedPrompts,
@@ -374,8 +377,11 @@ export default function BeatCard({
             {shot.draft_variations.map((path, idx) => (
               <div
                 key={idx}
-                onClick={() => onSelectVariation(shot.scene_id, idx)}
-                className={`group relative rounded-lg overflow-hidden cursor-pointer bg-zinc-950 aspect-video border-2 transition-all duration-200 ${
+                onClick={() => onOpenImage
+                  ? onOpenImage(shot.scene_id, shot.draft_variations, idx, shot.chosen_variation)
+                  : onSelectVariation(shot.scene_id, idx)}
+                title="Click to view full size"
+                className={`group relative rounded-lg overflow-hidden cursor-zoom-in bg-zinc-950 aspect-video border-2 transition-all duration-200 ${
                   shot.chosen_variation === idx
                     ? "border-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.08)]"
                     : "border-transparent hover:border-zinc-800"
@@ -385,13 +391,15 @@ export default function BeatCard({
                 <div className="absolute top-2 left-2 bg-zinc-950/80 backdrop-blur-xs text-zinc-300 text-[9px] font-mono px-1.5 py-0.5 rounded border border-zinc-800/80 select-none">
                   #{idx + 1}
                 </div>
-                <div
-                  className={`absolute top-2 right-2 bg-amber-500 text-zinc-950 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-extrabold shadow-lg transition-all ${
-                    shot.chosen_variation === idx ? "opacity-100 scale-100" : "opacity-0 scale-90 group-hover:opacity-30"
+                <button
+                  onClick={(e) => { e.stopPropagation(); onSelectVariation(shot.scene_id, idx); }}
+                  title={shot.chosen_variation === idx ? "This take is in use" : "Use this take"}
+                  className={`absolute top-2 right-2 bg-amber-500 text-zinc-950 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-extrabold shadow-lg transition-all hover:scale-110 ${
+                    shot.chosen_variation === idx ? "opacity-100 scale-100" : "opacity-0 scale-90 group-hover:opacity-100"
                   }`}
                 >
                   <Check className="h-3 w-3" strokeWidth={3} />
-                </div>
+                </button>
                 {/* Delete still */}
                 <button
                   onClick={(e) => { e.stopPropagation(); if (confirm("Delete this variation?")) onDeleteImage(shot.scene_id, idx); }}

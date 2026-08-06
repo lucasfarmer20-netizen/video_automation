@@ -23,6 +23,8 @@ interface Shot {
   video_clip: string | null;
   image_model?: string | null;
   video_model_key?: string | null;
+  draft_variations?: string[];
+  chosen_variation?: number | null;
   sfx?: string;
   has_narration?: boolean;
   has_sfx?: boolean;
@@ -47,6 +49,8 @@ interface FlowCanvasProps {
   onRegenerate?: (sceneId: string) => void;
   onGenerateSFX?: (sceneId: string) => void;
   onRegenNarration?: (sceneId: string) => void;
+  /** Opens the full-size take viewer for this beat. */
+  onOpenImage?: (sceneId: string, images: string[], idx: number, chosen: number | null) => void;
   /** POST /api/shot/{id} for narration, /layers for a layer. */
   onPatchNarration?: (sceneId: string, patch: Record<string, number>) => void;
   onPatchLayer?: (sceneId: string, layerId: string, patch: Record<string, number>) => void;
@@ -173,7 +177,18 @@ const BeatNode = ({ data }: any) => {
       </div>
 
       {data.thumbnail ? (
-        <img src={data.thumbnail} className="w-full h-28 object-cover rounded-lg border border-zinc-900 mb-2.5" alt="node preview" />
+        <img
+          src={data.thumbnail}
+          onClick={() => data.onOpenImage?.(
+            data.scene_id,
+            data.variations?.length ? data.variations : [],
+            Math.max(0, data.chosen ?? 0),
+            data.chosen ?? null,
+          )}
+          title="Click to view full size"
+          className="w-full h-28 object-cover rounded-lg border border-zinc-900 mb-2.5 cursor-zoom-in hover:border-amber-500/50 transition"
+          alt="node preview"
+        />
       ) : (
         <div className="w-full h-28 bg-zinc-900/40 rounded-lg border border-zinc-900/80 mb-2.5 flex items-center justify-center text-[10px] text-zinc-600 italic">
           No image draft
@@ -264,7 +279,7 @@ const BeatNode = ({ data }: any) => {
 
 export default function FlowCanvas({
   shots, mediaUrl, onUpdateDuration, onRegenerate, onGenerateSFX,
-  imageBackends, videoBackends, defaultImageModel, onUpdateGain, onRegenNarration,
+  imageBackends, videoBackends, defaultImageModel, onUpdateGain, onRegenNarration, onOpenImage,
   onPatchNarration, onPatchLayer, onGenerateLayer, onDeleteLayer, onUploadLayer
 }: FlowCanvasProps) {
   const nodeTypes = useMemo(() => ({ beatNode: BeatNode, audioNode: AudioNode }), []);
@@ -367,7 +382,7 @@ export default function FlowCanvas({
     setNodes(generatedNodes);
     setEdges(generatedEdges);
   }, [shots, mediaUrl, setNodes, setEdges, imageBackends, videoBackends, defaultImageModel,
-      onUpdateDuration, onRegenerate, onGenerateSFX, onUpdateGain, onRegenNarration]);
+      onUpdateDuration, onRegenerate, onGenerateSFX, onUpdateGain, onRegenNarration, onOpenImage]);
 
   return (
     <div className="w-full h-[650px] bg-zinc-950/85 backdrop-blur-md border border-zinc-800/80 rounded-2xl overflow-hidden shadow-2xl">

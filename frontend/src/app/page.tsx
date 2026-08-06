@@ -26,6 +26,7 @@ import VesperChat from "../components/VesperChat";
 import BeatCard from "../components/BeatCard";
 import FlowCanvas from "../components/FlowCanvas";
 import MultitrackTimeline from "../components/MultitrackTimeline";
+import Lightbox, { LightboxState } from "../components/Lightbox";
 import GradePanel, { Grade } from "../components/GradePanel";
 import MetadataPanel, { Metadata } from "../components/MetadataPanel";
 import VoiceStudioModal from "../components/VoiceStudioModal";
@@ -100,6 +101,7 @@ export default function WorkspacePage() {
   const [loading, setLoading] = useState(true);
   const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [peaks, setPeaks] = useState<Record<string, any>>({});
+  const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const [voiceStudioOpen, setVoiceStudioOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileRightPanelOpen, setMobileRightPanelOpen] = useState(false);
@@ -301,6 +303,9 @@ export default function WorkspacePage() {
       setLoading(false);
     }
   };
+
+  const openImage = (sceneId: string, images: string[], index: number, chosen: number | null) =>
+    setLightbox({ sceneId, images, index, chosen });
 
   const handleDeleteProject = async (rel: string, name: string) => {
     // Typed confirmation, matched server-side against the project's own title or
@@ -974,6 +979,7 @@ Moved to: ${res.moved_to}`);
                 }}
                 onUpdateGain={handleUpdateGain}
                 onRegenNarration={handleRegenNarration}
+                onOpenImage={openImage}
                 onPatchNarration={async (sceneId, patch) => {
                   await post(`/api/shot/${sceneId}`, patch);
                   fetchActiveProject();
@@ -1004,6 +1010,7 @@ Moved to: ${res.moved_to}`);
                   onEditImage={handleEditImage}
                   onDeleteVideo={handleDeleteVideo}
                   onSelectVariation={handleSelectVariation}
+                  onOpenImage={openImage}
                   onSelectVideoVariation={handleSelectVideoVariation}
                   onSendShotChat={handleSendShotChat}
                   onApplyRefinedPrompts={handleApplyRefinedPrompts}
@@ -1083,6 +1090,20 @@ Moved to: ${res.moved_to}`);
 
       </div>
       {/* Voice Studio Modal */}
+      <Lightbox
+        state={lightbox}
+        mediaUrl={mediaUrl}
+        onClose={() => setLightbox(null)}
+        onIndex={(i) => setLightbox((s) => (s ? { ...s, index: i } : s))}
+        onChoose={async (sceneId, index) => {
+          await handleSelectVariation(sceneId, index);
+          // Reflect the new choice without closing — you often want to keep
+          // comparing after picking.
+          setLightbox((s) => (s ? { ...s, chosen: index } : s));
+        }}
+        onDelete={(sceneId, index) => handleDeleteImage(sceneId, index)}
+      />
+
       <VoiceStudioModal
         isOpen={voiceStudioOpen}
         onClose={() => setVoiceStudioOpen(false)}
