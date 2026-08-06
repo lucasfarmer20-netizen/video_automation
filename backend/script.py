@@ -13,7 +13,7 @@ from typing import Any
 import anthropic
 
 from . import config
-from .assets import IMAGE_BACKEND_KEYS
+from .assets import IMAGE_BACKEND_KEYS, VIDEO_BACKEND_KEYS
 from .manifest import Camera, MotionType, Shot, Storyboard
 
 DEFAULT_MODEL = os.environ.get("SCRIPT_MODEL", "claude-opus-5")
@@ -88,7 +88,7 @@ medium description is identical. Choose from:
 Prefer "nano2" unless the episode gives you a concrete reason to differ, and say
 nothing about models in the narration.
 
-"image_model_override" (per beat): null for essentially every beat. Set it ONLY
+"image_model_override" (per beat): "" (empty string) for essentially every beat. Set it ONLY
 where one beat genuinely needs a different model than the rest of the episode -
 for example a manuscript page whose legibility depends on typography. An override
 you cannot justify in one sentence should be null.
@@ -159,7 +159,7 @@ medium description is identical. Choose from:
 Prefer "nano2" unless the episode gives you a concrete reason to differ, and say
 nothing about models in the narration.
 
-"image_model_override" (per beat): null for essentially every beat. Set it ONLY
+"image_model_override" (per beat): "" (empty string) for essentially every beat. Set it ONLY
 where one beat genuinely needs a different model than the rest of the episode -
 for example a manuscript page whose legibility depends on typography. An override
 you cannot justify in one sentence should be null.
@@ -213,15 +213,23 @@ SCRIPT_SCHEMA = {
                     # ever populated the field because it was absent from this
                     # schema, so every storyboard shipped with a silent A2 track.
                     "sfx": {"type": "string"},
-                    # null for almost every beat — only set it when a beat has a
+                    # Empty for almost every beat — only set when a beat has a
                     # genuine reason to diverge from the episode model.
+                    #
+                    # "" rather than null: the structured-output validator rejects
+                    # a union type here ("Enum value 'nano2' does not match
+                    # declared type '['string','null']'"), so this is a plain
+                    # string enum with an empty member. The parser uses `or`, so
+                    # "" behaves exactly as null did.
                     "image_model_override": {
-                        "type": ["string", "null"],
-                        "enum": IMAGE_BACKEND_KEYS + [None],
+                        "type": "string",
+                        "enum": IMAGE_BACKEND_KEYS + [""],
                     },
                     "recommended_video_model": {
                         "type": "string",
-                        "enum": ["veo_3_1", "seedance_2_0", "wan_2_7", "kling_2_5_turbo_pro"],
+                        # Must stay in step with assets.VIDEO_BACKENDS, or the
+                        # script recommends a model the resolver silently swaps.
+                        "enum": VIDEO_BACKEND_KEYS,
                     },
                 },
                 "required": [
