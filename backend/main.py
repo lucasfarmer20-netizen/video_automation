@@ -440,6 +440,34 @@ def set_active_video_clip(sb: Storyboard, shot: Shot, video_rel_path: str, out_d
         print(f"Error extracting final frame for {shot.scene_id}: {e}")
 
 
+_SHOT_ASSET_FIELDS = (
+    "draft_variations", "draft_image", "chosen_variation",
+    "video_variations", "video_clip", "hero_clip",
+)
+
+
+def save_shot_assets(shot) -> None:
+    """Persist only the asset fields this job owns, onto the CURRENT manifest.
+
+    A render holds one Storyboard object for twenty-odd minutes. Writing that
+    whole object back clobbers everything another stage changed in the meantime:
+    narration syncing beat durations and locking the script were both silently
+    reverted this way, leaving every beat at the 6.0s default and the script
+    unlocked -- an episode that looked complete and was 150s of wrong timing.
+
+    Re-reading and copying across only the generated-asset fields keeps the two
+    jobs from fighting over the same file.
+    """
+    current = get_current_project()
+    target = next((s for s in current.shots if s.scene_id == shot.scene_id), None)
+    if target is None:
+        return
+    for f in _SHOT_ASSET_FIELDS:
+        if hasattr(shot, f):
+            setattr(target, f, getattr(shot, f))
+    save_current_project(current)
+
+
 def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
     """Render every beat. Local tiers are free and always redone; paid ai_video
     beats that already have a placed clip are kept unless ``force_paid``.
@@ -477,7 +505,7 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
                 assets.generate_for_shot(shot, n=3, backend=backend, render=sb.render)
                 shot.chosen_variation = 0
                 shot.draft_image = shot.draft_variations[0]
-                save_current_project(sb)
+                save_shot_assets(shot)
             
             is_ai = (shot.motion_type == MotionType.AI_VIDEO)
 
@@ -543,7 +571,7 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
                                 assets.generate_for_shot(shot, n=3, backend=sb.render.backend, render=sb.render)
                                 shot.chosen_variation = 0
                                 shot.draft_image = shot.draft_variations[0]
-                                save_current_project(sb)
+                                save_shot_assets(shot)
                                 local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
                             except Exception as exc:
                                 log_job("render", f"  !! Failed to generate still draft for {shot.scene_id}: {exc}")
@@ -581,7 +609,7 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
                 shot.video_variations.append(video_rel_path)
 
                 set_active_video_clip(sb, shot, video_rel_path, out_dir)
-                save_current_project(sb)
+                save_shot_assets(shot)
 
                 dest_video_path = out_dir / f"{shot.scene_id}.mp4"
                 prev_video_dest_path = dest_video_path
@@ -2150,10 +2178,30 @@ def roughcut_plan():
              "blocked": None if rendered else "Render the beats first."},
         ]
         nxt = next((s for s in steps if not s["done"]), None)
+
+        # A run can finish every step and still be wrong. The clearest tell is
+        # every beat sitting on the Camera default: that means narration timing
+        # never reached the manifest, so the cut is uniform slots with the voice
+        # overrunning each one. Reporting "complete" for that is worse than
+        # reporting a failure.
+        warnings = []
+        durs = [float(s.camera.duration) for s in sb.shots if s.camera]
+        if n >= 3 and durs and all(abs(d - 6.0) < 0.01 for d in durs):
+            warnings.append(
+                f"All {n} beats are still at the 6.0s default, so narration timing was "
+                f"never applied. Re-run the rough cut to refit them."
+            )
+        if narr >= n and n and not sb.script_locked:
+            warnings.append(
+                "Narration exists but the script is unlocked — a long job probably "
+                "wrote a stale storyboard back over it."
+            )
+
         return {"ok": True, "steps": steps,
                 "next": nxt["key"] if nxt else None,
                 "complete": nxt is None,
                 "blocked_on": nxt["blocked"] if nxt else None,
+                "warnings": warnings,
                 "needs_human": bool(nxt and nxt.get("manual"))}
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
@@ -2221,14 +2269,38 @@ def build_rough_cut(force_paid: bool = False):
             if len(have_narr) < n:
                 note(f"[2/5] Recording narration for {n - len(have_narr)} beat(s) ...")
                 audio.synthesize_narration(sb)
-                report: dict = {}
-                audio.sync_durations(sb, report=report)
-                save_current_project(sb)
-                for o in report.get("overrun", []):
-                    note(f"  !! {o['scene_id']}: locked at {o['duration']:.1f}s but its "
-                         f"narration runs {o['vo']:.1f}s — the voice will overrun.")
             else:
                 note(f"[2/5] Narration: all {n} beats already voiced.")
+
+            # Always re-fit durations, even when nothing was recorded. Skipping
+            # this on a resume left every beat at the 6.0s default while the run
+            # reported success -- a 25-beat episode came out as 150s of uniform
+            # slots with the narration overrunning every cut.
+            before = {s.scene_id: float(s.camera.duration) for s in sb.shots if s.camera}
+            report: dict = {}
+            changed = audio.sync_durations(sb, report=report)
+            save_current_project(sb)
+
+            # A clip rendered at the old length is simply the wrong length, and
+            # the render step below skips any beat that already has one. Drop the
+            # stale local clips so the resume converges instead of keeping a cut
+            # whose video and timing disagree. Paid Tier-C clips are never
+            # deleted -- they cost money and are re-timed by padding instead.
+            retimed = [s for s in sb.shots
+                       if s.camera and abs(before.get(s.scene_id, 0.0)
+                                           - float(s.camera.duration)) > 0.05
+                       and s.motion_type != MotionType.AI_VIDEO]
+            if retimed:
+                rdir = ep["render"]
+                for s in retimed:
+                    (rdir / f"{s.scene_id}.mp4").unlink(missing_ok=True)
+                note(f"  {len(retimed)} beat(s) changed length — their clips will be re-rendered.")
+            total = sum(float(s.camera.duration) for s in sb.shots if s.camera)
+            note(f"  timings: {changed} beat(s) refitted to their voiceover; "
+                 f"runtime {total:.1f}s (~{total/60:.1f} min).")
+            for o in report.get("overrun", []):
+                note(f"  !! {o['scene_id']}: locked at {o['duration']:.1f}s but its "
+                     f"narration runs {o['vo']:.1f}s — the voice will overrun.")
 
             sfx_dir = ep["sfx"]
             sfx_dir.mkdir(parents=True, exist_ok=True)

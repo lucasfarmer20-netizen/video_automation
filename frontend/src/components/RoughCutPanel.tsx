@@ -35,7 +35,8 @@ export default function RoughCutPanel({
   fetchPlan, onBuild, onGoApprove, running, logLine, refreshKey,
 }: RoughCutPanelProps) {
   const [plan, setPlan] = useState<{ steps: PlanStep[]; complete: boolean;
-                                     blocked_on: string | null; needs_human: boolean } | null>(null);
+                                     blocked_on: string | null; needs_human: boolean;
+                                     warnings?: string[] } | null>(null);
 
   const load = useCallback(async () => {
     const d = await fetchPlan();
@@ -83,6 +84,16 @@ export default function RoughCutPanel({
           </button>
         )}
       </div>
+
+      {plan?.warnings?.length ? (
+        <div className="flex flex-col gap-1">
+          {plan.warnings.map((w, i) => (
+            <p key={i} className="text-[11px] font-mono text-amber-200/90 bg-amber-950/30 border border-amber-500/40 rounded px-2 py-1.5 flex gap-2">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-px text-amber-400" />{w}
+            </p>
+          ))}
+        </div>
+      ) : null}
 
       <ol className="flex flex-col gap-1">
         {steps.map((s, i) => {
