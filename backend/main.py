@@ -468,13 +468,18 @@ def save_shot_assets(shot) -> None:
     save_current_project(current)
 
 
-def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
+def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) -> None:
     """Render every beat. Local tiers are free and always redone; paid ai_video
     beats that already have a placed clip are kept unless ``force_paid``.
 
     Without that guard, any re-run — a camera tweak, a fixed FX, a retry after
     one beat failed — silently re-billed every ai_video beat through fal.
     """
+    # log_job() drops lines for a job that was never started, so when the rough
+    # cut called this every per-beat line vanished and a 40-minute render looked
+    # frozen on one status line. Callers pass their own logger.
+    log = log or (lambda m: log(m))
+
     config.require_for("assets")
 
     out_dir = config.episode_paths(sb.title)["render"]
@@ -493,7 +498,7 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
     for idx, shot in enumerate(sb.shots, start=1):
         try:
             if getattr(shot, "hero_clip", False):
-                log_job("render", f"{shot.scene_id}: Already has imported hero clip - keeping it, not re-rendering.")
+                log(f"{shot.scene_id}: Already has imported hero clip - keeping it, not re-rendering.")
                 prev_extracted_frame = None
                 prev_video_dest_path = None
                 continue
@@ -501,7 +506,7 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
             # Ensure still image draft is generated
             if not shot.draft_image:
                 backend = getattr(shot, "image_model", None) or getattr(sb.render, "backend", None) or "nano2"
-                log_job("render", f"Generating drafts for {shot.scene_id} using {backend}...")
+                log(f"Generating drafts for {shot.scene_id} using {backend}...")
                 assets.generate_for_shot(shot, n=3, backend=backend, render=sb.render)
                 shot.chosen_variation = 0
                 shot.draft_image = shot.draft_variations[0]
@@ -524,7 +529,7 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
             if is_ai:
                 video_key = getattr(shot, "video_model", None) or getattr(sb.render, "video_model", "seedance_2_0")
                 model_endpoint = resolve_video_model_endpoint(video_key)
-                log_job("render", f"[{idx}/{total}] PAID video for {shot.scene_id} via {model_endpoint} (chaining: {chaining_mode}) ...")
+                log(f"[{idx}/{total}] PAID video for {shot.scene_id} via {model_endpoint} (chaining: {chaining_mode}) ...")
                 target_dur = float(getattr(shot.camera, "duration", 6.0))
                 dur_int = max(3, min(10, int(round(target_dur))))
 
@@ -555,18 +560,18 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
                 # Native Video Extend
                 if (chaining_mode == "native_extend" and prev_video_dest_path and prev_video_dest_path.exists()
                         and video_key in ("seedance_2_0", "luma_dream_machine", "hunyuan_video")):
-                    log_job("render", f"Native Video Extend: extending from previous segment {prev_video_dest_path.name}...")
+                    log(f"Native Video Extend: extending from previous segment {prev_video_dest_path.name}...")
                     public_video_url = fal_client.upload_file(str(prev_video_dest_path))
                     arguments["video_url"] = public_video_url
                 else:
                     # OpenCV final frame or initial still
                     if chaining_mode != "independent" and prev_extracted_frame and prev_extracted_frame.exists():
                         local_image_path = prev_extracted_frame
-                        log_job("render", f"Continuous flow: chaining from final frame -> {local_image_path.name}")
+                        log(f"Continuous flow: chaining from final frame -> {local_image_path.name}")
                     else:
                         local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
                         if not local_image_path or not local_image_path.exists():
-                            log_job("render", f"Still image draft not found for {shot.scene_id}, generating still drafts...")
+                            log(f"Still image draft not found for {shot.scene_id}, generating still drafts...")
                             try:
                                 assets.generate_for_shot(shot, n=3, backend=sb.render.backend, render=sb.render)
                                 shot.chosen_variation = 0
@@ -574,18 +579,18 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
                                 save_shot_assets(shot)
                                 local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
                             except Exception as exc:
-                                log_job("render", f"  !! Failed to generate still draft for {shot.scene_id}: {exc}")
+                                log(f"  !! Failed to generate still draft for {shot.scene_id}: {exc}")
                                 continue
 
                     if not local_image_path or not local_image_path.exists():
-                        log_job("render", f"  !! Still image draft file missing on disk for {shot.scene_id}: {shot.draft_image}")
+                        log(f"  !! Still image draft file missing on disk for {shot.scene_id}: {shot.draft_image}")
                         continue
                     
-                    log_job("render", f"Uploading starting image {local_image_path.name}...")
+                    log(f"Uploading starting image {local_image_path.name}...")
                     public_image_url = fal_client.upload_file(str(local_image_path))
                     arguments["image_url"] = public_image_url
             
-                log_job("render", f"Triggering fal.ai API with prompt: {motion_prompt[:80]}...")
+                log(f"Triggering fal.ai API with prompt: {motion_prompt[:80]}...")
                 result = fal_client.subscribe(model_endpoint, arguments=arguments, with_logs=True)
                 video_url = result.get("video", {}).get("url") or result.get("file", {}).get("url")
                 if not video_url:
@@ -600,7 +605,7 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
                 local_video_name = f"video_{timestamp}_{var_count}.mp4"
                 local_video_path = shot_assets_dir / local_video_name
 
-                log_job("render", f"Downloading generated video from {video_url} to {local_video_path}...")
+                log(f"Downloading generated video from {video_url} to {local_video_path}...")
                 assets._download(video_url, local_video_path)
 
                 video_rel_path = f"assets/{shot.scene_id}/{local_video_name}"
@@ -613,16 +618,16 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
 
                 dest_video_path = out_dir / f"{shot.scene_id}.mp4"
                 prev_video_dest_path = dest_video_path
-                log_job("render", f"Successfully generated video for {shot.scene_id}")
+                log(f"Successfully generated video for {shot.scene_id}")
 
                 try:
                     frame_out_path = config.ASSETS / shot.scene_id / f"final_frame_{shot.scene_id}.png"
                     prev_extracted_frame = assets.extract_final_frame(dest_video_path, frame_out_path)
                 except Exception as exc:
-                    log_job("render", f"Warning: Failed to extract final frame for continuous chaining on {shot.scene_id}: {exc}")
+                    log(f"Warning: Failed to extract final frame for continuous chaining on {shot.scene_id}: {exc}")
                     prev_extracted_frame = None
             else:
-                log_job("render", f"[{idx}/{total}] Rendering {shot.scene_id} locally ({shot.motion_type.value}) ...")
+                log(f"[{idx}/{total}] Rendering {shot.scene_id} locally ({shot.motion_type.value}) ...")
                 motion.render_shot(shot, fps=motion.DEFAULT_FPS, height=motion.DEFAULT_HEIGHT,
                                    out_dir=out_dir, placeholder=False,
                                    motion_cfg=getattr(sb, "motion", None), storyboard=sb)
@@ -631,14 +636,14 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False) -> None:
             
         except Exception as exc:  # noqa: BLE001 -- resilient batch
             failures.append(shot.scene_id)
-            log_job("render", f"  !! {shot.scene_id} FAILED: {exc.__class__.__name__}: {exc}")
+            log(f"  !! {shot.scene_id} FAILED: {exc.__class__.__name__}: {exc}")
             prev_extracted_frame = None
             prev_video_dest_path = None
 
     if failures:
-        log_job("render", f"Finished with {len(failures)} failed beat(s): {failures} -- re-run to retry just these.")
+        log(f"Finished with {len(failures)} failed beat(s): {failures} -- re-run to retry just these.")
     else:
-        log_job("render", f"All {total} beat(s) rendered.")
+        log(f"All {total} beat(s) rendered.")
 
 
 def ensure_gcs_projects():
@@ -2149,6 +2154,19 @@ def roughcut_plan():
             except OSError:
                 return set()
 
+        # A preview that predates the newest beat clip is not "done", it is
+        # stale. Reporting it as done is what showed "Build preview ✓" while a
+        # render was still running.
+        clip_times = [f.stat().st_mtime for f in ep["render"].glob("*.mp4")
+                      if f.stem != "_preview"] if ep["render"].is_dir() else []
+        newest_clip = max(clip_times) if clip_times else 0.0
+
+        def _is_current(path: Path, after: float) -> bool:
+            try:
+                return path.is_file() and path.stat().st_mtime >= after
+            except OSError:
+                return False
+
         stills = sum(1 for s in sb.shots if s.draft_image)
         narr = len(_stems(ep["narration"]) & {s.scene_id for s in sb.shots})
         rendered = len(_stems(ep["render"]) & {s.scene_id for s in sb.shots})
@@ -2171,10 +2189,14 @@ def roughcut_plan():
              "done": n > 0 and rendered >= n, "detail": f"{rendered}/{n}",
              "blocked": None if sb.storyboard_approved else "Approve the storyboard first."},
             {"key": "preview", "label": "Build preview",
-             "done": "_preview" in _stems(ep["render"]), "detail": "",
+             "done": _is_current(ep["render"] / "_preview.mp4", newest_clip),
+             "detail": "" if _is_current(ep["render"] / "_preview.mp4", newest_clip)
+                       else ("out of date" if (ep["render"] / "_preview.mp4").is_file() else ""),
              "blocked": None if rendered else "Render the beats first."},
             {"key": "timeline", "label": "Export timeline",
-             "done": (config.MANIFEST_PATH.parent / f"{slug}.fcpxml").is_file(), "detail": "",
+             "done": _is_current(config.MANIFEST_PATH.parent / f"{slug}.fcpxml", newest_clip),
+             "detail": "" if _is_current(config.MANIFEST_PATH.parent / f"{slug}.fcpxml", newest_clip)
+                       else ("out of date" if (config.MANIFEST_PATH.parent / f"{slug}.fcpxml").is_file() else ""),
              "blocked": None if rendered else "Render the beats first."},
         ]
         nxt = next((s for s in steps if not s["done"]), None)
@@ -2319,7 +2341,7 @@ def build_rough_cut(force_paid: bool = False):
 
             # 4 — render
             note("[4/5] Rendering beats ...")
-            generate_fal_and_render(sb, force_paid=force_paid)
+            generate_fal_and_render(sb, force_paid=force_paid, log=note)
 
             # 5 — assemble
             note("[5/5] Building the preview and the Resolve timeline ...")
