@@ -29,7 +29,7 @@ from pathlib import Path
 import fal_client
 import requests
 
-from . import config
+from . import config, ledger
 from .manifest import MotionType, Shot, Storyboard, load, save
 
 DEFAULT_VARIATIONS = 3
@@ -634,7 +634,7 @@ def _is_content_policy(exc: Exception) -> bool:
 
 
 def _subscribe_topup(endpoint: str, build_args, prompt: str, n: int,
-                     log=print) -> list[str]:
+                     log=print, sink: dict | None = None) -> list[str]:
     """Call ``endpoint`` until ``n`` images exist, or the attempts run out.
 
     Two failure modes are handled here rather than losing the beat:
@@ -677,44 +677,229 @@ def _subscribe_topup(endpoint: str, build_args, prompt: str, n: int,
 
     if len(urls) < n:
         log(f"  got {len(urls)} of {n} variations after {MAX_TOPUP_CALLS} attempt(s).")
+    if sink is not None:
+        # The caller composed `prompt`, but softening happens in here, so only
+        # this function knows what fal actually received. The ledger needs the
+        # string that made the image, not the one we intended to send.
+        sink["final_prompt"] = active
+        sink["softened"] = _softenings(prompt, active)
     return urls[:n]
+
+
+def _softenings(before: str, after: str) -> list[str]:
+    """Which rephrasings actually fired, by comparing the two strings."""
+    if before == after:
+        return []
+    return [f"{bad!r} -> {good!r}" for bad, good in _PROMPT_SOFTENERS
+            if bad in before.lower() and good in after]
+
+
+def _with_softening(call, prompt: str, log=print) -> tuple[list[str], str, list[str]]:
+    """Run ``call(prompt)``; on a content-filter rejection rephrase once and retry.
+
+    ``_subscribe_topup`` has always done this for the generic endpoints, but
+    ``nano2`` — the *default* backend — and ``flux-cfg`` call ``fal_client.subscribe``
+    directly and had no such retry. The softener list was written in response to a
+    beat that failed on the default backend, and then never ran there: the same
+    prompt recovered on a fallback endpoint and failed outright on the one almost
+    every beat uses.
+    """
+    try:
+        return call(prompt), prompt, []
+    except Exception as exc:  # noqa: BLE001
+        if not _is_content_policy(exc):
+            raise
+        softer, changes = soften_prompt(prompt)
+        if not changes:
+            log("  prompt was rejected by fal's content filter and nothing matched "
+                "the rephrase list — edit the beat's prompt in the studio.")
+            raise
+        log("  prompt was rejected by fal's content filter; rephrasing: "
+            + "; ".join(changes))
+        return call(softer), softer, changes
+
+
+# --- Prompt variant strategies -------------------------------------------------
+#
+# Three drafts per beat used to mean one prompt rendered at three seeds, so the
+# take you picked measured seed luck and carried no information about prompting.
+# Generating each draft from a *different* prompt strategy turns the same click
+# into a controlled comparison, at the same image count and the same cost, and
+# `ledger.py` keeps the score.
+#
+# Each strategy is a short suffix on the composed prompt. Short is deliberate:
+# the avoidance list was already cut from `_generate_nano2` for consuming the
+# attention budget, and a long strategy clause would reintroduce that problem
+# while confounding the very thing being measured.
+#
+# Every clause must be palette-safe. `style_medium` can be monochrome or a limited
+# mineral palette, and the script stage is explicitly instructed not to introduce
+# colours the medium cannot produce; a strategy that named a hue would break that
+# rule on every beat it touched. These carry on value, depth and process instead.
+PROMPT_VARIANTS = os.environ.get("PROMPT_VARIANTS", "1").lower() not in ("0", "false", "no")
+
+PROMPT_STRATEGIES: dict[str, str] = {
+    # The control. Without it there is no way to tell whether embellishment helps
+    # at all, only which embellishment wins.
+    "baseline": "",
+    # Hypothesis: separable depth planes make better parallax. This one is worth
+    # more than its win rate suggests, because ~70% of beats are Tier B and a flat
+    # image is what makes a depth-warp look like a sliding sticker.
+    "depth_staged": (
+        " Stage the scene in three clearly separated planes: a defined foreground "
+        "element, the subject in the midground, and a distinctly deeper background, "
+        "with real spatial separation between them."
+    ),
+    # Hypothesis: naming the physical process beats naming the style.
+    "medium_forward": (
+        " Foreground the physical process of the medium itself — the tool marks, the "
+        "grain and absorbency of the support, the registration and density of the "
+        "pigment — as prominently as the subject."
+    ),
+    # Hypothesis: the house lighting grammar is better stated than implied.
+    "chiaroscuro": (
+        " Light it from a single low source so most of the frame falls into deep "
+        "shadow, the subject reading as a silhouette edge against the one lit area."
+    ),
+}
+
+
+def _beat_ordinal(scene_id: str) -> int:
+    digits = "".join(ch for ch in (scene_id or "") if ch.isdigit())
+    return int(digits) if digits else 0
+
+
+def strategies_for(scene_id: str, n: int) -> list[str]:
+    """Which strategies fill this beat's n slots, rotated by beat number.
+
+    Rotation is the whole point. `generate_for_shot` auto-selects slot 0 and the
+    studio shows it first, so a fixed order would give whichever strategy sits in
+    slot 0 both a display advantage and every auto-selection — position bias
+    dressed up as a result. Rotating by beat ordinal spreads each strategy evenly
+    across every slot, and being derived from the scene_id rather than randomised
+    keeps a regenerated beat reproducible.
+    """
+    names = list(PROMPT_STRATEGIES)
+    if not names or n <= 0:
+        return ["baseline"] * max(n, 0)
+    k = _beat_ordinal(scene_id)
+    return [names[(k + i) % len(names)] for i in range(n)]
+
+
+def apply_strategy(name: str, base_prompt: str) -> str:
+    suffix = PROMPT_STRATEGIES.get(name, "")
+    return (base_prompt + suffix).strip() if suffix else base_prompt
 
 
 def generate_for_shot(
     shot: Shot, n: int, backend: str = DEFAULT_BACKEND, lora: dict | None = None,
-    render=None,
+    render=None, log=print,
 ) -> list[str]:
     """Generate + download n draft variations for one beat; record their paths.
 
     ``render`` is a ``Storyboard.render`` (RenderConfig) whose knobs override the
     flux-cfg defaults; ``None`` uses the module defaults.
+
+    Unless ``PROMPT_VARIANTS`` is off, the n drafts come from n *different* prompt
+    strategies rather than n seeds of one prompt, and every image is written to the
+    ledger with the prompt that made it.
     """
     if isinstance(backend, str) and "," in backend:
         backends = [b.strip() for b in backend.split(",") if b.strip()]
         all_rel_paths = []
         for b in backends:
             try:
-                paths = generate_for_shot(shot, n, backend=b, lora=lora, render=render)
+                paths = generate_for_shot(shot, n, backend=b, lora=lora, render=render, log=log)
                 all_rel_paths.extend(paths)
             except Exception as e:
-                print(f"Error generating for backend {b}: {e}")
+                log(f"Error generating for backend {b}: {e}")
         return all_rel_paths
 
+    prompt_driven = (
+        backend in ("nano2", "flux-cfg")
+        or IMAGE_BACKENDS.get(backend, {}).get("handler") == "generic"
+    )
+    base_prompt = _compose_prompt(shot)
+
+    import time
+    ts = int(time.time())
+    batch = str(ts)
+
+    # Each entry: (strategy, prompt_sent, softenings, url)
+    made: list[tuple[str, str, list[str], str]] = []
+
+    if PROMPT_VARIANTS and prompt_driven and n > 1:
+        # One image per call, each from a different prompt strategy. Same image
+        # count and (fal prices per image) the same spend as one n-image call,
+        # for more round trips — and it removes a failure mode for free: the
+        # endpoints that cap or ignore `num_images` and quietly returned one draft
+        # where three were asked for cannot do that when every request asks for one.
+        for slot, name in enumerate(strategies_for(shot.scene_id, n)):
+            prompt = apply_strategy(name, base_prompt)
+            try:
+                urls, sent, softened = _generate_urls(
+                    shot, prompt, 1, backend, lora, render, log=log)
+            except Exception as exc:  # noqa: BLE001
+                # One strategy failing must not cost the beat its other takes.
+                log(f"  !! variant {slot} ({name}) failed: {exc}")
+                continue
+            for url in urls:
+                made.append((name, sent, softened, url))
+    else:
+        urls, sent, softened = _generate_urls(
+            shot, base_prompt, n, backend, lora, render, log=log)
+        for url in urls:
+            made.append(("baseline", sent, softened, url))
+
+    rel_paths: list[str] = []
+    for i, (name, sent, softened, url) in enumerate(made):
+        dest = config.ASSETS / shot.scene_id / f"var_{ts}_{i}.png"
+        _download(url, dest)
+        rel = config.rel_media_path(dest)
+        rel_paths.append(rel)
+        ledger.record_generation(
+            scene_id=shot.scene_id, path=rel, strategy=name, prompt=base_prompt,
+            prompt_final=sent, softened=softened, backend=backend, batch=batch, slot=i,
+            style_medium=(shot.style_medium or ""),
+            motion_type=getattr(shot.motion_type, "value", str(shot.motion_type or "")),
+        )
+
+    existing = list(shot.draft_variations or [])
+    new_start_idx = len(existing)
+    shot.draft_variations = existing + rel_paths
+    if rel_paths:
+        # Note for the ledger: this is a placeholder so the studio has something
+        # to display, NOT a preference. Only an explicit pick is recorded as a win.
+        shot.chosen_variation = new_start_idx
+        shot.draft_image = rel_paths[0]
+    return rel_paths
+
+
+def _generate_urls(shot: Shot, prompt: str, n: int, backend: str,
+                   lora: dict | None, render, log=print) -> tuple[list[str], str, list[str]]:
+    """One generation request. Returns (urls, prompt actually sent, softenings).
+
+    Split out of ``generate_for_shot`` so a beat can be produced either as a single
+    call for n images or as n single-image calls under different prompt strategies,
+    without the backend dispatch existing in two places and drifting.
+    """
     if backend == "nano2":
         # Default: Nano Banana 2 (Gemini 3 Pro Image), medium-leading prompt + folded negatives,
         # optionally conditioned on the project's global frame reference.
         negative, _steps, _guidance, _nag = _resolve_render(render)
         frame_url = (getattr(render, "reference_image_url", "") or "").strip() or None
-        gen_urls = _generate_nano2(_compose_prompt(shot), n, negative, frame_url)
-    elif backend == "flux-cfg":
+        return _with_softening(
+            lambda p: _generate_nano2(p, n, negative, frame_url), prompt, log)
+    if backend == "flux-cfg":
         # medium-leading positive prompt + NAG negative prompt (cheaper fallback).
         negative, steps, guidance, nag = _resolve_render(render)
-        gen_urls = _generate_flux_cfg(_compose_prompt(shot), n, negative, steps, guidance, nag)
-    elif IMAGE_BACKENDS.get(backend, {}).get("handler") == "generic":
+        return _with_softening(
+            lambda p: _generate_flux_cfg(p, n, negative, steps, guidance, nag), prompt, log)
+    if IMAGE_BACKENDS.get(backend, {}).get("handler") == "generic":
         endpoint = IMAGE_BACKENDS[backend]["endpoint"]
 
-        def _args(prompt: str, want: int) -> dict:
-            a = {"prompt": prompt, "num_images": want}
+        def _args(p: str, want: int) -> dict:
+            a = {"prompt": p, "num_images": want}
             if "ideogram" in backend or "wan" in backend:
                 a["aspect_ratio"] = "16:9"
             else:
@@ -729,34 +914,23 @@ def generate_for_shot(
                     a["safety_tolerance"] = str(OUTPUT_TOLERANCE)
             return a
 
-        gen_urls = _subscribe_topup(endpoint, _args, _compose_prompt(shot), n)
-    elif backend == "nano":
+        sink: dict = {}
+        urls = _subscribe_topup(endpoint, _args, prompt, n, log=log, sink=sink)
+        return urls, sink.get("final_prompt", prompt), sink.get("softened", [])
+    # Legacy paths below build their own prompt (a style reference image, or the
+    # trained LoRA trigger) rather than the composed medium-leading one, so the
+    # strategy suffix does not apply and they are never given variant prompts.
+    if backend == "nano":
         urls = ref_urls([STYLE_REF, *(shot.references or [])])
         if not urls:
             raise RuntimeError(
                 "No references resolved — populate references.json with a 'style' entry."
             )
-        gen_urls = _generate_nano(shot.prompt, urls, n)
-    else:
-        if lora is None and backend == "flux-lora":
-            lora = load_lora()
-        gen_urls = _generate_flux(style_prompt(shot.prompt, lora), n, lora)
-
-    import time
-    ts = int(time.time())
-    rel_paths: list[str] = []
-    for i, url in enumerate(gen_urls):
-        dest = config.ASSETS / shot.scene_id / f"var_{ts}_{i}.png"
-        _download(url, dest)
-        rel_paths.append(config.rel_media_path(dest))
-
-    existing = list(shot.draft_variations or [])
-    new_start_idx = len(existing)
-    shot.draft_variations = existing + rel_paths
-    if rel_paths:
-        shot.chosen_variation = new_start_idx
-        shot.draft_image = rel_paths[0]
-    return rel_paths
+        return _generate_nano(shot.prompt, urls, n), shot.prompt, []
+    if lora is None and backend == "flux-lora":
+        lora = load_lora()
+    styled = style_prompt(shot.prompt, lora)
+    return _generate_flux(styled, n, lora), styled, []
 
 
 def generate_drafts(
@@ -807,7 +981,7 @@ def generate_drafts(
         try:
             tag = shot_backend if shot_backend == backend else f"{shot_backend} (override)"
             log(f"[{i}/{len(shots)}] Generating {n} drafts for {shot.scene_id} ({tag}) ...")
-            paths = generate_for_shot(shot, n, backend=shot_backend, render=render)
+            paths = generate_for_shot(shot, n, backend=shot_backend, render=render, log=log)
             log(f"  -> {len(paths)} image(s) for {shot.scene_id}")
         except Exception as exc:
             log(f"  !! {shot.scene_id} FAILED: {exc}")

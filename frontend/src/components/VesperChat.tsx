@@ -8,14 +8,24 @@ interface Message {
   content: string;
 }
 
+interface BudgetPlan {
+  beats: number;
+  hero_beats: number;
+  takes: number;
+  estimated_total: number;
+  headroom: number;
+}
+
 interface VesperChatProps {
   channel: string;
-  onDraftStoryboard: (topic: string, beats: number | null) => void;
-  onScriptFromChat: (messages: Message[], beats: number | null) => void;
+  onDraftStoryboard: (topic: string, beats: number | null, budget: number | null) => void;
+  onScriptFromChat: (messages: Message[], beats: number | null, budget: number | null) => void;
   onLockScript: () => void;
   chatHistory: Message[];
   onSendChatMessage: (text: string) => Promise<string | null>;
   scriptLocked: boolean;
+  /** GET /api/script/budget_plan — the same function the script stage uses. */
+  fetchBudgetPlan?: (budget: number, beats: number | null) => Promise<any>;
 }
 
 export default function VesperChat({
@@ -25,13 +35,31 @@ export default function VesperChat({
   onLockScript,
   chatHistory,
   onSendChatMessage,
-  scriptLocked
+  scriptLocked,
+  fetchBudgetPlan,
 }: VesperChatProps) {
   const [inputText, setInputText] = useState("");
   const [topicText, setTopicText] = useState("");
   const [beatsCount, setBeatsCount] = useState<number | "">("");
+  const [budget, setBudget] = useState<number | "">("");
+  const [plan, setPlan] = useState<BudgetPlan | null>(null);
   const [loading, setLoading] = useState(false);
   const chatLogRef = useRef<HTMLDivElement>(null);
+
+  // Show what the budget buys before it is spent. The figures come from the
+  // backend rather than being recomputed here, so what is displayed is exactly
+  // what the model gets told — two copies of this arithmetic would drift.
+  useEffect(() => {
+    if (!fetchBudgetPlan || budget === "" || Number(budget) <= 0) { setPlan(null); return; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const d = await fetchBudgetPlan(Number(budget), beatsCount === "" ? null : Number(beatsCount));
+        if (!cancelled) setPlan(d?.plan ?? null);
+      } catch { if (!cancelled) setPlan(null); }
+    }, 400);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [budget, beatsCount, fetchBudgetPlan]);
 
   useEffect(() => {
     if (chatLogRef.current) {
@@ -54,7 +82,8 @@ export default function VesperChat({
       return;
     }
     if (confirm("⚠️ DESTRUCTIVE: A fresh AI draft replaces EVERYTHING in this manifest. This cannot be undone. Continue?")) {
-      onDraftStoryboard(topicText.trim(), beatsCount === "" ? null : Number(beatsCount));
+      onDraftStoryboard(topicText.trim(), beatsCount === "" ? null : Number(beatsCount),
+                        budget === "" ? null : Number(budget));
     }
   };
 
@@ -64,7 +93,8 @@ export default function VesperChat({
       return;
     }
     if (confirm("⚠️ DESTRUCTIVE: This will turn your conversation into a NEW storyboard, OVERWRITING the active project. Continue?")) {
-      onScriptFromChat(chatHistory, beatsCount === "" ? null : Number(beatsCount));
+      onScriptFromChat(chatHistory, beatsCount === "" ? null : Number(beatsCount),
+                       budget === "" ? null : Number(budget));
     }
   };
 
@@ -154,14 +184,40 @@ export default function VesperChat({
                 className="w-1/2 bg-zinc-900 text-zinc-200 placeholder-zinc-600 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-center focus:outline-none focus:border-amber-400 transition"
                 min="1"
               />
-              <button
-                onClick={handleScriptFromChatClick}
-                className="w-1/2 bg-zinc-905 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 rounded-lg text-[10px] font-bold shadow transition flex items-center justify-center gap-1"
-              >
-                <Sparkles className="h-3 w-3 text-amber-500" />
-                <span>Use chat → script</span>
-              </button>
+              <input
+                type="number"
+                value={budget}
+                onChange={(e) => setBudget(e.target.value === "" ? "" : Number(e.target.value))}
+                placeholder="Budget $"
+                title="Optional. Sets the beat count, how many beats may be paid ai_video, and how many draft takes each beat gets. Leave blank for the default scope."
+                className="w-1/2 bg-zinc-900 text-zinc-200 placeholder-zinc-600 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-center focus:outline-none focus:border-amber-400 transition"
+                min="0"
+                step="5"
+              />
             </div>
+            {plan && (
+              <div className="text-[10px] font-mono text-zinc-400 bg-zinc-900/60 border border-zinc-800 rounded-lg px-2.5 py-2 leading-relaxed">
+                <span className="text-amber-400">{plan.beats} beats</span>
+                {" · "}<span className="text-amber-400">{plan.hero_beats} paid</span>
+                {" · "}<span className="text-amber-400">{plan.takes} takes</span>
+                {" each"}
+                <div className="text-zinc-500 mt-0.5">
+                  ≈ ${plan.estimated_total.toFixed(2)} of ${(plan.estimated_total + plan.headroom).toFixed(0)}
+                  {plan.headroom > 20 && (
+                    // Not an error: past a point neither more paid video nor more takes
+                    // improves the piece, so the budget stops being the binding constraint.
+                    <span className="text-zinc-600"> — ${plan.headroom.toFixed(0)} unspent by design</span>
+                  )}
+                </div>
+              </div>
+            )}
+            <button
+              onClick={handleScriptFromChatClick}
+              className="w-full bg-zinc-905 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 rounded-lg py-2 text-[10px] font-bold shadow transition flex items-center justify-center gap-1"
+            >
+              <Sparkles className="h-3 w-3 text-amber-500" />
+              <span>Use chat → script</span>
+            </button>
           </div>
           <button
             onClick={handleDraftClick}

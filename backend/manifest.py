@@ -140,6 +140,11 @@ class MixConfig:
 @dataclass
 class RenderConfig:
     backend: str = "nano2"
+    # Draft takes per beat. Set by the script stage's budget plan when a budget is
+    # given, otherwise the default 3. Lives here rather than as a call-site literal
+    # because five separate places used to hardcode n=3, so raising it meant finding
+    # all five. Capped in practice by the number of prompt strategies.
+    variations: int = 3
     video_model: str = "seedance_2_0"
     video_chaining: str = "native_extend"
     video_audio: bool = True

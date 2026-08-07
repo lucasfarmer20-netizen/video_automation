@@ -101,7 +101,7 @@ you cannot justify in one sentence should be null.
 
 - For "recommended_video_model":
   * "veo_3_1" or "seedance_2_0": Recommend for complex video/audio beats (heavy active motion, transformations, complex water/fire physics, detailed human motion).
-  * "wan_2_7" or "kling_2_5_turbo_pro": Recommend for simple video b-roll beats (subtle camera pans, slow drift, rising smoke, static scene with wind).
+  * "wan_2_7" or "kling_2_1_standard": Recommend for simple video b-roll beats (subtle camera pans, slow drift, rising smoke, static scene with wind).
 """
 
 CALLUSES_SYSTEM_PROMPT = """\
@@ -172,7 +172,7 @@ you cannot justify in one sentence should be null.
 
 - For "recommended_video_model":
   * "veo_3_1" or "seedance_2_0": Recommend for complex video/audio beats (heavy active motion, transformations, complex water/fire physics, detailed human motion).
-  * "wan_2_7" or "kling_2_5_turbo_pro": Recommend for simple video b-roll beats (subtle camera pans, slow drift, rising smoke, static scene with wind).
+  * "wan_2_7" or "kling_2_1_standard": Recommend for simple video b-roll beats (subtle camera pans, slow drift, rising smoke, static scene with wind).
 """
 
 
@@ -337,6 +337,129 @@ def _scope(num_beats: int | None) -> str:
     return "Produce as many beats as the investigation needs (typically 15-40)."
 
 
+# Rough per-unit costs, used only to turn a dollar budget into a beat plan the
+# script stage can act on. They are estimates and deliberately overridable from
+# the environment: fal's per-model pricing moves, and a hardcoded number that
+# goes stale in silence is worse than one that can be corrected without a deploy.
+COST_PER_IMAGE = float(os.environ.get("COST_PER_IMAGE", "0.15"))        # nano2 @ 2K
+COST_PER_VIDEO_BEAT = float(os.environ.get("COST_PER_VIDEO_BEAT", "1.20"))
+COST_FIXED = float(os.environ.get("COST_FIXED", "3.00"))                # narration, music, SFX
+TAKES_PER_BEAT = int(os.environ.get("TAKES_PER_BEAT", "3"))
+
+# Generated video realistically tops out near ten seconds a clip, and the render
+# path pads any remainder with a frozen final frame. A long Tier-C beat therefore
+# buys motion for its first ten seconds and a still for the rest — so the ceiling
+# belongs here, in planning, where a beat can simply be split instead.
+MAX_AI_VIDEO_SECONDS = 10
+
+
+def _beats_for_budget(budget: float) -> int:
+    """More money buys more cuts, but pacing — not spend — sets the ceiling.
+
+    Stills are cheap enough that beat count is nearly free next to Tier C; the cap
+    exists because a documentary cut has a natural rhythm, not because 60 beats
+    would break the bank.
+    """
+    return max(18, min(44, int(18 + (budget - 15) * 0.18)))
+
+
+# Takes per beat are capped at the number of prompt strategies in
+# ``assets.PROMPT_STRATEGIES``. Past that point extra takes repeat a strategy at a
+# different seed, which is exactly the uninformative comparison the variant system
+# exists to replace — you would be paying for images that teach nothing.
+# Not imported from assets to keep the script stage free of the fal dependency.
+MAX_TAKES = int(os.environ.get("MAX_TAKES", "4"))
+
+
+def plan_for_budget(budget: float | None, num_beats: int | None = None) -> dict | None:
+    """Turn a dollar budget into a beat count, a Tier-C allowance and a take count.
+
+    Returns ``None`` when no budget is given, which leaves the previous behaviour
+    untouched: "as many beats as the investigation needs" and "use ai_video sparingly".
+
+    Allocation order is deliberate — cuts first, then hero motion, then takes —
+    because that is the order of effect on the finished piece. Note that at the
+    upper end the binding constraint stops being money: both Tier C and takes hit
+    quality ceilings well before a three-figure budget is exhausted, so ``headroom``
+    is usually large and honest rather than an error.
+    """
+    if not budget or budget <= 0:
+        return None
+    budget = float(budget)
+    beats = int(num_beats) if num_beats else _beats_for_budget(budget)
+
+    stills = beats * TAKES_PER_BEAT * COST_PER_IMAGE
+    room = budget - COST_FIXED - stills
+
+    # Cap Tier C at a third of the episode regardless of budget. Past that the look
+    # stops being a motion comic with hero shots and becomes an AI video reel — and
+    # generated motion is the least controllable thing in the pipeline.
+    hero = max(0, int(room // COST_PER_VIDEO_BEAT))
+    hero = max(1, min(hero, max(2, beats // 3)))
+    room -= hero * COST_PER_VIDEO_BEAT
+
+    # Spend what is left on more takes per beat, up to one per strategy. This is
+    # the highest-leverage remaining lever: a better chosen still improves both the
+    # parallax beat it becomes and any Tier-C clip generated from it, and every
+    # extra take is another datapoint in the prompt ledger.
+    takes = TAKES_PER_BEAT
+    per_extra_take = beats * COST_PER_IMAGE
+    while takes < MAX_TAKES and room >= per_extra_take:
+        takes += 1
+        room -= per_extra_take
+
+    still_cost = beats * takes * COST_PER_IMAGE
+    video_cost = hero * COST_PER_VIDEO_BEAT
+    total = COST_FIXED + still_cost + video_cost
+    return {
+        "budget": round(budget, 2),
+        "beats": beats,
+        "hero_beats": hero,
+        "takes": takes,
+        "still_cost": round(still_cost, 2),
+        "video_cost": round(video_cost, 2),
+        "fixed_cost": round(COST_FIXED, 2),
+        "estimated_total": round(total, 2),
+        "headroom": round(budget - total, 2),
+    }
+
+
+def _apply_plan(sb: Storyboard, plan: dict | None) -> None:
+    """Carry the plan's take count onto the storyboard.
+
+    The plan is decided at draft time but spent at draft-image time, so it has to
+    persist somewhere the assets stage reads. Without this the plan would report
+    four takes and the drafts stage would keep generating three — a number written
+    where nothing reads it, which is the recurring failure shape in this pipeline.
+    """
+    if not plan:
+        return
+    try:
+        sb.render.variations = int(plan["takes"])
+    except (KeyError, TypeError, ValueError, AttributeError):
+        pass
+
+
+def _budget_block(plan: dict | None) -> str:
+    if not plan:
+        return ""
+    return (
+        f"\n\nBUDGET AND PACING. This episode has a production budget of about "
+        f"${plan['budget']:.0f}, which buys a faster cut and more hero motion than the "
+        f"default. Produce about {plan['beats']} beats — more distinct visuals and "
+        f"shorter holds rather than fewer, longer ones. Up to {plan['hero_beats']} beats "
+        f"may be \"ai_video\"; spend them on the genuine motion moments (a transformation, "
+        f"a turn of the head, wings opening, machinery working, water moving) and leave "
+        f"the rest \"parallax\", with \"static\" only where stillness is the point. "
+        f"Do not exceed {plan['hero_beats']} ai_video beats.\n\n"
+        f"CRITICAL for ai_video beats: keep each one's narration short enough to play in "
+        f"{MAX_AI_VIDEO_SECONDS} seconds or less. Generated video does not run longer than "
+        f"that, and a longer beat is padded with a frozen frame — so a 30-second ai_video "
+        f"beat is paid motion followed by twenty seconds of a still. If a motion moment "
+        f"needs more time, split it across consecutive beats instead of writing one long one."
+    )
+
+
 def _log(msg: str):
     print(msg)
     try:
@@ -433,23 +556,32 @@ def generate_script(
     channel: str = "bestiary",
     model: str = DEFAULT_MODEL,
     client: anthropic.Anthropic | None = None,
+    budget: float | None = None,
 ) -> Storyboard:
     client = _client(client)
     system_prompt = get_system_prompt(channel)
+    plan = plan_for_budget(budget, num_beats)
+    if plan:
+        _log(f"[SCRIPT_DRAFT] Budget ${plan['budget']:.0f} -> ~{plan['beats']} beats, "
+             f"up to {plan['hero_beats']} ai_video (est. ${plan['estimated_total']:.2f}).")
+    scope = f"Produce about {plan['beats']} beats." if plan else _scope(num_beats)
     if channel == "calluses":
         user_prompt = (
             "Research and script a By the Calluses documentary episode, in Vesper's "
             "voice, starting with the archival cold open and following the Calluses "
-            f"Codex format.\n\nHistorical topic / industry:\n{topic}\n\n{_scope(num_beats)}"
+            f"Codex format.\n\nHistorical topic / industry:\n{topic}\n\n{scope}"
+            f"{_budget_block(plan)}"
         )
     else:
         user_prompt = (
             "Research and script an Illuminated Bestiary documentary episode, in Vesper's "
             "voice, starting with the manuscript cold open and following the Illuminated "
-            f"Codex format.\n\nEntity / topic:\n{topic}\n\n{_scope(num_beats)}"
+            f"Codex format.\n\nEntity / topic:\n{topic}\n\n{scope}"
+            f"{_budget_block(plan)}"
         )
     sb = _request_storyboard([{"role": "user", "content": user_prompt}], model, client, system_prompt=system_prompt)
     sb.channel = channel
+    _apply_plan(sb, plan)
     return sb
 
 
@@ -459,24 +591,30 @@ def generate_script_from_messages(
     channel: str = "bestiary",
     model: str = DEFAULT_MODEL,
     client: anthropic.Anthropic | None = None,
+    budget: float | None = None,
 ) -> Storyboard:
     client = _client(client)
     if not messages:
         raise ValueError("Cannot script from an empty conversation.")
     system_prompt = get_system_prompt(channel)
+    plan = plan_for_budget(budget, num_beats)
+    if plan:
+        _log(f"[SCRIPT_DRAFT] Budget ${plan['budget']:.0f} -> ~{plan['beats']} beats, "
+             f"up to {plan['hero_beats']} ai_video (est. ${plan['estimated_total']:.2f}).")
+    scope = f"Produce about {plan['beats']} beats." if plan else _scope(num_beats)
     if channel == "calluses":
         instruction = (
             "Now turn everything we discussed into the finished piece. Write the full "
             "By the Calluses documentary storyboard in Vesper's voice, starting "
             f"with the archival cold open and following the Calluses Codex format. "
-            f"{_scope(num_beats)}"
+            f"{scope}{_budget_block(plan)}"
         )
     else:
         instruction = (
             "Now turn everything we discussed into the finished piece. Write the full "
             "Illuminated Bestiary documentary storyboard in Vesper's voice, starting "
             f"with the manuscript cold open and following the Illuminated Codex format. "
-            f"{_scope(num_beats)}"
+            f"{scope}{_budget_block(plan)}"
         )
     convo = list(messages) + [{
         "role": "user",
@@ -484,6 +622,7 @@ def generate_script_from_messages(
     }]
     sb = _request_storyboard(convo, model, client, system_prompt=system_prompt)
     sb.channel = channel
+    _apply_plan(sb, plan)
     return sb
 
 

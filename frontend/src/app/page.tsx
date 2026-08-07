@@ -590,14 +590,22 @@ Moved to: ${res.moved_to}`);
     }
   };
 
-  const handleDraftStoryboard = async (topic: string, beats: number | null) => {
+  /** Budget plan preview for the draft panel — the backend's own arithmetic. */
+  const fetchBudgetPlan = useCallback(async (budget: number, beats: number | null) => {
+    const q = new URLSearchParams({ budget: String(budget) });
+    if (beats) q.set("beats", String(beats));
+    const res = await fetch(`${API_BASE}/api/script/budget_plan?${q}`);
+    return res.json();
+  }, []);
+
+  const handleDraftStoryboard = async (topic: string, beats: number | null, budget: number | null) => {
     try {
       scriptDraftStatus.current = "running";
       setJobs((prev: any) => ({
         ...prev,
         script_draft: { status: "running", log: "Vesper is starting your documentary script draft..." }
       }));
-      const data = await post("/api/script/generate", { topic, beats, channel: activeChannel });
+      const data = await post("/api/script/generate", { topic, beats, budget, channel: activeChannel });
       if (data.ok) {
         pollJobs();
       } else {
@@ -612,14 +620,14 @@ Moved to: ${res.moved_to}`);
     }
   };
 
-  const handleScriptFromChat = async (messages: any[], beats: number | null) => {
+  const handleScriptFromChat = async (messages: any[], beats: number | null, budget: number | null) => {
     try {
       scriptDraftStatus.current = "running";
       setJobs((prev: any) => ({
         ...prev,
         script_draft: { status: "running", log: "Vesper is converting your chat into a storyboard..." }
       }));
-      const data = await post("/api/script/from_chat", { messages, beats, channel: activeChannel });
+      const data = await post("/api/script/from_chat", { messages, beats, budget, channel: activeChannel });
       if (data.ok) {
         pollJobs();
       } else {
@@ -1098,6 +1106,7 @@ Moved to: ${res.moved_to}`);
                 channel={project.channel}
                 onDraftStoryboard={handleDraftStoryboard}
                 onScriptFromChat={handleScriptFromChat}
+                fetchBudgetPlan={fetchBudgetPlan}
                 onLockScript={handleLockScript}
                 chatHistory={chatHistory}
                 onSendChatMessage={handleSendChatMessage}

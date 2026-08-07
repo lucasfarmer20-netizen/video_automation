@@ -41,7 +41,7 @@ def secure_filename(filename: str) -> str:
     return filename
 
 # Submodule imports
-from . import config, manifest, script, assets, audio, motion, timeline, sizzle, metadata, bundle
+from . import config, manifest, script, assets, audio, motion, timeline, sizzle, metadata, bundle, ledger
 from .manifest import Storyboard, Shot, MotionType, Camera, RenderConfig, db
 from .pipeline_worker import start_job, get_jobs_status, log_job
 
@@ -514,7 +514,7 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
             if not shot.draft_image:
                 backend = getattr(shot, "image_model", None) or getattr(sb.render, "backend", None) or "nano2"
                 log(f"Generating drafts for {shot.scene_id} using {backend}...")
-                assets.generate_for_shot(shot, n=3, backend=backend, render=sb.render)
+                assets.generate_for_shot(shot, n=_takes(sb), backend=backend, render=sb.render)
                 shot.chosen_variation = 0
                 shot.draft_image = shot.draft_variations[0]
                 save_shot_assets(shot)
@@ -580,7 +580,7 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
                         if not local_image_path or not local_image_path.exists():
                             log(f"Still image draft not found for {shot.scene_id}, generating still drafts...")
                             try:
-                                assets.generate_for_shot(shot, n=3, backend=sb.render.backend, render=sb.render)
+                                assets.generate_for_shot(shot, n=_takes(sb), backend=sb.render.backend, render=sb.render)
                                 shot.chosen_variation = 0
                                 shot.draft_image = shot.draft_variations[0]
                                 save_shot_assets(shot)
@@ -1293,6 +1293,48 @@ async def update_grade(request: Request):
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 
+def _takes(sb) -> int:
+    """Draft takes per beat for this episode.
+
+    Was the literal 3 at five call sites, which is why the budget plan's take
+    allocation needed somewhere single to land. Clamped so a bad manifest value
+    cannot bill for fifty images a beat.
+    """
+    try:
+        return max(1, min(8, int(getattr(sb.render, "variations", 3) or 3)))
+    except (TypeError, ValueError):
+        return 3
+
+
+@app.get("/api/script/budget_plan")
+def get_budget_plan(budget: float | None = None, beats: int | None = None):
+    """What a given budget buys, before drafting anything.
+
+    The same function the script stage uses, so the number shown here is the number
+    the model is actually told — not a second estimate that can drift from it.
+    """
+    plan = script.plan_for_budget(budget, beats)
+    return {"ok": True, "plan": plan,
+            "note": None if plan else "No budget given — default scope (15-40 beats, ai_video used sparingly)."}
+
+
+@app.get("/api/prompts/ledger")
+def get_prompt_ledger(scope: str = "all", exemplars: int = 10):
+    """Which prompt strategy you actually keep, measured on your own picks.
+
+    ``scope=project`` narrows to the active episode; the default is every episode,
+    because learning that does not accumulate across episodes is not learning.
+    """
+    project = config.MANIFEST_PATH.parent.name if scope == "project" else None
+    return {
+        "ok": True,
+        "strategies_available": list(assets.PROMPT_STRATEGIES),
+        "variants_enabled": assets.PROMPT_VARIANTS,
+        **ledger.summary(project=project),
+        "exemplars": ledger.top_exemplars(limit=max(0, min(exemplars, 50)), project=project),
+    }
+
+
 @app.get("/api/mix")
 def get_mix():
     """Audio mix levels for the active episode (linear gain, 1.0 = unity)."""
@@ -1498,6 +1540,11 @@ async def update_shot(scene_id: str, request: Request):
             shot.chosen_variation = idx
             if idx is not None and 0 <= idx < len(shot.draft_variations):
                 shot.draft_image = shot.draft_variations[idx]
+                # The only place a *human* preference over drafts is expressed.
+                # generate_for_shot also sets chosen_variation, but as a display
+                # placeholder — scoring that would measure slot order, not taste.
+                ledger.record_choice(
+                    scene_id=scene_id, path=shot.draft_variations[idx], source="human")
         if "chosen_video_variation" in data:
             idx = data["chosen_video_variation"]
             if idx is not None and 0 <= idx < len(getattr(shot, "video_variations", [])):
@@ -1797,7 +1844,7 @@ async def generate_shot_video(scene_id: str, request: Request):
         local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
         if not local_image_path or not local_image_path.exists():
             print("Auto-generating still drafts before video render...")
-            assets.generate_for_shot(shot, n=3, backend=sb.render.backend, render=sb.render)
+            assets.generate_for_shot(shot, n=_takes(sb), backend=sb.render.backend, render=sb.render)
             shot.chosen_variation = 0
             shot.draft_image = shot.draft_variations[0]
             save_current_project(sb)
@@ -1920,7 +1967,7 @@ async def regenerate(scene_id: str, request: Request):
             or assets.DEFAULT_BACKEND
         )
 
-        assets.generate_for_shot(shot, n=3, backend=backend, render=sb.render)
+        assets.generate_for_shot(shot, n=_takes(sb), backend=backend, render=sb.render)
         save_current_project(sb)
         return {"ok": True, "variations": shot.draft_variations, "backend": backend}
     except Exception as e:
@@ -2066,14 +2113,15 @@ async def generate_script_endpoint(request: Request):
         data = await request.json()
         topic = data.get("topic")
         beats = data.get("beats")
+        budget = data.get("budget")
         channel = data.get("channel") or sb.channel or "bestiary"
-        
+
         if not topic:
             raise HTTPException(status_code=400, detail="Topic is required")
 
         def run_draft():
             log_job("script_draft", f"Generating AI script for topic: '{topic}'...")
-            new_sb = script.generate_script(topic, num_beats=beats, channel=channel)
+            new_sb = script.generate_script(topic, num_beats=beats, channel=channel, budget=budget)
             new_sb.id = sb.id
             new_sb.title = sb.title
             save_current_project(new_sb)
@@ -2097,11 +2145,13 @@ async def script_from_chat_endpoint(request: Request):
         data = await request.json()
         messages = data.get("messages", [])
         beats = data.get("beats")
+        budget = data.get("budget")
         channel = data.get("channel") or sb.channel or "bestiary"
 
         def run_chat_draft():
             log_job("script_draft", "Generating AI script from chat conversation...")
-            new_sb = script.generate_script_from_messages(messages, num_beats=beats, channel=channel)
+            new_sb = script.generate_script_from_messages(
+                messages, num_beats=beats, channel=channel, budget=budget)
             new_sb.id = sb.id
             new_sb.title = sb.title
             save_current_project(new_sb)
@@ -2293,7 +2343,7 @@ def build_rough_cut(force_paid: bool = False):
             missing = [s for s in sb.shots if not s.draft_image]
             if missing:
                 note(f"[1/5] Generating stills for {len(missing)} beat(s) ...")
-                assets.generate_drafts(sb, n=3, backend=sb.render.backend,
+                assets.generate_drafts(sb, n=_takes(sb), backend=sb.render.backend,
                                        save_fn=save_current_project, log=note)
                 for s in sb.shots:
                     if s.draft_variations and s.chosen_variation is None:
@@ -2406,7 +2456,7 @@ def run_assemble_endpoint(stage: str, force_paid: bool = False):
             def fn():
                 assets.generate_drafts(
                     sb,
-                    n=3,
+                    n=_takes(sb),
                     backend=getattr(sb.render, "backend", assets.DEFAULT_BACKEND),
                     skip_existing=True,      # never re-pay for a beat that has drafts
                     save_after_each=True,    # a crash keeps the beats already bought
