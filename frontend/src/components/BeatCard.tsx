@@ -7,6 +7,7 @@ interface Camera {
   move: string;
   duration: number;
   speed: number;
+  duration_locked?: boolean;
 }
 
 interface ShotRef {
@@ -149,9 +150,32 @@ export default function BeatCard({
           <span className="text-amber-500 font-mono text-xs font-bold bg-zinc-950 border border-zinc-900 px-2.5 py-1 rounded shadow-inner">
             {shot.scene_id}
           </span>
-          <span className="text-zinc-500 text-[10px] font-mono select-none">
-            ⏱ {shot.camera.duration.toFixed(1)}s
-          </span>
+          <div className="flex items-center gap-1 text-[10px] font-mono">
+            <input
+              type="number" step={0.1} min={0.2}
+              defaultValue={shot.camera.duration}
+              key={`d-${shot.scene_id}-${shot.camera.duration}`}
+              onBlur={(e) => {
+                const v = parseFloat(e.target.value);
+                if (Number.isFinite(v) && Math.abs(v - shot.camera.duration) > 0.05)
+                  onUpdateField(shot.scene_id, "camera", { duration: v });
+              }}
+              title="Target length for this beat, in seconds"
+              className="w-14 bg-zinc-950 text-amber-400 border border-zinc-800 rounded px-1 py-0.5 text-right focus:outline-none focus:border-amber-400"
+            />
+            <span className="text-zinc-600">s</span>
+            <button
+              onClick={() => onUpdateField(shot.scene_id, "camera",
+                { duration_locked: !shot.camera.duration_locked })}
+              title={shot.camera.duration_locked
+                ? "Locked — re-running narration will not retime this beat"
+                : "Unlocked — re-running narration refits this beat to its voiceover"}
+              className={`transition ${shot.camera.duration_locked
+                ? "text-amber-500" : "text-zinc-600 hover:text-zinc-400"}`}
+            >
+              {shot.camera.duration_locked ? "🔒" : "🔓"}
+            </button>
+          </div>
         </div>
 
         {/* Center Inputs Column */}
@@ -161,8 +185,16 @@ export default function BeatCard({
               Narration (Voiceover)
             </label>
             <textarea
-              value={shot.narration}
-              onChange={(e) => onUpdateField(shot.scene_id, "narration", e.target.value)}
+              rows={5}
+              // Same reason as the prompts: a controlled textarea wrote to the
+              // manifest on every keystroke, and narration is the longest field
+              // on the card.
+              defaultValue={shot.narration}
+              key={`n-${shot.scene_id}-${shot.narration}`}
+              onBlur={(e) => {
+                if (e.target.value !== shot.narration)
+                  onUpdateField(shot.scene_id, "narration", e.target.value);
+              }}
               className="w-full bg-zinc-950/60 text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition text-xs font-sans leading-relaxed resize-y"
             />
           </div>
@@ -172,9 +204,17 @@ export default function BeatCard({
               Visual Scene Prompt
             </label>
             <textarea
-              value={shot.prompt}
-              onChange={(e) => onUpdateField(shot.scene_id, "prompt", e.target.value)}
-              className="w-full bg-zinc-950/60 text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition text-xs font-sans leading-relaxed resize-y"
+              rows={6}
+              // defaultValue + onBlur: a controlled textarea posted to
+              // /api/shot/{id} on every keystroke, and each write is a GCS round
+              // trip. The key re-seeds the box when the prompt changes elsewhere.
+              defaultValue={shot.prompt}
+              key={`p-${shot.scene_id}-${shot.prompt}`}
+              onBlur={(e) => {
+                if (e.target.value !== shot.prompt)
+                  onUpdateField(shot.scene_id, "prompt", e.target.value);
+              }}
+              className="w-full bg-zinc-950/60 text-zinc-200 border border-zinc-800 rounded-lg px-3 py-2 focus:outline-none focus:border-amber-400 transition text-xs font-sans leading-relaxed resize-y min-h-[7rem]"
             />
           </div>
 
@@ -185,22 +225,60 @@ export default function BeatCard({
               </label>
               <input
                 type="text"
-                value={shot.style_medium}
-                onChange={(e) => onUpdateField(shot.scene_id, "style_medium", e.target.value)}
+                defaultValue={shot.style_medium}
+                key={`s-${shot.scene_id}-${shot.style_medium}`}
+                onBlur={(e) => {
+                  if (e.target.value !== shot.style_medium)
+                    onUpdateField(shot.scene_id, "style_medium", e.target.value);
+                }}
                 className="w-full bg-zinc-950/60 text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition text-xs"
               />
             </div>
-            <div>
-              <label className="block text-zinc-500 text-[10px] font-semibold uppercase tracking-wider mb-1 font-mono">
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1 gap-2">
+              <label className="block text-zinc-500 text-[10px] font-semibold uppercase tracking-wider font-mono">
                 🎬 Video Motion Prompt
               </label>
-              <input
-                type="text"
-                value={shot.motion_prompt || shot.motion_prompt_suggestion || ""}
-                onChange={(e) => onUpdateField(shot.scene_id, "motion_prompt", e.target.value)}
-                className="w-full bg-zinc-950/60 text-zinc-200 border border-zinc-800 rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400 transition text-xs"
-              />
+              {shot.motion_prompt_suggestion && (
+                <button
+                  onClick={() => onUpdateField(shot.scene_id, "motion_prompt", shot.motion_prompt_suggestion)}
+                  className="text-[10px] font-mono text-zinc-500 hover:text-amber-400 transition"
+                  title="Copy the suggestion into the field"
+                >
+                  use suggestion
+                </button>
+              )}
+              {shot.motion_prompt && (
+                <button
+                  onClick={() => onUpdateField(shot.scene_id, "motion_prompt", "")}
+                  className="text-[10px] font-mono text-zinc-600 hover:text-red-400 transition"
+                  title="Clear this prompt"
+                >
+                  clear
+                </button>
+              )}
             </div>
+            <textarea
+              rows={5}
+              // The suggestion is a PLACEHOLDER, never the value. It used to fall
+              // back into `value`, so an empty prompt displayed the suggestion as
+              // real text: clearing the box instantly refilled it, and typing
+              // saved your words merged into the suggestion that was sitting
+              // there. That is the "stacking".
+              defaultValue={shot.motion_prompt || ""}
+              key={`m-${shot.scene_id}-${shot.motion_prompt}`}
+              placeholder={shot.motion_prompt_suggestion || "Describe the motion for this beat…"}
+              onBlur={(e) => {
+                if (e.target.value !== (shot.motion_prompt || ""))
+                  onUpdateField(shot.scene_id, "motion_prompt", e.target.value);
+              }}
+              className="w-full bg-zinc-950/60 text-zinc-200 placeholder:text-zinc-600 placeholder:italic border border-zinc-800 rounded-lg px-3 py-2 focus:outline-none focus:border-amber-400 transition text-xs font-sans leading-relaxed resize-y min-h-[6rem]"
+            />
+            <p className="text-[9px] text-zinc-600 mt-1">
+              Empty uses the greyed suggestion. Only what you type here is saved.
+            </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3 mt-1">
