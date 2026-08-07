@@ -404,7 +404,11 @@ def _pad_clip_to_beat(path: Path, target_seconds: float) -> None:
              str(padded)],
             check=True,
         )
-        padded.replace(path)
+        # Copy the bytes over rather than renaming: a rename on the GCS FUSE
+        # mount is a server-side copy plus delete and is not always permitted,
+        # and the temporary file is disposable either way.
+        shutil.copyfile(padded, path)
+        padded.unlink(missing_ok=True)
         log_job("render", f"  padded to beat length: {current:.1f}s -> {target_seconds:.1f}s (froze final frame)")
     except Exception as exc:  # noqa: BLE001 — an unpadded clip still renders
         log_job("render", f"  !! could not pad clip to beat length: {exc}")
@@ -429,7 +433,10 @@ def set_active_video_clip(sb: Storyboard, shot: Shot, video_rel_path: str, out_d
         return
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src_path, dest_path)
+    # copyfile, never copy2: copy2 also copies metadata, which means chmod and
+    # utime on the destination, and the GCS FUSE mount rejects both with
+    # "[Errno 1] Operation not permitted". Only the bytes matter here.
+    shutil.copyfile(src_path, dest_path)
     log_job("render", f"  {shot.scene_id}: clip placed ({dest_path.stat().st_size:,} bytes)")
     if shot.camera:
         _pad_clip_to_beat(dest_path, float(shot.camera.duration))
@@ -1862,10 +1869,32 @@ async def generate_shot_video(scene_id: str, request: Request):
             shot.video_variations = []
         shot.video_variations.append(video_rel_path)
 
-        set_active_video_clip(sb, shot, video_rel_path, out_dir)
+        # Record the paid clip BEFORE trying to place it in the cut. Placement
+        # was failing on the GCS mount and taking the whole request down with it,
+        # which left a generation you had already been billed for downloaded to
+        # disk but absent from the manifest -- invisible, and regenerating it
+        # meant paying twice.
         save_current_project(sb)
 
-        return {"ok": True, "video_path": f"/render/{scene_id}.mp4", "video_model": video_model_key}
+        placed = True
+        try:
+            set_active_video_clip(sb, shot, video_rel_path, out_dir)
+            save_current_project(sb)
+        except Exception as exc:  # noqa: BLE001 — the clip itself is safe
+            placed = False
+            log_job("render", f"  !! {scene_id}: clip generated and saved, but could not be "
+                              f"placed in the cut: {exc}")
+
+        return {
+            "ok": True,
+            "video_path": f"/render/{scene_id}.mp4" if placed else None,
+            "video_variation": video_rel_path,
+            "placed": placed,
+            "video_model": video_model_key,
+            "warning": None if placed else
+                "The clip was generated and kept, but placing it in the cut failed. "
+                "Pick it from this beat's video variations, or re-run the render.",
+        }
     except HTTPException as he:
         raise he
     except Exception as e:

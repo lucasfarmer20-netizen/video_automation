@@ -480,6 +480,9 @@ Moved to: ${res.moved_to}`);
     btn.textContent = oldText;
     if (data.ok) {
       fetchActiveProject();
+      // The paid clip exists even when it could not be placed in the cut; say so
+      // rather than letting a partial result look like a clean success.
+      if (data.warning) alert(data.warning);
     } else {
       alert("Video generation failed: " + (data.error || "unknown error"));
     }
