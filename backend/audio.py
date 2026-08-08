@@ -197,6 +197,51 @@ def resolve_sfx_layers(shot, sfx_dir) -> list:
     )]
 
 
+def loop_to_length(seg, sr: int, seconds: float, crossfade: float = 0.35):
+    """Tile an ambience bed to cover ``seconds``, crossfading each seam.
+
+    SFX are generated per beat from an environmental prompt — room tone, weather,
+    fire, water — so they are beds, not one-shots, and a bed that stops partway
+    through its beat is heard as the room going dead. The music bed was looped
+    here from the start; ambience never was, which did not show while beats were
+    short. When durations were refit to narration length, stems generated against
+    the old six-second durations left half a minute of silence under every beat.
+
+    Returns the segment unchanged when it is already long enough; never pads with
+    silence, which is the failure this exists to prevent.
+    """
+    import numpy as np
+
+    need = int(round(seconds * sr))
+    n = int(seg.shape[0])
+    if need <= 0 or n == 0:
+        return seg[: max(need, 0)]
+    if n >= need:
+        return seg[:need]
+
+    # A crossfade longer than half the clip would fold it onto itself.
+    xf = int(min(float(crossfade), n / (2.0 * sr)) * sr)
+    if xf <= 0:
+        reps = -(-need // n)  # ceil
+        return np.tile(seg, (reps, 1))[:need]
+
+    down = np.linspace(1.0, 0.0, xf, dtype=np.float32)[:, None]
+    up = 1.0 - down
+    out = seg
+    while out.shape[0] < need:
+        seam = out[-xf:] * down + seg[:xf] * up
+        out = np.concatenate([out[:-xf], seam, seg[xf:]], axis=0)
+    return out[:need]
+
+
+def layer_loops(layer) -> bool:
+    """Whether a layer should be tiled to its beat. See ``AudioLayer.loop``."""
+    explicit = getattr(layer, "loop", None)
+    if explicit is not None:
+        return bool(explicit)
+    return (getattr(layer, "source", "generated") or "generated") == "generated"
+
+
 def apply_fades(seg, sr: int, fade_in: float, fade_out: float):
     """Linear fades in place on an (n, channels) float array."""
     import numpy as np

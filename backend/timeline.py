@@ -260,8 +260,13 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
         return (y.T.astype(np.float32)) * level
 
     def _place(path: Path, off: float, level: float,
-               fade_in: float = 0.0, fade_out: float = 0.0) -> None:
+               fade_in: float = 0.0, fade_out: float = 0.0,
+               loop_to: float | None = None) -> None:
         seg = _load_stereo(path, level)
+        # Tile before fading, so the fade-out lands on the end of the filled
+        # span rather than on the end of the first repetition.
+        if loop_to and loop_to > 0:
+            seg = audio.loop_to_length(seg, sr, loop_to)
         if fade_in or fade_out:
             seg = audio.apply_fades(seg, sr, fade_in, fade_out)
         start = int(off * sr)
@@ -292,7 +297,7 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
         print(f"mix: narration={lvl_narr:.2f} sfx={lvl_sfx:.2f} music={lvl_music:.2f}"
               + (f" (solo: {solo})" if solo else " (muted buses)"))
 
-    for shot, off in zip(sb.shots, offsets):
+    for shot, off, dur in zip(sb.shots, offsets, durs):
         # Bus level x per-beat trim. The trim is what lets a beat whose stem came
         # back 13 dB hot sit with the rest without moving the whole bus.
         g_narr = float(getattr(shot, "gain_narration", 1.0) or 1.0)
@@ -312,9 +317,14 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
                 src = config.resolve_media(str(src), shot.scene_id) or (sfx_dir / src.name)
             if not src or not Path(src).is_file():
                 continue
-            _place(Path(src), off + float(lay.offset or 0.0),
+            lay_off = float(lay.offset or 0.0)
+            # Fill from where the layer starts to the end of its beat. A layer
+            # that starts early (negative offset) has further to cover, not less.
+            fill = (dur - lay_off) if audio.layer_loops(lay) else None
+            _place(Path(src), off + lay_off,
                    lvl_sfx * float(lay.gain or 1.0),
-                   float(lay.fade_in or 0.0), float(lay.fade_out or 0.0))
+                   float(lay.fade_in or 0.0), float(lay.fade_out or 0.0),
+                   loop_to=fill)
     if sb.music_track:
         mp = config.AUDIO_POOL / sb.music_track
         if mp.exists():

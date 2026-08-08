@@ -2233,12 +2233,24 @@ def roughcut_plan():
             except OSError:
                 return set()
 
-        # A preview that predates the newest beat clip is not "done", it is
-        # stale. Reporting it as done is what showed "Build preview ✓" while a
-        # render was still running.
-        clip_times = [f.stat().st_mtime for f in ep["render"].glob("*.mp4")
-                      if f.stem != "_preview"] if ep["render"].is_dir() else []
-        newest_clip = max(clip_times) if clip_times else 0.0
+        # A preview that predates its own inputs is not "done", it is stale.
+        # This used to consider only the beat clips, so a preview built before
+        # narration was recorded reported "Build preview ✓" with no warning and
+        # played with no voice over at all — the audio is as much an input as the
+        # video, and a check that cannot see it cannot answer the question.
+        def _newest(d, *exts) -> float:
+            try:
+                times = [f.stat().st_mtime for f in d.iterdir()
+                         if f.is_file() and f.stem != "_preview"
+                         and (not exts or f.suffix.lower() in exts)]
+                return max(times) if times else 0.0
+            except OSError:
+                return 0.0
+
+        newest_clip = _newest(ep["render"], ".mp4")
+        newest_media = max(newest_clip,
+                           _newest(ep["narration"]),
+                           _newest(ep["sfx"]))
 
         def _is_current(path: Path, after: float) -> bool:
             try:
@@ -2268,13 +2280,13 @@ def roughcut_plan():
              "done": n > 0 and rendered >= n, "detail": f"{rendered}/{n}",
              "blocked": None if sb.storyboard_approved else "Approve the storyboard first."},
             {"key": "preview", "label": "Build preview",
-             "done": _is_current(ep["render"] / "_preview.mp4", newest_clip),
-             "detail": "" if _is_current(ep["render"] / "_preview.mp4", newest_clip)
+             "done": _is_current(ep["render"] / "_preview.mp4", newest_media),
+             "detail": "" if _is_current(ep["render"] / "_preview.mp4", newest_media)
                        else ("out of date" if (ep["render"] / "_preview.mp4").is_file() else ""),
              "blocked": None if rendered else "Render the beats first."},
             {"key": "timeline", "label": "Export timeline",
-             "done": _is_current(config.MANIFEST_PATH.parent / f"{slug}.fcpxml", newest_clip),
-             "detail": "" if _is_current(config.MANIFEST_PATH.parent / f"{slug}.fcpxml", newest_clip)
+             "done": _is_current(config.MANIFEST_PATH.parent / f"{slug}.fcpxml", newest_media),
+             "detail": "" if _is_current(config.MANIFEST_PATH.parent / f"{slug}.fcpxml", newest_media)
                        else ("out of date" if (config.MANIFEST_PATH.parent / f"{slug}.fcpxml").is_file() else ""),
              "blocked": None if rendered else "Render the beats first."},
         ]
@@ -2297,6 +2309,33 @@ def roughcut_plan():
                 "Narration exists but the script is unlocked — a long job probably "
                 "wrote a stale storyboard back over it."
             )
+
+        # An mtime check cannot see a preview built from *different durations* —
+        # the file can be newer than every input and still be cut to a timeline
+        # that no longer exists. The sidecar records the runtime it was built at,
+        # so compare that against the manifest and say so in seconds.
+        pv = ep["render"] / "_preview.mp4"
+        if pv.is_file() and durs:
+            want = sum(durs)
+            side = ep["render"] / "_preview.json"
+            built = None
+            if side.is_file():
+                try:
+                    built = float(json.loads(side.read_text(encoding="utf-8")).get("runtime") or 0)
+                except (OSError, ValueError, TypeError):
+                    built = None
+            if built is None:
+                warnings.append(
+                    "The preview has no timing sidecar, so it was built by an older "
+                    "version and its length cannot be checked. Rebuild it to be sure "
+                    "it matches the current cut."
+                )
+            elif abs(built - want) > 0.5:
+                warnings.append(
+                    f"The preview is {built:.0f}s but the cut is now {want:.0f}s "
+                    f"({abs(built - want):.0f}s out). It was built from older beat "
+                    f"durations — rebuild it."
+                )
 
         return {"ok": True, "steps": steps,
                 "next": nxt["key"] if nxt else None,

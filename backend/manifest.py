@@ -65,6 +65,11 @@ class AudioLayer:
     fade_in: float = 0.0
     fade_out: float = 0.0
     label: str = ""
+    # Tile this layer to cover its beat. ``None`` means decide by source:
+    # generated layers come from an environmental prompt (room tone, weather,
+    # fire) and are beds, so they loop; an uploaded file may be a one-shot and is
+    # left alone. Set explicitly to override either way.
+    loop: Optional[bool] = None
 
 
 @dataclass
