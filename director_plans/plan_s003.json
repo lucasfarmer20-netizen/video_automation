@@ -1,0 +1,103 @@
+{
+  "beat_id": "s003",
+  "beat_duration": 26.95,
+  "plan_id": "spikeB-s003-manual",
+  "scene_beats": ["s003"],
+  "status": "locked",
+  "profile": "historical_docudrama",
+  "created_by": "manual",
+  "coverage": [
+    {
+      "id": "s003.01",
+      "beat_id": "s003",
+      "purpose": "establishing",
+      "subject": "Hoosac ridge",
+      "shot_size": "ews",
+      "angle": "high",
+      "composition": "elevated wide, ridge running across frame, valley falling away right",
+      "camera": {"move": "pan_right", "duration": 4.5, "speed": 0.8},
+      "motion_type": "parallax",
+      "prompt": "Wide elevated view of the forested Hoosac ridge in late winter, bare hardwoods and torn snow, the Deerfield valley cutting away below, low raking sun, long shadows in the folds of the mountain, cinematic 16:9",
+      "motion_prompt": "slow lateral drift across the ridge line"
+    },
+    {
+      "id": "s003.02",
+      "beat_id": "s003",
+      "purpose": "establishing",
+      "subject": "the two towns either side",
+      "shot_size": "ws",
+      "angle": "high",
+      "composition": "valley floor with a scatter of mill roofs, mountain wall behind",
+      "camera": {"move": "push_in", "duration": 3.5, "speed": 0.7},
+      "motion_type": "parallax",
+      "prompt": "A small New England mill settlement on a valley floor in late winter, plank and brick roofs under bare trees, smoke standing from stovepipes, the dark mass of the mountain wall rising behind and filling the upper frame",
+      "motion_prompt": "slow push toward the mountain wall"
+    },
+    {
+      "id": "s003.03",
+      "beat_id": "s003",
+      "purpose": "insert",
+      "subject": "survey map of the routes",
+      "shot_size": "cu",
+      "angle": "overhead",
+      "composition": "map flat to camera, ridge line and two flanking routes legible",
+      "camera": {"move": "push_in", "duration": 4.5, "speed": 0.6},
+      "motion_type": "static",
+      "prompt": "An engraved survey map of a mountain range on laid paper, contour hatching and inked route lines running over and around the ridge, pencilled annotations in the margin, brass dividers resting across one corner, lit flat from above",
+      "motion_prompt": "slow push onto the route lines"
+    },
+    {
+      "id": "s003.04",
+      "beat_id": "s003",
+      "purpose": "cutaway",
+      "subject": "freight on the long way around",
+      "shot_size": "mw",
+      "angle": "front",
+      "composition": "loaded wagon and team on a rutted grade, receding into haze",
+      "camera": {"move": "static", "duration": 3.5, "speed": 1.0},
+      "motion_type": "parallax",
+      "prompt": "A heavily loaded freight wagon and a straining team of horses on a rutted mountain grade in late winter, teamster walking at the head, breath and dust hanging, the road climbing away into pale haze behind them",
+      "motion_prompt": "faint drifting haze"
+    },
+    {
+      "id": "s003.05",
+      "beat_id": "s003",
+      "purpose": "detail",
+      "subject": "surveyor's transit",
+      "shot_size": "mcu",
+      "angle": "three_quarter",
+      "composition": "instrument on tripod against open sky, mountain edge behind",
+      "camera": {"move": "push_in", "duration": 4.0, "speed": 0.7},
+      "motion_type": "parallax",
+      "prompt": "A brass surveyor's transit on a wooden tripod set on frozen ground, vernier scale and plumb bob clearly visible, worn field notebook weighted with a stone beside it, the mountain edge behind under a blank winter sky",
+      "motion_prompt": "slow push onto the instrument"
+    },
+    {
+      "id": "s003.06",
+      "beat_id": "s003",
+      "purpose": "master",
+      "subject": "east portal works",
+      "shot_size": "mw",
+      "angle": "front",
+      "composition": "raw clearing and spoil bank at the mountain foot, figures for scale",
+      "camera": {"move": "pan_right", "duration": 3.5, "speed": 0.8},
+      "motion_type": "parallax",
+      "prompt": "A raw clearing cut into the foot of a mountain, fresh spoil bank of broken rock, timber staging and a plank shed, a few small figures standing at the rock face for scale, torn snow and mud underfoot",
+      "motion_prompt": "slow lateral move across the workings"
+    },
+    {
+      "id": "s003.07",
+      "beat_id": "s003",
+      "purpose": "insert",
+      "subject": "gneiss and mica schist",
+      "shot_size": "ecu",
+      "angle": "front",
+      "composition": "rock face filling frame, banding and mica catching the light",
+      "camera": {"move": "push_in", "duration": 3.45, "speed": 0.6},
+      "motion_type": "static",
+      "prompt": "Extreme close view of a freshly broken gneiss and mica schist rock face, banded folded layers, flecks of mica catching a low raking light, drill scoring visible along one edge, dust in the crevices",
+      "motion_prompt": "very slow push into the rock face"
+    }
+  ],
+  "warnings": []
+}
