@@ -1417,14 +1417,28 @@ def compile_director_coverage(beat_id: str, force: bool = False):
         ep = config.episode_paths(sb.title)
         ep["render"].mkdir(parents=True, exist_ok=True)
 
+        # Keyed per beat, not "director". Three compiles fired together all took
+        # the same key, start_job returned False for the second and third because
+        # one was already running, this endpoint ignored that and reported
+        # {"started": true} anyway — so s011 and s017 were silently dropped while
+        # the caller was told they had begun. Per-beat keys also let them run
+        # concurrently, which is safe: each compile touches only its own plan
+        # file, its own sub-clip directory and its own beat clip, and none of them
+        # writes the manifest.
+        job = f"director:{beat_id}"
+
         def fn():
-            log = lambda m: log_job("director", m)  # noqa: E731
+            log = lambda m: log_job(job, m)  # noqa: E731
             log(f"Compiling coverage for {beat_id} ({len(plan.coverage)} shots)...")
             out = director.compile_coverage(plan, sb, ep["render"], log=log)
             log(f"Beat clip written: {_safe_rel_path(out)}")
 
-        start_job("director", fn)
-        return {"ok": True, "started": True, "beat_id": beat_id,
+        if not start_job(job, fn):
+            return JSONResponse(status_code=409, content={
+                "ok": False,
+                "error": f"a compile for {beat_id} is already running",
+            })
+        return {"ok": True, "started": True, "beat_id": beat_id, "job": job,
                 "shots": len(plan.coverage)}
     except HTTPException:
         raise
