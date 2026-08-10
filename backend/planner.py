@@ -396,6 +396,11 @@ def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = No
         "style_medium": beats[0].get("style_medium", ""),
         "director_profile": {k: v for k, v in prof.items() if k != "note"},
         "profile_note": prof.get("note", ""),
+        # Stated as an allowance to spend rather than left implicit in the profile
+        # dict. The first two runs returned zero paid shots for a scene about
+        # sledgehammers and rock, because "PAID and strictly limited" read as a
+        # prohibition and nothing said how many were actually available.
+        "ai_video_allowance_for_this_scene": prof.get("max_ai_video_per_scene", 0),
         "characters_available": sorted(anchors) or ["(none defined)"],
         "human_notes": notes,
         "beats": beats,
