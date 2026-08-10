@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -56,6 +57,22 @@ CANON_PIXFMT = "yuv420p"
 DURATION_TOLERANCE = 0.05
 
 PLAN_VERSION = 1
+
+# Only one compile renders at a time, process-wide.
+#
+# Per-beat job keys stop compiles being silently dropped, but they also let two
+# run at once — and that killed both. Each parallax shot pipes raw 1280x720 RGB
+# into an ffmpeg child while holding depth maps and layer arrays in memory, and
+# the deployment is a single Cloud Run instance with max-instances=1. Two of them
+# together exhausted it and ffmpeg died mid-write:
+#
+#   !! s011.03 FAILED: [Errno 32] Broken pipe
+#
+# File isolation was never the issue — each compile touches only its own plan,
+# sub-clips and beat clip. The contention is CPU and memory, which no amount of
+# path separation helps. Queueing costs a few minutes of wall clock and is the
+# difference between both beats finishing and both failing halfway.
+_COMPILE_LOCK = threading.Lock()
 
 
 @dataclass
@@ -553,6 +570,18 @@ def compile_coverage(plan: CoveragePlan, sb: Storyboard, render_dir: Path,
 
     validate(plan, beat)
 
+    # Queue behind any other compile. See _COMPILE_LOCK.
+    if not _COMPILE_LOCK.acquire(blocking=False):
+        log("  another beat is compiling — waiting for it to finish...")
+        _COMPILE_LOCK.acquire()
+    try:
+        return _compile_locked(plan, beat, sb, render_dir, backend, log, skip_existing)
+    finally:
+        _COMPILE_LOCK.release()
+
+
+def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: Path,
+                    backend: str | None, log, skip_existing: bool) -> Path:
     out_dir = Path(render_dir) / plan.beat_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
