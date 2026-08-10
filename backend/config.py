@@ -187,6 +187,7 @@ def media_roots() -> list[Path]:
         project_dir / "references",
         project_dir / "render",
         project_dir / "audio",
+        project_dir / "vo_auditions",   # narrator casting: library + designed takes
         AUDIO_POOL,          # so the UI can audition music beds via /media/
         # Legacy local-run locations, kept so a workstation checkout still serves
         # media generated before episode_paths moved into the project directory.
