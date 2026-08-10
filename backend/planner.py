@@ -538,12 +538,26 @@ def critique(sb: Storyboard, beat_ids: list[str], log=print) -> list[dict]:
                 "suggestion": "Re-plan this beat; it cannot compile as it stands.",
             })
         for s in plan.coverage:
-            if s.motion_type == "ai_video" and not (3.0 <= s.duration <= 10.0):
+            if s.motion_type != "ai_video":
+                continue
+            # Ask the router, rather than testing the editorial length against a
+            # fixed 3-10s window. A 2.72s shot is perfectly producible — the
+            # router generates the model's 3s minimum and trims back, which is
+            # safe for ambient motion — so flagging it as impractical was wrong
+            # and appeared on the planner's very first real run. What actually
+            # matters is whether ANY configured model can serve the shot; that
+            # also covers hand-authored plans, which never went through a router.
+            served = capabilities.resolve(
+                {"duration": s.duration, "gestural": s.gestural},
+                prefer=[s.backend] if s.backend else None)
+            if not served.get("backend"):
                 warnings.append({
                     "beat_id": r["beat_id"], "shot_id": s.id,
                     "kind": "impractical_duration",
-                    "detail": f"{s.id} is a paid shot of {s.duration:.2f}s; generated "
-                              f"video runs 3-10s.",
+                    "detail": f"{s.id} is a paid shot of {s.duration:.2f}s and no "
+                              f"configured model can produce it"
+                              + (" without trimming a gesture" if s.gestural else "")
+                              + ".",
                     "suggestion": "Shorten it, split it, or make it parallax.",
                 })
     for w in warnings:

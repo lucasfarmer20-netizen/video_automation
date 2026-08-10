@@ -281,6 +281,15 @@ Warnings are stored on each beat's plan, so they can render beside the shot.
 
 ## 5. Rules the frontend must respect
 
+**Everything operates on the ACTIVE project.** There is no `project` parameter on
+any Director endpoint; `beats` are resolved against whatever
+`GET /api/project/active` currently returns. Beat ids are not globally unique —
+every project has an `s004` — so a plan request carries no evidence of which
+episode it meant. The first real planner run went to the wrong project for exactly
+this reason. **Show the active project name next to any Plan button**, and re-read
+it after any project switch.
+
+
 **Coverage must sum to `beat_duration` exactly** (±0.05s). `lock` and `compile`
 both refuse otherwise. If you build shot-duration editing, re-normalise on the
 client or expect a 400.
