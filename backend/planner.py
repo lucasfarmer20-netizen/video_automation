@@ -465,6 +465,7 @@ def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = No
                 identity_critical=bool(s.get("identity_critical")),
                 motion_type=mt, backend=backend,
                 prompt=s.get("prompt", ""), motion_prompt=s.get("motion_prompt", ""),
+                reason=s.get("reason", ""),
                 constrained_by=constraints,
                 estimated_cost=round(est, 3),
             ))
@@ -473,6 +474,8 @@ def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = No
             beat_id=bid, beat_duration=seconds, plan_id=raw_plan_id(beat_ids),
             scene_beats=list(beat_ids), status="draft", profile=prof["key"],
             created_by="planner", coverage=coverage,
+            visual_strategy=raw.get("visual_strategy", ""),
+            blocking=raw.get("blocking", {}) or {},
         )
         # Catch our own arithmetic before a human ever sees the plan.
         try:

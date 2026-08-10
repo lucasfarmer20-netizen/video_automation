@@ -123,6 +123,11 @@ class DirectorShot:
     source_ref: str = ""               # media-root-relative when source == library
     library_scope: str = ""            # series|project — recorded now, resolved later
 
+    # Why this shot earns its place. The planner writes one sentence per shot;
+    # without somewhere to keep it the justification was generated and discarded,
+    # leaving a reviewer to infer intent from a framing and a duration.
+    reason: str = ""
+
     # Provenance: why this shot is not what was originally wanted
     constrained_by: list[str] = field(default_factory=list)
 
@@ -153,6 +158,10 @@ class CoveragePlan:
     coverage: list[DirectorShot] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     compiled: dict = field(default_factory=dict)
+    # The scene's stated approach and its physical layout. Held per beat because
+    # beats are the unit of storage, even though both are decided per scene.
+    visual_strategy: str = ""
+    blocking: dict = field(default_factory=dict)
 
     def total_duration(self) -> float:
         return sum(s.duration for s in self.coverage)

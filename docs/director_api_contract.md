@@ -139,6 +139,9 @@ The read model. Everything needed to render a scene view in one call.
         "status": "draft",             // draft|locked|compiling|compiled|orphaned
         "profile": "historical_docudrama",
         "created_by": "planner",       // planner|manual
+        "version": 1,
+        "visual_strategy": "Hold the machine in wide, then let the failure play in inserts — the iron, the scoring, the rust.",   // the scene's stated approach
+        "blocking": { "environment": "…", "characters": [], "props": ["boring engine","…"] },
         "coverage": [ /* DirectorShot[] — see §3 */ ],
         "warnings": [ /* see §4 */ ],
         "compiled": {}                 // populated only after compile
@@ -215,6 +218,7 @@ Single-beat version of `scene`. Adds `problems: string[]` from validation.
 
   "prompt": "…",                      // still image, scene only
   "motion_prompt": "…",               // what moves; empty for stills
+  "reason": "The wide is the only place the machine reads as bigger than the men.",
 
   // library reuse
   "source": "generated",              // generated|library
