@@ -11,7 +11,7 @@ Two sources, one passage, identical settings:
   voice ids found somewhere. Ids rot, names change, and a hardcoded id that no
   longer resolves fails at narration time rather than here.
 * **Voice Design** — custom candidates from two written directions. These are
-  previews only. ``audio.design_voice_previews`` already declines to save, and
+  previews only. ``audio.design_voice`` already declines to save, and
   nothing here promotes a preview into a real voice; that happens after a human
   has listened, via ``audio.save_designed_voice``.
 
@@ -239,9 +239,13 @@ def resolve_shortlist(names: list[str] | None = None, log=print) -> dict:
 
     out: dict[str, dict] = {}
     for name in (names or SHORTLIST):
-        # Match on the distinctive leading token; the full display names carry
-        # em-dashes and suffixes that a search index may not reproduce.
-        head = re.split(r"[—\-–,]", name)[0].strip()
+        # Match on the leading token but SCORE on the descriptive remainder.
+        # Matching on the head alone picked "David - Space Adventurer Pirate" for
+        # "David - American Narrator": there are many Davids, and the words after
+        # the dash are the entire distinguishing signal.
+        parts = re.split(r"[—\-–,]", name, 1)
+        head = parts[0].strip()
+        tail = parts[1].strip() if len(parts) > 1 else ""
         try:
             r = requests.get(SHARED_VOICES_URL, headers=_headers(),
                              params={"search": head, "page_size": 30,
@@ -252,11 +256,26 @@ def resolve_shortlist(names: list[str] | None = None, log=print) -> dict:
         except Exception as exc:  # noqa: BLE001
             log(f"  shortlist {name!r}: search failed ({exc})")
             continue
-        hit = next((v for v in voices
-                    if head.lower() in (v.get("name") or "").lower()), None)
-        if hit:
-            out[name] = _normalise(hit)
-            log(f"  shortlist {name!r} -> {hit.get('name')} ({out[name]['voice_id']})")
+        wanted = {w for w in re.findall(r"[a-z]{4,}", tail.lower())}
+        best, best_score = None, -1
+        for v in voices:
+            vname = (v.get("name") or "")
+            if head.lower() not in vname.lower():
+                continue
+            blob = (vname + " " + str(v.get("description") or "") + " "
+                    + " ".join(str(x) for x in (v.get("labels") or {}).values())).lower()
+            score = sum(1 for w in wanted if w in blob)
+            score -= 2 * len(_looks_rejected(v))   # a Pirate is not a Narrator
+            if score > best_score:
+                best, best_score = v, score
+        if best is not None:
+            out[name] = _normalise(best)
+            exact = (best.get("name") or "").strip().lower() == name.strip().lower()
+            note = "" if exact else f"  [inexact: wanted {name!r}]"
+            out[name]["matched_exactly"] = exact
+            out[name]["requested_name"] = name
+            log(f"  shortlist {name!r} -> {best.get('name')} "
+                f"({out[name]['voice_id']}){note}")
         else:
             log(f"  shortlist {name!r}: not found in the library")
     return out
@@ -348,8 +367,7 @@ def run_audition(sb, library_limit: int = 8, passage: str = "",
     if include_designed:
         for key, description in VOICE_DESIGNS.items():
             try:
-                result = audio.design_voice_previews(description=description,
-                                                     sample_text=text)
+                result = audio.design_voice(description=description, sample_text=text)
             except Exception as exc:  # noqa: BLE001
                 issues.append(f"voice design {key!r} failed ({exc})")
                 log(f"  !! design {key}: {exc}")
