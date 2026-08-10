@@ -2495,10 +2495,17 @@ def roughcut_plan():
         # reporting a failure.
         warnings = []
         durs = [float(s.camera.duration) for s in sb.shots if s.camera]
-        if n >= 3 and durs and all(abs(d - 6.0) < 0.01 for d in durs):
+        # Only a problem when narration EXISTS and the durations still did not
+        # follow it — that is the lost-update race, and it is worth shouting about.
+        # A project that simply has not recorded narration yet is at 6.0s because
+        # 6.0s is the default, which is the normal starting state and not a fault.
+        # Warning about it there tells a brand-new project that something went
+        # wrong, and advises re-running a rough cut that would change nothing.
+        if narr > 0 and n >= 3 and durs and all(abs(d - 6.0) < 0.01 for d in durs):
             warnings.append(
-                f"All {n} beats are still at the 6.0s default, so narration timing was "
-                f"never applied. Re-run the rough cut to refit them."
+                f"All {n} beats are still at the 6.0s default even though narration "
+                f"exists, so the timing was never applied — a long job probably wrote "
+                f"a stale storyboard back over it. Re-run the rough cut to refit them."
             )
         if narr >= n and n and not sb.script_locked:
             warnings.append(
