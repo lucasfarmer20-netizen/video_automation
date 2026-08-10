@@ -1,14 +1,72 @@
+# Deploy: gcloud builds submit --config cloudbuild.yaml .
+#
+# The Dockerfile is already ordered for layer caching -- package.json before
+# `npm ci`, requirements.txt before `pip install`, source last -- but Cloud Build
+# starts each run with an empty local Docker cache, so both of those reinstalled
+# from scratch on every deploy even when nothing about them had changed. A
+# backend one-liner was paying for a full `npm ci`, a full Next.js build and a
+# full pip install of onnxruntime, librosa, moviepy and scipy.
+#
+# Pulling the previous images and passing them as --cache-from lets those layers
+# be reused. The builder stage is tagged and pushed separately because
+# --cache-from only sees the stages it is given, and a multi-stage build cannot
+# reuse stage 1 from a final-stage image.
+#
+# Every pull is `|| true`: on the first run after this change, and any time the
+# cache tags are missing, the build must still succeed -- just slowly.
+
 steps:
-  # 1. Build the container image using the Dockerfile and tag it with the specific commit SHA
+  # 0. Warm the cache. Missing images are fine.
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/youtube-pipeline:latest', '.']
-  
-  # 2. Push the newly compiled image to your private Google Artifact Registry
+    id: 'pull-cache'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        docker pull gcr.io/$PROJECT_ID/youtube-pipeline:builder || true
+        docker pull gcr.io/$PROJECT_ID/youtube-pipeline:latest  || true
+
+  # 1. Frontend stage, built and tagged on its own so it can be cached next time.
+  #    Unchanged frontend source => this whole stage is a cache hit and npm never runs.
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/youtube-pipeline:latest']
-  
-  # 3. Deploy the container to Cloud Run with the correct environment paths, cloud storage, and keys
+    id: 'build-builder'
+    args:
+      - 'build'
+      - '--target'
+      - 'builder'
+      - '--cache-from'
+      - 'gcr.io/$PROJECT_ID/youtube-pipeline:builder'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/youtube-pipeline:builder'
+      - '.'
+
+  # 2. Final image, able to reuse both the frontend stage and the previous runtime
+  #    layers (apt, pip). A backend-only change should hit cache until `COPY . .`.
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-final'
+    args:
+      - 'build'
+      - '--cache-from'
+      - 'gcr.io/$PROJECT_ID/youtube-pipeline:builder'
+      - '--cache-from'
+      - 'gcr.io/$PROJECT_ID/youtube-pipeline:latest'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/youtube-pipeline:latest'
+      - '.'
+
+  # 3. Push both. The builder tag is only ever used as a cache source.
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        docker push gcr.io/$PROJECT_ID/youtube-pipeline:latest
+        docker push gcr.io/$PROJECT_ID/youtube-pipeline:builder || true
+
+  # 4. Deploy the container to Cloud Run with the correct environment paths, cloud storage, and keys
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy'
     entrypoint: 'gcloud'
     args:
       - 'run'
@@ -34,6 +92,8 @@ steps:
       - '--no-cpu-throttling'
       # A 32k-token draft plus librosa/moviepy/onnxruntime does not fit the
       # 512Mi / 1 vCPU default; an OOM kill looks exactly like a lost job.
+      # Coverage compiles are serialized in backend/director.py for the same
+      # reason -- two parallax renders at once exhausted this and ffmpeg died.
       - '--cpu'
       - '2'
       - '--memory'
@@ -55,5 +115,12 @@ steps:
       #   gcloud secrets create STUDIO_API_KEY --replication-policy=automatic
       - '--update-secrets=CLAUDE_API_KEY=CLAUDE_API_KEY:latest,FAL_KEY=FAL_KEY:latest,ELEVENLABS_API_KEY=ELEVENLABS_API_KEY:latest,STUDIO_API_KEY=STUDIO_API_KEY:latest'
 
+# Default build timeout is 10 minutes. An uncached build of this image is close
+# enough to that to lose races, and a timeout looks like a broken deploy.
+timeout: 2400s
+
 options:
   logging: CLOUD_LOGGING_ONLY
+  # The default e2-standard-2 is the slowest part of an uncached build. The
+  # extra cores mostly pay for `npm run build` and the pip install.
+  machineType: 'E2_HIGHCPU_8'
