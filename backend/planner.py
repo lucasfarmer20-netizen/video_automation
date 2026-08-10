@@ -229,9 +229,15 @@ your weights — do not attempt the arithmetic.
 2. "motion_type" is a budget decision:
    - "static": a still with a subtle push or hold. Free.
    - "parallax": a 2.5D depth move on a still. Free. This should be most shots.
-   - "ai_video": generated video. PAID and strictly limited. Use it only where \
-motion is the point — flowing water, working machinery, a turning wheel, smoke, \
-a figure in motion. Never for a landscape, a document, a map or an object at rest.
+   - "ai_video": generated video, 3-10 seconds. This is a BUDGET TO ALLOCATE, not \
+a prohibition. The brief gives you an allowance for the scene; your job is to decide \
+which moments deserve it, not to avoid spending it. Give it to the moments where \
+something physically HAPPENS on screen — a sledge striking, a wheel turning, water \
+falling, smoke rolling, a figure moving through frame. Never for a landscape, a \
+document, a map or an object at rest, and never merely because a shot matters. \
+If the scene contains such a moment and you have allowance left, USE IT: a scene \
+about physical work covered entirely in stills is a failure of the plan, not a \
+saving, because the audience is told about an action and shown a photograph of it.
 3. Generated video runs 3-10 seconds. An "ai_video" shot must be within that. If \
 a motion moment needs longer, split it or carry it with parallax.
 4. Set "gestural" true when the motion is a specific movement that must complete \
@@ -248,7 +254,7 @@ SYNCHRONY WITH THE NARRATION
 
 The shots play in order over the beat's voiceover, so shot N lands on whatever is being said at that point. Read the narration as it will be spoken, estimate where each phrase falls, and order and weight your shots so each one arrives on the line it illustrates. An insert of hands turning a drill rod that plays four seconds after the line about turning the rod is a miss, not a detail. Cut on meaning: a new shot should arrive because the narration turned, not on a timer.
 
-Vary the weights for the same reason. Shots of near-identical length make every cut land on the same interval, which reads as mechanical rather than edited.
+Vary the weights deliberately. Within a beat the longest shot should be roughly twice the shortest — a master or an establishing shot holds, an insert is quick. Weights that are all the same produce cuts on a fixed interval, which reads as a slideshow rather than an edit; if every shot in a beat carries the same weight, you have not decided what the beat is about.
 
 MOTION IS NOT FREE BY ACCIDENT
 
