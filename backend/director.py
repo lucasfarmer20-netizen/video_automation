@@ -442,6 +442,70 @@ def resolve_library_ref(ref: str) -> Path | None:
     return None
 
 
+def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
+                       out_dir: Path, log=print) -> Path:
+    """Generate one Tier-C coverage clip from its own still.
+
+    Deliberately *not* a capability router — that is Spike C. This resolves the
+    endpoint from the registry, asks for the shot's own duration, and downloads
+    the result. Coverage shots are 3-5 seconds, which is inside every model's
+    native range, so the extension and frozen-frame padding that a 20-35 second
+    beat forces are simply not needed here. That is the point: a short shot is
+    the *cheap* way to buy real motion, not the expensive one.
+
+    No cross-beat chaining. Continuity inside a beat comes from the shots sharing
+    one still lineage and one grade; ``native_extend`` exists to bridge a cut
+    between beats and would only add a dependency between sibling shots that
+    must be renderable in any order.
+
+    Audio is always off. The beat's narration, SFX and music are mixed separately
+    by ``timeline.build_preview``, and every other clip in the pipeline is silent
+    — a sub-clip arriving with its own audio track would be both wasted spend and
+    a stream mismatch at concat.
+    """
+    import fal_client
+
+    from . import assets
+
+    key = (ds.backend or getattr(sb.render, "video_model", "") or "seedance_2_0")
+    endpoint = assets.resolve_video_backend(key)["endpoint"]
+
+    want = float(ds.duration)
+    dur_int = max(3, min(10, int(round(want))))
+
+    prompt = ds.motion_prompt or f"Cinematic motion, authentic detail, {ds.prompt}"
+    if f"{dur_int}s" not in prompt and "second" not in prompt:
+        prompt = f"{prompt} (duration: ~{dur_int} seconds)"
+
+    arguments: dict = {"prompt": prompt, "duration": str(dur_int), "generate_audio": False}
+    if "veo" in endpoint:
+        # Veo takes only 4s/6s/8s. A 3-5s coverage shot therefore cannot be had
+        # exactly; round up and let fit_clip trim, which is safe here only because
+        # ambient shots are trimmable (see fit_clip and `gestural`).
+        arguments["duration"] = "4s" if dur_int <= 5 else ("6s" if dur_int <= 7 else "8s")
+    elif "seedance" not in endpoint:
+        arguments.pop("duration", None)
+        arguments.pop("generate_audio", None)
+
+    still = synth.draft_image or (synth.draft_variations or [None])[0]
+    local_still = config.resolve_media(still, synth.scene_id) if still else None
+    if not local_still or not Path(local_still).is_file():
+        raise PlanError(f"{ds.id}: no still to drive the video from")
+
+    log(f"  PAID video for {ds.id} via {endpoint} ({dur_int}s from {Path(local_still).name})")
+    arguments["image_url"] = fal_client.upload_file(str(local_still))
+
+    result = fal_client.subscribe(endpoint, arguments=arguments, with_logs=False)
+    url = (result.get("video") or {}).get("url") or (result.get("file") or {}).get("url")
+    if not url:
+        raise PlanError(f"{ds.id}: no video URL returned by {endpoint}")
+
+    dest = out_dir / f"{ds.id}.mp4"
+    assets._download(url, dest)
+    log(f"  downloaded {dest.name}")
+    return dest
+
+
 def _synthetic_shot(ds: DirectorShot, beat: Shot) -> Shot:
     """A throwaway ``Shot`` standing in for one Director Shot.
 
@@ -512,6 +576,22 @@ def compile_coverage(plan: CoveragePlan, sb: Storyboard, render_dir: Path,
                 src = resolve_library_ref(ds.source_ref)
                 if not src:
                     raise PlanError(f"library asset not found: {ds.source_ref}")
+
+                # Reusing the beat's own existing clip is the natural way to keep
+                # motion that has already been paid for -- but this compile ends by
+                # writing that exact path, so the plan would cite a file it is about
+                # to destroy. It survives one run (the copy happens first) and then
+                # becomes unreproducible. Promote it to the series library instead,
+                # and rewrite the reference to the stable location.
+                beat_clip = Path(render_dir) / f"{plan.beat_id}.mp4"
+                if src.resolve() == beat_clip.resolve():
+                    stable = library_root() / f"{plan.beat_id}__{ds.id}.mp4"
+                    stable.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(src, stable)
+                    log(f"  promoted {src.name} to the shot library as {stable.name} "
+                        f"(it was the beat clip this compile overwrites)")
+                    ds.source_ref = stable.name
+                    src = stable
                 shutil.copyfile(Path(src), target)
                 log(f"  reused library asset {ds.source_ref}")
                 # Reused assets still need provenance, or the taste data grows a
@@ -541,11 +621,10 @@ def compile_coverage(plan: CoveragePlan, sb: Storyboard, render_dir: Path,
                     ds.estimated_cost += n * 0.15
 
                 if ds.motion_type == "ai_video":
-                    raise PlanError(
-                        "ai_video coverage needs the capability router (Spike C); "
-                        "use static or parallax for now"
-                    )
-                motion.render_shot(synth, out_dir=out_dir, storyboard=sb)
+                    generate_paid_clip(ds, synth, sb, out_dir, log=log)
+                    ds.estimated_cost += 0.60      # rough; real figure comes from fal
+                else:
+                    motion.render_shot(synth, out_dir=out_dir, storyboard=sb)
 
             normalize_clip(target, log=log)
             fit_clip(target, ds.duration, gestural=ds.gestural, log=log)
