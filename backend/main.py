@@ -1394,8 +1394,18 @@ async def plan_director_scene(request: Request):
         def fn():
             log = lambda m: log_job(job, m)  # noqa: E731
             result = planner.plan_scene(sb, beat_ids, profile_key, notes, log=log)
+            # The critic is advisory. It runs after the plans are already written,
+            # so letting it fail the job threw away 23 good shots over a warning
+            # pass -- the plans were on disk and correct, and the run still
+            # reported error.
+            warnings = []
             if run_critic:
-                warnings = planner.critique(sb, beat_ids, log=log)
+                try:
+                    warnings = planner.critique(sb, beat_ids, log=log)
+                except Exception as exc:  # noqa: BLE001
+                    log(f"  !! critique failed ({exc}) — plans are saved; "
+                        f"re-run POST /api/director/critique to retry")
+            if warnings:
                 # Warnings belong on the beat they concern, so the studio can show
                 # them beside the shot rather than in a separate list.
                 for bid in beat_ids:

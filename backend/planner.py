@@ -40,6 +40,10 @@ from .manifest import Camera, Shot, Storyboard
 
 MODEL = os.environ.get("DIRECTOR_MODEL", "claude-opus-5")
 MAX_TOKENS = 16000
+# The critic returns less than the planner but reasons over the whole scene, and
+# on this model thinking is billed against the same ceiling. 4000 was not enough
+# for 23 shots: the budget was gone before a single JSON token was emitted.
+CRITIC_MAX_TOKENS = 12000
 STREAM_TIMEOUT = float(os.environ.get("DIRECTOR_TIMEOUT_SECONDS", "600"))
 
 SHOT_SIZES = ["ews", "ws", "mw", "m", "mcu", "cu", "ecu"]
@@ -252,6 +256,31 @@ timer.
 - Restraint. This is observational documentary, not drama."""
 
 
+def _text_of(response, what: str) -> str:
+    """Pull the JSON text block out of a response, or say why there isn't one.
+
+    ``next(b.text for b in response.content if b.type == "text")`` raises a bare
+    StopIteration when the model produced no text block, which surfaced as an
+    unexplained traceback with nothing about the cause. On Opus 5 the usual cause
+    is the token ceiling: thinking is on by default and billed against the same
+    max_tokens, so a budget that looks generous for the output alone can be spent
+    before any text is emitted.
+    """
+    text = next((b.text for b in response.content if b.type == "text"), None)
+    if text:
+        return text
+    reason = getattr(response, "stop_reason", "unknown")
+    if reason == "max_tokens":
+        raise RuntimeError(
+            f"The {what} hit its token ceiling before returning any JSON. Thinking "
+            f"is billed against the same budget on this model — raise max_tokens in "
+            f"backend/planner.py, or send fewer beats per scene."
+        )
+    if reason == "refusal":
+        raise RuntimeError(f"The model declined the {what} request.")
+    raise RuntimeError(f"The {what} returned no text block (stop_reason={reason}).")
+
+
 def _client() -> anthropic.Anthropic:
     """Reuse the script stage's resolver rather than keeping a second copy.
 
@@ -384,7 +413,7 @@ def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = No
             f"Coverage plan hit the {MAX_TOKENS}-token ceiling. Plan fewer beats "
             f"per scene, or raise MAX_TOKENS in backend/planner.py."
         )
-    raw = json.loads(next(b.text for b in response.content if b.type == "text"))
+    raw = json.loads(_text_of(response, "coverage plan"))
 
     plans: dict[str, CoveragePlan] = {}
     for entry in raw.get("beats") or []:
@@ -509,7 +538,7 @@ def critique(sb: Storyboard, beat_ids: list[str], log=print) -> list[dict]:
         + json.dumps(rows, indent=2, ensure_ascii=False)
     )
     with _client().messages.stream(
-        model=MODEL, max_tokens=4000,
+        model=MODEL, max_tokens=CRITIC_MAX_TOKENS,
         system=("You are a film editor checking whether a scene can actually be "
                 "cut from the coverage provided. You care about whether the "
                 "footage works, not whether it is ambitious."),
@@ -521,8 +550,7 @@ def critique(sb: Storyboard, beat_ids: list[str], log=print) -> list[dict]:
             pass
         response = stream.get_final_message()
 
-    warnings = json.loads(
-        next(b.text for b in response.content if b.type == "text")).get("warnings") or []
+    warnings = json.loads(_text_of(response, "coverage critique")).get("warnings") or []
 
     # Deterministic checks the model should not be trusted to do: arithmetic and
     # budget. These are facts, not opinions, and belong in code.
