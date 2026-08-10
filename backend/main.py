@@ -42,7 +42,7 @@ def secure_filename(filename: str) -> str:
 
 # Submodule imports
 from . import config, manifest, script, assets, audio, motion, timeline, sizzle, metadata, bundle, ledger
-from . import director, spike_identity, planner, capabilities, casting
+from . import director, spike_identity, planner, capabilities, casting, characters
 from .manifest import Storyboard, Shot, MotionType, Camera, RenderConfig, db
 from .pipeline_worker import start_job, get_jobs_status, log_job
 
@@ -1351,6 +1351,47 @@ def _takes(sb) -> int:
 #
 # These run server-side because that is where the API keys, the ML dependencies,
 # ffmpeg and the project data on /gcs all are. Nothing here writes the manifest.
+
+@app.get("/api/characters")
+def get_characters():
+    """The active project's character sheet, with anchor status.
+
+    `_load_character_anchors` silently drops characters whose structural_anchor is
+    empty, so a sheet full of names with no anchors behaves exactly like no sheet
+    at all — character anchoring has been inert on every project for that reason.
+    `has_anchor` makes that visible instead of leaving it to be discovered.
+    """
+    chars = characters.load_characters()
+    return {
+        "ok": True,
+        "path": str(config.CHARACTERS_CONFIG),
+        "characters": {
+            name: {**spec,
+                   "has_anchor": bool((spec.get("structural_anchor") or "").strip())}
+            for name, spec in (chars or {}).items()
+        },
+    }
+
+
+@app.post("/api/characters/{name}")
+async def put_character(name: str, request: Request):
+    """Create or update one character, including its structural anchor."""
+    try:
+        data = await request.json()
+        chars = characters.load_characters()
+        spec = dict(chars.get(name) or {})
+        for key in ("description", "structural_anchor", "reference_image",
+                    "wardrobe", "notes"):
+            if key in data:
+                spec[key] = data[key]
+        chars[name] = spec
+        characters.save_characters(chars)
+        return {"ok": True, "name": name, "character": spec,
+                "has_anchor": bool((spec.get("structural_anchor") or "").strip()),
+                "written": str(config.CHARACTERS_CONFIG)}
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
 
 # --- Narrator casting ----------------------------------------------------------
 

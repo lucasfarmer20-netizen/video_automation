@@ -75,9 +75,15 @@ SHORTLIST = [
 SEARCH_TERMS = ["narration", "documentary", "storytelling", "conversational",
                 "calm narrator", "informative"]
 
-REJECT_WORDS = {"gravelly", "raspy", "rasp", "booming", "trailer", "epic",
+# The brief's avoid-list, plus the near-synonyms library listings actually use.
+# "deep" and "commanding" were missing on the first pass, so scoring resolved
+# "David - American Narrator" to "David - Deep, Commanding, Bold" -- a listing
+# describing precisely the qualities being auditioned away from.
+REJECT_WORDS = {"gravelly", "raspy", "rasp", "booming", "boom", "trailer", "epic",
                 "dramatic", "announcer", "deep bass", "growl", "promo",
-                "commercial", "gritty"}
+                "commercial", "gritty", "deep", "commanding", "bold", "velvety",
+                "smooth and", "rich and", "authoritative", "cinematic",
+                "movie", "gravitas", "baritone"}
 
 VOICE_DESIGNS: dict[str, str] = {
     "grounded": (
@@ -270,7 +276,9 @@ def resolve_shortlist(names: list[str] | None = None, log=print) -> dict:
                 best, best_score = v, score
         if best is not None:
             out[name] = _normalise(best)
-            exact = (best.get("name") or "").strip().lower() == name.strip().lower()
+            def _flat(x: str) -> str:
+                return re.sub(r"[\s—–\-,]+", " ", (x or "").lower()).strip()
+            exact = _flat(best.get("name")) == _flat(name)
             note = "" if exact else f"  [inexact: wanted {name!r}]"
             out[name]["matched_exactly"] = exact
             out[name]["requested_name"] = name
