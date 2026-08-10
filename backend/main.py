@@ -594,37 +594,49 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
                     arguments.pop("generate_audio", None)
 
                 # Native Video Extend
-                if (chaining_mode == "native_extend" and prev_video_dest_path and prev_video_dest_path.exists()
-                        and video_key in ("seedance_2_0", "luma_dream_machine", "hunyuan_video")):
-                    log(f"Native Video Extend: extending from previous segment {prev_video_dest_path.name}...")
-                    public_video_url = fal_client.upload_file(str(prev_video_dest_path))
-                    arguments["video_url"] = public_video_url
-                else:
-                    # OpenCV final frame or initial still
-                    if chaining_mode != "independent" and prev_extracted_frame and prev_extracted_frame.exists():
-                        local_image_path = prev_extracted_frame
-                        log(f"Continuous flow: chaining from final frame -> {local_image_path.name}")
-                    else:
-                        local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
-                        if not local_image_path or not local_image_path.exists():
-                            log(f"Still image draft not found for {shot.scene_id}, generating still drafts...")
-                            try:
-                                assets.generate_for_shot(shot, n=_takes(sb), backend=sb.render.backend, render=sb.render)
-                                shot.chosen_variation = 0
-                                shot.draft_image = shot.draft_variations[0]
-                                save_shot_assets(shot)
-                                local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
-                            except Exception as exc:
-                                log(f"  !! Failed to generate still draft for {shot.scene_id}: {exc}")
-                                continue
+                # These are image-to-video endpoints: a start image is required on
+                # EVERY path, including the extend path. Sending only `video_url`
+                # is rejected outright —
+                #   {'loc': ['body','image_url'], 'msg': 'Field required'}
+                # — which is why native_extend failed on precisely the condition
+                # that makes it fire: the previous beat having a clip to chain from.
+                # It sat behind two defaults (native_extend + seedance_2_0) and only
+                # surfaced when a whole-episode re-render hit a Tier-C beat whose
+                # predecessor was already rendered.
+                extending = (
+                    chaining_mode == "native_extend"
+                    and prev_video_dest_path and prev_video_dest_path.exists()
+                    and video_key in ("seedance_2_0", "luma_dream_machine", "hunyuan_video")
+                )
 
+                # OpenCV final frame or initial still
+                if chaining_mode != "independent" and prev_extracted_frame and prev_extracted_frame.exists():
+                    local_image_path = prev_extracted_frame
+                    log(f"Continuous flow: chaining from final frame -> {local_image_path.name}")
+                else:
+                    local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
                     if not local_image_path or not local_image_path.exists():
-                        log(f"  !! Still image draft file missing on disk for {shot.scene_id}: {shot.draft_image}")
-                        continue
-                    
-                    log(f"Uploading starting image {local_image_path.name}...")
-                    public_image_url = fal_client.upload_file(str(local_image_path))
-                    arguments["image_url"] = public_image_url
+                        log(f"Still image draft not found for {shot.scene_id}, generating still drafts...")
+                        try:
+                            assets.generate_for_shot(shot, n=_takes(sb), backend=sb.render.backend, render=sb.render)
+                            shot.chosen_variation = 0
+                            shot.draft_image = shot.draft_variations[0]
+                            save_shot_assets(shot)
+                            local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
+                        except Exception as exc:
+                            log(f"  !! Failed to generate still draft for {shot.scene_id}: {exc}")
+                            continue
+
+                if not local_image_path or not local_image_path.exists():
+                    log(f"  !! Still image draft file missing on disk for {shot.scene_id}: {shot.draft_image}")
+                    continue
+
+                log(f"Uploading starting image {local_image_path.name}...")
+                arguments["image_url"] = fal_client.upload_file(str(local_image_path))
+
+                if extending:
+                    log(f"Native Video Extend: also extending from {prev_video_dest_path.name}...")
+                    arguments["video_url"] = fal_client.upload_file(str(prev_video_dest_path))
             
                 log(f"Triggering fal.ai API with prompt: {motion_prompt[:80]}...")
                 result = fal_client.subscribe(model_endpoint, arguments=arguments, with_logs=True)
