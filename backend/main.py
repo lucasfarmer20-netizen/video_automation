@@ -485,8 +485,15 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
     """
     # log_job() drops lines for a job that was never started, so when the rough
     # cut called this every per-beat line vanished and a 40-minute render looked
-    # frozen on one status line. Callers pass their own logger.
-    log = log or (lambda m: log(m))
+    # frozen on one status line. Callers pass their own logger; the fallback
+    # writes to the "render" job.
+    #
+    # This fallback used to read `lambda m: log(m)`, which calls itself — the name
+    # it closes over IS the lambda by the time it runs. It stayed dormant because
+    # every caller added since passes a logger explicitly; only the standalone
+    # /api/assemble/render endpoint calls this bare, and the first time it ran it
+    # died on RecursionError one beat in.
+    log = log or (lambda m: log_job("render", m))
 
     config.require_for("assets")
 
