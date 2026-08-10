@@ -1470,6 +1470,64 @@ def get_vo_profiles():
     }
 
 
+@app.post("/api/casting/assign")
+async def assign_vo_profile(request: Request):
+    """Point this episode at a narrator profile. {"profile": "id"} — "" to clear.
+
+    Per-episode rather than global: different stories want different narrators,
+    and the Bestiary's existing voice must not be replaced by a decision made for
+    a docudrama. Clearing restores the episode's previous behaviour exactly.
+    """
+    try:
+        data = await request.json()
+        key = (data.get("profile") or "").strip()
+        if key and key not in casting.load_profiles():
+            raise HTTPException(status_code=400,
+                                detail=f"no such VO profile: {key!r}")
+        sb = get_current_project()
+        sb.vo_profile = key
+        save_current_project(sb)
+        voice, model_id, _ = audio.resolve_voice(sb)
+        return {"ok": True, "project": sb.title, "vo_profile": key,
+                "resolves_to": {"voice_id": voice, "model_id": model_id},
+                "note": "Existing narration files are not regenerated. Delete them "
+                        "to re-narrate with the new voice."}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/casting/promote")
+async def promote_designed_voice(request: Request):
+    """Turn a designed preview into a usable voice, then optionally a profile.
+
+    A preview's generated_voice_id cannot narrate anything -- this is the step
+    that makes a designed candidate real, and it only happens after a human has
+    chosen. {"generated_voice_id": "...", "name": "...", "profile_id": "..."}
+    """
+    try:
+        data = await request.json()
+        gen_id = (data.get("generated_voice_id") or "").strip()
+        name = (data.get("name") or "").strip()
+        if not gen_id or not name:
+            raise HTTPException(status_code=400,
+                                detail="generated_voice_id and name are required")
+        saved = audio.save_designed_voice(name, data.get("description") or name, gen_id)
+        out = {"ok": True, "voice": saved}
+        pid = (data.get("profile_id") or "").strip()
+        if pid:
+            prof = casting.VOProfile(id=pid, name=name,
+                                     voice_id=saved.get("voice_id", ""))
+            casting.save_profile(prof)
+            out["profile"] = asdict(prof)
+        return out
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
 @app.post("/api/casting/profiles")
 async def put_vo_profile(request: Request):
     """Create or update a narrator profile. Does not assign it to any episode."""

@@ -73,14 +73,8 @@ def synthesize_narration(storyboard: Storyboard | None = None,
             "(set script_locked=true once the narration is approved)."
         )
     client = _client()
-    # Explicit argument, then the episode's own saved voice, then env defaults.
-    voice = (
-        voice_id
-        or (getattr(sb, "voice_id", "") or "").strip()
-        or config.VESPER_VOICE_ID
-        or config.ELEVENLABS_VOICE_ID
-    )
-    print(f"Narrating with ElevenLabs voice {voice}")
+    voice, model_id, v_settings = resolve_voice(sb, voice_id)
+    print(f"Narrating with ElevenLabs voice {voice} on {model_id}")
     narr_dir = config.episode_paths(sb.title)["narration"]
     out: list[Path] = []
     for shot in sb.shots:
@@ -95,12 +89,9 @@ def synthesize_narration(storyboard: Storyboard | None = None,
             out.append(dest)
             continue
         print(f"TTS {shot.scene_id}: {text[:56]}...")
-        # Shared with sample_voice() so an audition uses the same settings the
-        # real narration will.
-        v_settings = _voice_settings()
         stream = client.text_to_speech.convert(
             voice_id=voice, text=text,
-            model_id=config.ELEVENLABS_MODEL, output_format=OUTPUT_FORMAT,
+            model_id=model_id, output_format=OUTPUT_FORMAT,
             voice_settings=v_settings,
         )
         out.append(_write_stream(stream, dest))
@@ -126,6 +117,43 @@ def _voice_settings(stability: float | None = None, style: float | None = None):
             "style": st,
             "use_speaker_boost": config.ELEVENLABS_SPEAKER_BOOST,
         }
+
+
+def resolve_voice(sb, voice_id: str | None = None) -> tuple[str, str, object]:
+    """Which voice, model and settings this episode narrates with.
+
+    Order: an explicit argument, then the episode's VO profile, then the
+    episode's own saved voice_id, then the process defaults. A profile carries
+    its settings and model with it, because a narrator is a voice AND how it is
+    driven -- the same voice at stability 0.35 and 0.7 is a different performer.
+
+    Backward compatible by construction: an episode naming no profile, or naming
+    one that does not exist, falls through to exactly the path it used before
+    profiles existed. Nothing is migrated onto a new narrator.
+    """
+    from . import casting
+
+    if (voice_id or "").strip():
+        return voice_id.strip(), config.ELEVENLABS_MODEL, _voice_settings()
+
+    profile = None
+    try:
+        profile = casting.resolve_profile(sb) if sb is not None else None
+    except Exception as exc:  # noqa: BLE001 — a bad profile must not stop narration
+        print(f"VO profile could not be resolved ({exc}); using episode defaults.")
+
+    if profile and (profile.voice_id or "").strip():
+        try:
+            from elevenlabs import VoiceSettings
+            settings = VoiceSettings(**profile.settings())
+        except ImportError:
+            settings = profile.settings()
+        print(f"VO profile '{profile.id}' ({profile.name}) -> voice {profile.voice_id}")
+        return profile.voice_id.strip(), profile.model_id, settings
+
+    voice = ((getattr(sb, "voice_id", "") or "").strip()
+             or config.VESPER_VOICE_ID or config.ELEVENLABS_VOICE_ID)
+    return voice, config.ELEVENLABS_MODEL, _voice_settings()
 
 
 def sample_voice(text: str, voice_id: str | None = None,
