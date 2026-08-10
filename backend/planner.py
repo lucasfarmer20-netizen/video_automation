@@ -1,0 +1,567 @@
+"""Director Planner and Coverage Critic — planning only, never generation.
+
+Turns a *scene* (contiguous beats with measured durations) into per-beat
+``DirectorShot`` coverage, then criticises the result. Nothing here generates
+media, spends money, or writes ``storyboard_manifest.json``. Plans land in
+``director/<beat_id>.json`` with ``status="draft"`` and stay there until a human
+locks them.
+
+Three decisions shape this module:
+
+**Scene-level, not beat-level.** Coverage problems are cross-beat by nature —
+"three consecutive close-ups", "the protagonist is in 76% of this scene", "no
+establishing shot before we are inside the tunnel" cannot be seen from inside one
+beat. Planning per scene also cuts LLM calls by roughly the number of beats in it.
+
+**The planner never names a model.** It describes what a shot needs — how long,
+whether a character moves, how complex the motion is, whether a gesture must
+complete — and ``capabilities.resolve`` maps that onto a backend. An LLM choosing
+fal endpoints is how ``kling_2_5_turbo_pro``, a key in no registry, came to render
+silently on Kling 2.1 Standard.
+
+**Arithmetic is not delegated.** Coverage must sum to the beat's measured duration
+exactly or the compile refuses it, and language models are unreliable at making a
+list of decimals hit a target. The model proposes relative weights; ``_fit_to_beat``
+scales them to land on the number. Asking for exactness and hoping is how you get
+a plan that fails validation after the human has already reviewed it.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from typing import Any
+
+import anthropic
+
+from . import capabilities, config, director
+from .director import CoveragePlan, DirectorShot
+from .manifest import Camera, Shot, Storyboard
+
+MODEL = os.environ.get("DIRECTOR_MODEL", "claude-opus-5")
+MAX_TOKENS = 16000
+STREAM_TIMEOUT = float(os.environ.get("DIRECTOR_TIMEOUT_SECONDS", "600"))
+
+SHOT_SIZES = ["ews", "ws", "mw", "m", "mcu", "cu", "ecu"]
+ANGLES = ["front", "profile", "three_quarter", "rear_three_quarter", "ots",
+          "high", "low", "overhead"]
+PURPOSES = ["establishing", "master", "reaction", "insert", "cutaway", "detail",
+            "transition"]
+MOVES = ["static", "push_in", "pull_out", "pan_left", "pan_right", "tilt_up", "tilt_down"]
+MOTION_TYPES = ["static", "parallax", "ai_video"]
+
+# --- director profiles ---------------------------------------------------------
+#
+# Data, not branching code — the same pattern that keeps the backend registries
+# from drifting. A profile expresses what Lucas wants; it never expresses what a
+# model can do (that is capabilities.py) and never encodes identity reliability
+# (that is measured, and lives in the ledger).
+
+DIRECTOR_PROFILES: dict[str, dict] = {
+    "documentary_illustrated": {
+        "label": "Illustrated documentary (Bestiary default)",
+        "shot_seconds": [6.0, 14.0],
+        "camera_motion": "restrained",
+        "environmental_coverage": "medium",
+        "cutaway_density": "low",
+        "face_exposure": "low",
+        "max_ai_video_per_scene": 1,
+        "note": "Long illustrated holds. Coverage is optional and often unwanted.",
+    },
+    "historical_docudrama": {
+        "label": "Historical docudrama (Calluses)",
+        "shot_seconds": [2.5, 5.5],
+        "camera_motion": "restrained",
+        "environmental_coverage": "high",
+        "cutaway_density": "high",
+        "face_exposure": "moderate",
+        "max_ai_video_per_scene": 2,
+        "note": "Observational. Hands, tools, environment and process over faces.",
+    },
+    "cinematic_documentary": {
+        "label": "Cinematic documentary",
+        "shot_seconds": [3.0, 7.0],
+        "camera_motion": "moderate",
+        "environmental_coverage": "high",
+        "cutaway_density": "medium",
+        "face_exposure": "moderate",
+        "max_ai_video_per_scene": 3,
+        "note": "Composed and deliberate; more camera movement than docudrama.",
+    },
+}
+
+DEFAULT_PROFILE = "historical_docudrama"
+
+
+# --- schemas -------------------------------------------------------------------
+#
+# Enum'd properties carry plain "string" types. A union type in an enum'd property
+# ("type": ["string","null"]) is rejected outright by the structured-output
+# validator -- that 400 cost a whole draft run once.
+
+def _shot_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "purpose": {"type": "string", "enum": PURPOSES},
+            "subject": {"type": "string",
+                        "description": "What is on screen, in a few words."},
+            "shot_size": {"type": "string", "enum": SHOT_SIZES},
+            "angle": {"type": "string", "enum": ANGLES},
+            "composition": {"type": "string",
+                            "description": "How it is framed. One short clause."},
+            "weight": {"type": "number",
+                       "description": "Relative screen time, 1-10. Not seconds; "
+                                      "the exact durations are computed."},
+            "camera_move": {"type": "string", "enum": MOVES},
+            "motion_type": {"type": "string", "enum": MOTION_TYPES},
+            "character_motion": {"type": "boolean"},
+            "face_visibility": {"type": "string",
+                                "enum": ["none", "low", "moderate", "high"]},
+            "motion_complexity": {"type": "string",
+                                  "enum": ["none", "low", "medium", "high"]},
+            "gestural": {"type": "boolean",
+                         "description": "A described movement that must complete. "
+                                        "Such a shot must never be trimmed."},
+            "identity_critical": {"type": "boolean",
+                                  "description": "A recognisable face anchor."},
+            "prompt": {"type": "string",
+                       "description": "The still image prompt. Scene only; never "
+                                      "restate the medium and never mention camera "
+                                      "movement or timing."},
+            "motion_prompt": {"type": "string",
+                              "description": "What moves, if anything. Empty for stills."},
+            "reason": {"type": "string",
+                       "description": "One sentence: why this shot earns its place."},
+        },
+        "required": ["purpose", "subject", "shot_size", "angle", "composition",
+                     "weight", "camera_move", "motion_type", "character_motion",
+                     "face_visibility", "motion_complexity", "gestural",
+                     "identity_critical", "prompt", "motion_prompt", "reason"],
+    }
+
+
+PLAN_SCHEMA: dict = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "visual_strategy": {"type": "string",
+                            "description": "Two sentences on how this scene is covered."},
+        "blocking": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "environment": {"type": "string"},
+                "characters": {"type": "array", "items": {"type": "string"}},
+                "props": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["environment", "characters", "props"],
+        },
+        "beats": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "beat_id": {"type": "string"},
+                    "intent": {"type": "string",
+                               "description": "One sentence on what this beat must accomplish."},
+                    "shots": {"type": "array", "items": _shot_schema()},
+                },
+                "required": ["beat_id", "intent", "shots"],
+            },
+        },
+    },
+    "required": ["visual_strategy", "blocking", "beats"],
+}
+
+CRITIC_SCHEMA: dict = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "warnings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "beat_id": {"type": "string",
+                                "description": "Empty string when it applies to the scene."},
+                    "shot_id": {"type": "string", "description": "Empty when not shot-specific."},
+                    "kind": {"type": "string", "enum": [
+                        "missing_establishing", "repeated_framing", "insufficient_cutaway",
+                        "no_reaction_coverage", "impractical_duration", "identity_risk",
+                        "unnecessarily_expensive", "timing_mismatch", "missing_reference",
+                        "continuity", "other"]},
+                    "detail": {"type": "string",
+                               "description": "One concrete sentence. Name the shots."},
+                    "suggestion": {"type": "string",
+                                   "description": "The smallest change that fixes it."},
+                },
+                "required": ["beat_id", "shot_id", "kind", "detail", "suggestion"],
+            },
+        },
+    },
+    "required": ["warnings"],
+}
+
+
+SYSTEM = """\
+You are a documentary director planning shot coverage for an existing, locked \
+narration. You are not writing the film — the script, the beats and their exact \
+durations are fixed and measured from recorded voiceover. Your job is to decide \
+what the audience SEES while each beat is spoken.
+
+A "beat" is one narration segment, commonly 15-40 seconds. That is far too long \
+for a single image in a cinematic cut, so you break it into several Director \
+Shots that add up to the beat.
+
+HARD RULES
+
+1. Coverage for a beat must account for its whole duration. Express each shot's \
+share as "weight" (relative screen time, 1-10). Exact seconds are computed from \
+your weights — do not attempt the arithmetic.
+2. "motion_type" is a budget decision:
+   - "static": a still with a subtle push or hold. Free.
+   - "parallax": a 2.5D depth move on a still. Free. This should be most shots.
+   - "ai_video": generated video. PAID and strictly limited. Use it only where \
+motion is the point — flowing water, working machinery, a turning wheel, smoke, \
+a figure in motion. Never for a landscape, a document, a map or an object at rest.
+3. Generated video runs 3-10 seconds. An "ai_video" shot must be within that. If \
+a motion moment needs longer, split it or carry it with parallax.
+4. Set "gestural" true when the motion is a specific movement that must complete \
+(a hand reaching, a head turning, a bucket rising). Such a shot is never trimmed, \
+which constrains which models can serve it.
+5. "prompt" describes only the still: subject, framing, light. Never restate the \
+artistic medium — that is applied per episode — and never mention camera movement \
+or timing, which live in camera_move and weight.
+6. Respect the palette. If the episode's medium is monochrome or limited, do not \
+introduce colours it cannot physically produce; carry the image on value, \
+contrast and texture.
+
+CRAFT
+
+- Open a scene by establishing where we are before going close.
+- Vary shot size. Three consecutive close-ups is a fault, not a style.
+- Prefer the concrete and physical: hands, tools, surfaces, process, wear, weather.
+- Inserts and cutaways are cheap, specific, and carry exposition better than a \
+wide shot held for twenty seconds.
+- Cut on meaning. A new shot should arrive because the narration turned, not on a \
+timer.
+- Restraint. This is observational documentary, not drama."""
+
+
+def _client() -> anthropic.Anthropic:
+    key = (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
+           or os.environ.get("ANTHROPIC_KEY"))
+    if not key:
+        raise RuntimeError("ANTHROPIC_API_KEY is not set.")
+    return anthropic.Anthropic(api_key=key)
+
+
+def profile(name: str | None) -> dict:
+    p = dict(DIRECTOR_PROFILES.get(name or DEFAULT_PROFILE)
+             or DIRECTOR_PROFILES[DEFAULT_PROFILE])
+    p["key"] = name if name in DIRECTOR_PROFILES else DEFAULT_PROFILE
+    return p
+
+
+# Shorter than this is a flash frame, not a shot.
+MIN_SHOT_SECONDS = 1.2
+
+
+def _fit_to_beat(shots: list[dict], seconds: float) -> list[float]:
+    """Turn relative weights into durations that sum to ``seconds`` exactly.
+
+    The model supplies proportions; this makes them land on the number, because
+    ``director.validate`` rejects a plan that misses the total by 0.01s and no
+    language model reliably makes a list of decimals hit a target.
+
+    Two things make this less trivial than it looks. A minimum shot length can
+    push the total *above* the beat when the planner asks for many shots in a
+    short one — ten shots in six seconds cannot all be 1.2s — so the list is first
+    truncated to what the beat can physically hold. And the remainder is then
+    absorbed across shots that have slack rather than dumped on one, which in an
+    earlier version drove a single shot to **-4.8 seconds**.
+
+    May return fewer durations than shots. The caller zips them, so the excess is
+    dropped; it must say so rather than let shots vanish quietly.
+    """
+    if not shots or seconds <= 0:
+        return []
+
+    # A beat shorter than one shot still gets exactly one shot, its own length.
+    floor = min(MIN_SHOT_SECONDS, seconds)
+    capacity = max(1, int(seconds // floor))
+    usable = shots[:capacity]
+
+    weights = [max(0.1, float(s.get("weight") or 1.0)) for s in usable]
+    total = sum(weights) or 1.0
+    durs = [max(floor, round(seconds * w / total, 2)) for w in weights]
+
+    # Absorb the remainder where there is room, largest shot first, never taking
+    # any shot below the floor.
+    drift = round(seconds - sum(durs), 2)
+    for i in sorted(range(len(durs)), key=lambda k: -durs[k]):
+        if abs(drift) < 0.005:
+            break
+        room = float("inf") if drift > 0 else -(durs[i] - floor)
+        take = drift if drift > 0 else max(drift, room)
+        durs[i] = round(durs[i] + take, 2)
+        drift = round(drift - take, 2)
+
+    return durs
+
+
+def _beat_context(sb: Storyboard, beat_ids: list[str]) -> list[dict]:
+    out = []
+    for bid in beat_ids:
+        s = next((x for x in sb.shots if x.scene_id == bid), None)
+        if not s:
+            continue
+        out.append({
+            "beat_id": s.scene_id,
+            "duration_seconds": round(float(s.camera.duration), 2),
+            "narration": s.narration,
+            "existing_visual": s.prompt,
+            "style_medium": s.style_medium,
+        })
+    return out
+
+
+def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = None,
+               notes: str = "", log=print) -> dict:
+    """Plan coverage for contiguous beats. Returns plans; writes them as drafts."""
+    prof = profile(profile_key)
+    beats = _beat_context(sb, beat_ids)
+    if not beats:
+        raise ValueError(f"no such beats: {beat_ids}")
+
+    anchors = {}
+    try:
+        from .assets import _load_character_anchors
+        anchors = _load_character_anchors()
+    except Exception:  # noqa: BLE001
+        pass
+
+    brief = {
+        "episode_title": sb.title,
+        "channel": sb.channel,
+        "cultural_origin": getattr(sb, "cultural_origin", ""),
+        "style_medium": beats[0].get("style_medium", ""),
+        "director_profile": {k: v for k, v in prof.items() if k != "note"},
+        "profile_note": prof.get("note", ""),
+        "characters_available": sorted(anchors) or ["(none defined)"],
+        "human_notes": notes,
+        "beats": beats,
+    }
+
+    log(f"Planning coverage for {len(beats)} beat(s) as one scene "
+        f"({prof['label']}) ...")
+    user = (
+        "Plan the shot coverage for this scene. Return one entry per beat, in "
+        "order, with the shots that fill it.\n\n"
+        + json.dumps(brief, indent=2, ensure_ascii=False)
+    )
+
+    with _client().messages.stream(
+        model=MODEL, max_tokens=MAX_TOKENS, system=SYSTEM,
+        messages=[{"role": "user", "content": user}],
+        output_config={"effort": "high",
+                       "format": {"type": "json_schema", "schema": PLAN_SCHEMA}},
+        timeout=STREAM_TIMEOUT,
+    ) as stream:
+        for _ in stream.text_stream:
+            pass
+        response = stream.get_final_message()
+
+    if response.stop_reason == "max_tokens":
+        raise RuntimeError(
+            f"Coverage plan hit the {MAX_TOKENS}-token ceiling. Plan fewer beats "
+            f"per scene, or raise MAX_TOKENS in backend/planner.py."
+        )
+    raw = json.loads(next(b.text for b in response.content if b.type == "text"))
+
+    plans: dict[str, CoveragePlan] = {}
+    for entry in raw.get("beats") or []:
+        bid = entry.get("beat_id")
+        beat = next((x for x in sb.shots if x.scene_id == bid), None)
+        if beat is None:
+            log(f"  !! planner returned an unknown beat {bid!r} — skipped")
+            continue
+        seconds = float(beat.camera.duration)
+        shots = entry.get("shots") or []
+        durs = _fit_to_beat(shots, seconds)
+        if len(durs) < len(shots):
+            log(f"  {bid}: asked for {len(shots)} shots in {seconds:.1f}s — only "
+                f"{len(durs)} fit above {MIN_SHOT_SECONDS}s; the rest were dropped")
+
+        coverage: list[DirectorShot] = []
+        for i, (s, d) in enumerate(zip(shots, durs), start=1):
+            mt = s.get("motion_type") or "parallax"
+            intent = {
+                "duration": d,
+                "gestural": bool(s.get("gestural")),
+                "character_motion": bool(s.get("character_motion")),
+                "motion_complexity": s.get("motion_complexity") or "low",
+            }
+            constraints: list[str] = []
+            backend = ""
+            est = capabilities.COST_PER_IMAGE
+            if mt == "ai_video":
+                r = capabilities.resolve(intent)
+                backend = r.get("backend") or ""
+                constraints = list(r.get("constraints") or [])
+                if not backend:
+                    # No legal model. Say so on the shot and drop it to a free
+                    # tier rather than emitting a plan that cannot be produced.
+                    constraints.append("downgraded_no_legal_model")
+                    mt = "parallax"
+                else:
+                    est += float(r.get("estimated_cost") or 0)
+            coverage.append(DirectorShot(
+                id=f"{bid}.{i:02d}", beat_id=bid,
+                purpose=s.get("purpose", ""), subject=s.get("subject", ""),
+                shot_size=s.get("shot_size", ""), angle=s.get("angle", ""),
+                composition=s.get("composition", ""),
+                camera=Camera(move=s.get("camera_move") or "static", duration=d),
+                character_motion=bool(s.get("character_motion")),
+                face_visibility=s.get("face_visibility") or "none",
+                motion_complexity=s.get("motion_complexity") or "low",
+                gestural=bool(s.get("gestural")),
+                identity_critical=bool(s.get("identity_critical")),
+                motion_type=mt, backend=backend,
+                prompt=s.get("prompt", ""), motion_prompt=s.get("motion_prompt", ""),
+                constrained_by=constraints,
+                estimated_cost=round(est, 3),
+            ))
+
+        plan = CoveragePlan(
+            beat_id=bid, beat_duration=seconds, plan_id=raw_plan_id(beat_ids),
+            scene_beats=list(beat_ids), status="draft", profile=prof["key"],
+            created_by="planner", coverage=coverage,
+        )
+        # Catch our own arithmetic before a human ever sees the plan.
+        try:
+            director.validate(plan, beat)
+        except director.PlanError as exc:
+            plan.warnings.append(f"internal: {exc}")
+        director.save_plan(plan)
+        plans[bid] = plan
+        log(f"  {bid}: {len(coverage)} shots, "
+            f"{sum(1 for c in coverage if c.motion_type == 'ai_video')} paid, "
+            f"est ${sum(c.estimated_cost for c in coverage):.2f}")
+
+    return {
+        "visual_strategy": raw.get("visual_strategy", ""),
+        "blocking": raw.get("blocking", {}),
+        "plans": plans,
+        "profile": prof,
+    }
+
+
+def raw_plan_id(beat_ids: list[str]) -> str:
+    return f"scene-{beat_ids[0]}-{beat_ids[-1]}" if beat_ids else "scene"
+
+
+def critique(sb: Storyboard, beat_ids: list[str], log=print) -> list[dict]:
+    """Independent review of the coverage, without the planner's rationale.
+
+    The shot list is presented stripped of ``reason`` and of the scene's stated
+    visual strategy. A critic shown the planner's justification tends to agree
+    with it — the same model, the same context, and a persuasive argument already
+    in front of it. Asking "what is missing here?" of a bare shot list is a
+    genuinely different question from "is this plan good?".
+    """
+    rows = []
+    for bid in beat_ids:
+        plan = director.load_plan(bid)
+        beat = next((x for x in sb.shots if x.scene_id == bid), None)
+        if not plan or beat is None:
+            continue
+        rows.append({
+            "beat_id": bid,
+            "beat_seconds": round(float(beat.camera.duration), 2),
+            "narration": beat.narration,
+            "shots": [{
+                "shot_id": s.id, "purpose": s.purpose, "subject": s.subject,
+                "shot_size": s.shot_size, "angle": s.angle,
+                "seconds": s.duration, "camera_move": s.camera.move,
+                "motion_type": s.motion_type,
+                "face_visibility": s.face_visibility,
+                "estimated_cost": s.estimated_cost,
+            } for s in plan.coverage],
+        })
+    if not rows:
+        return []
+
+    log(f"Critiquing {sum(len(r['shots']) for r in rows)} shots across "
+        f"{len(rows)} beat(s) ...")
+    user = (
+        "Here is a planned shot list for one scene, with the narration each beat "
+        "carries. You did not write it and there is no rationale attached.\n\n"
+        "Report only concrete, checkable problems. Do not score it, do not "
+        "praise it, and return an empty list if it is sound.\n\n"
+        + json.dumps(rows, indent=2, ensure_ascii=False)
+    )
+    with _client().messages.stream(
+        model=MODEL, max_tokens=4000,
+        system=("You are a film editor checking whether a scene can actually be "
+                "cut from the coverage provided. You care about whether the "
+                "footage works, not whether it is ambitious."),
+        messages=[{"role": "user", "content": user}],
+        output_config={"format": {"type": "json_schema", "schema": CRITIC_SCHEMA}},
+        timeout=STREAM_TIMEOUT,
+    ) as stream:
+        for _ in stream.text_stream:
+            pass
+        response = stream.get_final_message()
+
+    warnings = json.loads(
+        next(b.text for b in response.content if b.type == "text")).get("warnings") or []
+
+    # Deterministic checks the model should not be trusted to do: arithmetic and
+    # budget. These are facts, not opinions, and belong in code.
+    for r in rows:
+        plan = director.load_plan(r["beat_id"])
+        if not plan:
+            continue
+        tot = round(plan.total_duration(), 2)
+        if abs(tot - r["beat_seconds"]) > director.DURATION_TOLERANCE:
+            warnings.append({
+                "beat_id": r["beat_id"], "shot_id": "", "kind": "timing_mismatch",
+                "detail": f"Coverage totals {tot:.2f}s against a {r['beat_seconds']:.2f}s beat.",
+                "suggestion": "Re-plan this beat; it cannot compile as it stands.",
+            })
+        for s in plan.coverage:
+            if s.motion_type == "ai_video" and not (3.0 <= s.duration <= 10.0):
+                warnings.append({
+                    "beat_id": r["beat_id"], "shot_id": s.id,
+                    "kind": "impractical_duration",
+                    "detail": f"{s.id} is a paid shot of {s.duration:.2f}s; generated "
+                              f"video runs 3-10s.",
+                    "suggestion": "Shorten it, split it, or make it parallax.",
+                })
+    for w in warnings:
+        log(f"  [{w.get('kind')}] {w.get('beat_id') or 'scene'}: {w.get('detail')}")
+    return warnings
+
+
+def scene_summary(beat_ids: list[str]) -> dict:
+    """Cost and shape of a planned scene, computed from the saved drafts."""
+    shots = paid = 0
+    cost = 0.0
+    per_beat = []
+    for bid in beat_ids:
+        p = director.load_plan(bid)
+        if not p:
+            continue
+        b_paid = sum(1 for s in p.coverage if s.motion_type == "ai_video")
+        b_cost = sum(s.estimated_cost for s in p.coverage)
+        shots += len(p.coverage); paid += b_paid; cost += b_cost
+        per_beat.append({"beat_id": bid, "shots": len(p.coverage),
+                         "paid_shots": b_paid, "estimated_cost": round(b_cost, 2),
+                         "status": p.status})
+    return {"shots": shots, "paid_shots": paid,
+            "estimated_cost": round(cost, 2), "beats": per_beat}

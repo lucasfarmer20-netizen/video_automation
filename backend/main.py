@@ -42,7 +42,7 @@ def secure_filename(filename: str) -> str:
 
 # Submodule imports
 from . import config, manifest, script, assets, audio, motion, timeline, sizzle, metadata, bundle, ledger
-from . import director, spike_identity
+from . import director, spike_identity, planner, capabilities
 from .manifest import Storyboard, Shot, MotionType, Camera, RenderConfig, db
 from .pipeline_worker import start_job, get_jobs_status, log_job
 
@@ -1351,6 +1351,144 @@ def _takes(sb) -> int:
 #
 # These run server-side because that is where the API keys, the ML dependencies,
 # ffmpeg and the project data on /gcs all are. Nothing here writes the manifest.
+
+@app.get("/api/director/profiles")
+def get_director_profiles():
+    """Director profiles and the model capability table. Both are data, not code."""
+    return {
+        "ok": True,
+        "profiles": planner.DIRECTOR_PROFILES,
+        "default_profile": planner.DEFAULT_PROFILE,
+        "vocabulary": {
+            "purpose": planner.PURPOSES, "shot_size": planner.SHOT_SIZES,
+            "angle": planner.ANGLES, "camera_move": planner.MOVES,
+            "motion_type": planner.MOTION_TYPES,
+        },
+        "video_capabilities": capabilities.table(),
+    }
+
+
+@app.post("/api/director/plan")
+async def plan_director_scene(request: Request):
+    """Plan coverage for a scene. Writes drafts; generates nothing.
+
+    Body: {"beats": ["s004","s005"], "profile": "historical_docudrama",
+           "notes": "less dramatic, more environment", "critique": true}
+    """
+    try:
+        sb = get_current_project()
+        data = await request.json()
+        beat_ids = [str(b) for b in (data.get("beats") or []) if b]
+        if not beat_ids:
+            raise HTTPException(status_code=400, detail="beats[] is required")
+        known = {s.scene_id for s in sb.shots}
+        missing = [b for b in beat_ids if b not in known]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"unknown beats: {missing}")
+
+        profile_key = data.get("profile")
+        notes = data.get("notes") or ""
+        run_critic = data.get("critique", True)
+        job = f"director_plan:{beat_ids[0]}"
+
+        def fn():
+            log = lambda m: log_job(job, m)  # noqa: E731
+            result = planner.plan_scene(sb, beat_ids, profile_key, notes, log=log)
+            if run_critic:
+                warnings = planner.critique(sb, beat_ids, log=log)
+                # Warnings belong on the beat they concern, so the studio can show
+                # them beside the shot rather than in a separate list.
+                for bid in beat_ids:
+                    p = director.load_plan(bid)
+                    if not p:
+                        continue
+                    p.warnings = [w for w in warnings
+                                  if w.get("beat_id") in ("", bid)]
+                    director.save_plan(p)
+            log(f"Planned {len(result['plans'])} beat(s); nothing was generated.")
+
+        if not start_job(job, fn):
+            return JSONResponse(status_code=409, content={
+                "ok": False, "error": f"a plan for {beat_ids[0]} is already running"})
+        return {"ok": True, "started": True, "job": job, "beats": beat_ids,
+                "profile": planner.profile(profile_key)["key"]}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/director/critique")
+async def critique_director_scene(request: Request):
+    """Re-run the critic over existing plans. Read-only apart from warnings."""
+    try:
+        sb = get_current_project()
+        data = await request.json()
+        beat_ids = [str(b) for b in (data.get("beats") or []) if b]
+        if not beat_ids:
+            raise HTTPException(status_code=400, detail="beats[] is required")
+        warnings = planner.critique(sb, beat_ids)
+        for bid in beat_ids:
+            p = director.load_plan(bid)
+            if p:
+                p.warnings = [w for w in warnings if w.get("beat_id") in ("", bid)]
+                director.save_plan(p)
+        return {"ok": True, "warnings": warnings,
+                "summary": planner.scene_summary(beat_ids)}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
+@app.get("/api/director/scene")
+def get_director_scene(beats: str = ""):
+    """Everything the studio needs for a scene: plans, cost, warnings, status.
+
+    `beats` is a comma-separated list, e.g. ?beats=s004,s005
+    """
+    ids = [b.strip() for b in beats.split(",") if b.strip()]
+    if not ids:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "beats is required"})
+    sb = get_current_project()
+    durations = {s.scene_id: float(s.camera.duration) for s in sb.shots}
+    out = []
+    for bid in ids:
+        p = director.load_plan(bid)
+        out.append({
+            "beat_id": bid,
+            "beat_duration": durations.get(bid),
+            "plan": asdict(p) if p else None,
+            "coverage_total": round(p.total_duration(), 3) if p else 0.0,
+        })
+    return {"ok": True, "beats": out, "summary": planner.scene_summary(ids)}
+
+
+@app.post("/api/director/lock/{beat_id}")
+def lock_director_plan(beat_id: str, locked: bool = True):
+    """Mark a plan locked (or back to draft). Still generates nothing.
+
+    Locking is the human decision that a plan is worth producing. It is what the
+    compile endpoint requires, and what makes the beat protected from the ordinary
+    render path.
+    """
+    plan = director.load_plan(beat_id)
+    if not plan:
+        return JSONResponse(status_code=404, content={"ok": False, "error": f"no plan for {beat_id}"})
+    if plan.status == "compiling":
+        return JSONResponse(status_code=409, content={
+            "ok": False, "error": f"{beat_id} is compiling; cannot change its status"})
+    sb = get_current_project()
+    beat = next((s for s in sb.shots if s.scene_id == beat_id), None)
+    if locked and beat is not None:
+        try:
+            director.validate(plan, beat)
+        except director.PlanError as exc:
+            return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    plan.status = "locked" if locked else "draft"
+    director.save_plan(plan)
+    return {"ok": True, "beat_id": beat_id, "status": plan.status}
+
 
 @app.get("/api/director/plan/{beat_id}")
 def get_director_plan(beat_id: str):
