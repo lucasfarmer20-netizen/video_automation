@@ -42,7 +42,7 @@ def secure_filename(filename: str) -> str:
 
 # Submodule imports
 from . import config, manifest, script, assets, audio, motion, timeline, sizzle, metadata, bundle, ledger
-from . import director, spike_identity, planner, capabilities
+from . import director, spike_identity, planner, capabilities, casting
 from .manifest import Storyboard, Shot, MotionType, Camera, RenderConfig, db
 from .pipeline_worker import start_job, get_jobs_status, log_job
 
@@ -1351,6 +1351,100 @@ def _takes(sb) -> int:
 #
 # These run server-side because that is where the API keys, the ML dependencies,
 # ffmpeg and the project data on /gcs all are. Nothing here writes the manifest.
+
+# --- Narrator casting ----------------------------------------------------------
+
+@app.post("/api/casting/audition")
+async def run_casting_audition(request: Request):
+    """Generate the audition set. Selects nothing and saves no voice.
+
+    Body (all optional): {"library_limit": 8, "passage": "...",
+                          "include_designed": true}
+    """
+    try:
+        sb = get_current_project()
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001 — an empty body is fine
+            pass
+
+        def fn():
+            log = lambda m: log_job("casting", m)  # noqa: E731
+            m = casting.run_audition(
+                sb,
+                library_limit=int(data.get("library_limit") or 8),
+                passage=data.get("passage") or "",
+                include_designed=bool(data.get("include_designed", True)),
+                log=log,
+            )
+            log(f"{len(m['candidates'])} candidate(s) ready to listen to. "
+                f"Nothing was selected or saved.")
+
+        if not start_job("casting", fn):
+            return JSONResponse(status_code=409,
+                                content={"ok": False, "error": "an audition is already running"})
+        return {"ok": True, "started": True, "job": "casting",
+                "project": sb.title}
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
+@app.get("/api/casting/audition")
+def get_casting_audition():
+    """The audition manifest, with playable urls for each candidate."""
+    p = casting.auditions_dir() / "audition_manifest.json"
+    if not p.is_file():
+        return {"ok": True, "manifest": None}
+    m = json.loads(p.read_text(encoding="utf-8"))
+    base = config.rel_media_path(casting.auditions_dir())
+    for c in m.get("candidates") or []:
+        c["url"] = f"{base}/{c['audio']}"
+    return {"ok": True, "manifest": m}
+
+
+@app.get("/api/casting/profiles")
+def get_vo_profiles():
+    """Narrator profiles, plus what this episode currently resolves to."""
+    sb = get_current_project()
+    profiles = casting.load_profiles()
+    active = casting.resolve_profile(sb)
+    return {
+        "ok": True,
+        "profiles": {k: asdict(v) for k, v in profiles.items()},
+        "episode_profile": getattr(sb, "vo_profile", "") or "",
+        "resolved": asdict(active) if active else None,
+        "current_behaviour": {
+            "voice_id": (getattr(sb, "voice_id", "") or "").strip()
+                        or config.VESPER_VOICE_ID or config.ELEVENLABS_VOICE_ID,
+            "model_id": config.ELEVENLABS_MODEL,
+            "settings": {
+                "stability": config.ELEVENLABS_STABILITY,
+                "similarity_boost": config.ELEVENLABS_SIMILARITY_BOOST,
+                "style": config.ELEVENLABS_STYLE_EXAGGERATION,
+                "use_speaker_boost": config.ELEVENLABS_SPEAKER_BOOST,
+            },
+            "note": "In effect while no vo_profile is set on the episode.",
+        },
+    }
+
+
+@app.post("/api/casting/profiles")
+async def put_vo_profile(request: Request):
+    """Create or update a narrator profile. Does not assign it to any episode."""
+    try:
+        data = await request.json()
+        if not (data.get("id") or "").strip():
+            raise HTTPException(status_code=400, detail="id is required")
+        prof = casting.VOProfile(**{k: v for k, v in data.items()
+                                    if k in casting.VOProfile.__dataclass_fields__})
+        path = casting.save_profile(prof)
+        return {"ok": True, "profile": asdict(prof), "written": str(path)}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
 
 @app.get("/api/director/profiles")
 def get_director_profiles():

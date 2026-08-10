@@ -228,6 +228,10 @@ class Storyboard:
     # silently lost on the next cold start and narration fell back to the stock
     # default. Empty means "use VESPER_VOICE_ID / ELEVENLABS_VOICE_ID".
     voice_id: str = ""
+    # Narrator profile key (see backend/casting.py). Empty means "use whatever
+    # this episode already does" -- voice_id, then the env defaults -- so adding
+    # profiles changes nothing for existing projects.
+    vo_profile: str = ""
     render: RenderConfig = field(default_factory=RenderConfig)
     motion: MotionConfig = field(default_factory=MotionConfig)
     grade: Grade = field(default_factory=Grade)
