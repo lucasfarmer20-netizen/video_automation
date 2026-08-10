@@ -2470,24 +2470,40 @@ def roughcut_plan():
         pv = ep["render"] / "_preview.mp4"
         if pv.is_file() and durs:
             want = sum(durs)
-            side = ep["render"] / "_preview.json"
-            built = None
-            if side.is_file():
-                try:
-                    built = float(json.loads(side.read_text(encoding="utf-8")).get("runtime") or 0)
-                except (OSError, ValueError, TypeError):
-                    built = None
-            if built is None:
+            # Measure the FILE, not the sidecar. build_preview writes `runtime`
+            # from sum(camera.duration) — its intention — but muxes with
+            # `-shortest`, so if the concatenated clips are shorter than the audio
+            # mix the output is truncated and the sidecar still claims the full
+            # length. Trusting it compares the manifest against itself and always
+            # agrees. This is how a 590s preview sat behind a 672s manifest and
+            # reported clean.
+            try:
+                actual = timeline._probe_seconds(pv)
+            except Exception:  # noqa: BLE001
+                actual = 0.0
+            if actual > 0 and abs(actual - want) > 0.5:
                 warnings.append(
-                    "The preview has no timing sidecar, so it was built by an older "
-                    "version and its length cannot be checked. Rebuild it to be sure "
-                    "it matches the current cut."
+                    f"The preview is {actual:.0f}s but the cut is {want:.0f}s "
+                    f"({abs(actual - want):.0f}s out). Beat clips or durations changed "
+                    f"after it was built — re-render the beats, then rebuild the preview."
                 )
-            elif abs(built - want) > 0.5:
+
+            # A short video track means the *clips* are stale, not just the mux —
+            # rebuilding the preview alone would reproduce the same truncation.
+            clip_total = 0.0
+            for s in sb.shots:
+                c = ep["render"] / f"{s.scene_id}.mp4"
+                if c.is_file():
+                    try:
+                        clip_total += timeline._probe_seconds(c)
+                    except Exception:  # noqa: BLE001
+                        pass
+            if clip_total > 0 and abs(clip_total - want) > 1.0:
                 warnings.append(
-                    f"The preview is {built:.0f}s but the cut is now {want:.0f}s "
-                    f"({abs(built - want):.0f}s out). It was built from older beat "
-                    f"durations — rebuild it."
+                    f"The rendered beat clips total {clip_total:.0f}s against a "
+                    f"{want:.0f}s cut ({abs(clip_total - want):.0f}s out) — the clips "
+                    f"predate the current durations. Re-render the beats; rebuilding "
+                    f"the preview alone cannot fix this."
                 )
 
         return {"ok": True, "steps": steps,
