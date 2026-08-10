@@ -541,6 +541,16 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
                         f"[{idx}/{total}] {shot.scene_id}: paid clip already rendered — "
                         f"keeping it (re-run with force_paid=true to re-bill).",
                     )
+                    # Keeping the paid pixels does not mean keeping a stale length.
+                    # This branch used to skip the beat outright, so a Tier-C beat
+                    # whose duration changed after it was rendered kept a clip fitted
+                    # to the old timing — and since every other beat re-renders, it
+                    # was the one beat that stayed wrong. Re-fitting is a local
+                    # freeze-frame pad: free, and it re-bills nothing.
+                    try:
+                        _pad_clip_to_beat(placed, float(shot.camera.duration))
+                    except Exception as exc:  # noqa: BLE001
+                        log_job("render", f"  (could not refit {shot.scene_id}: {exc})")
                     prev_extracted_frame = None
                     prev_video_dest_path = placed
                     continue
