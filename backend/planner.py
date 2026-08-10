@@ -253,11 +253,14 @@ timer.
 
 
 def _client() -> anthropic.Anthropic:
-    key = (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
-           or os.environ.get("ANTHROPIC_KEY"))
-    if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not set.")
-    return anthropic.Anthropic(api_key=key)
+    """Reuse the script stage's resolver rather than keeping a second copy.
+
+    The deployment supplies the key as CLAUDE_API_KEY, not ANTHROPIC_API_KEY, and
+    a duplicated fallback chain is exactly the kind of thing that agrees today and
+    diverges the next time one of them is edited.
+    """
+    from .script import _client as script_client
+    return script_client()
 
 
 def profile(name: str | None) -> dict:
