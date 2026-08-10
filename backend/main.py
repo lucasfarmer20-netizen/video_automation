@@ -42,6 +42,7 @@ def secure_filename(filename: str) -> str:
 
 # Submodule imports
 from . import config, manifest, script, assets, audio, motion, timeline, sizzle, metadata, bundle, ledger
+from . import director, spike_identity
 from .manifest import Storyboard, Shot, MotionType, Camera, RenderConfig, db
 from .pipeline_worker import start_job, get_jobs_status, log_job
 
@@ -504,6 +505,17 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
 
     for idx, shot in enumerate(sb.shots, start=1):
         try:
+            # A beat assembled from director coverage owns its clip. Rendering
+            # over it would silently discard the coverage and leave the plan
+            # describing a file that no longer matches it — the exact shape of
+            # failure this pipeline keeps producing. Skip loudly instead.
+            if director.has_locked_coverage(shot.scene_id):
+                log(f"{shot.scene_id}: covered by a locked director plan — skipped "
+                    f"(recompile coverage to rebuild this beat).")
+                prev_extracted_frame = None
+                prev_video_dest_path = None
+                continue
+
             if getattr(shot, "hero_clip", False):
                 log(f"{shot.scene_id}: Already has imported hero clip - keeping it, not re-rendering.")
                 prev_extracted_frame = None
@@ -1304,6 +1316,147 @@ def _takes(sb) -> int:
         return max(1, min(8, int(getattr(sb.render, "variations", 3) or 3)))
     except (TypeError, ValueError):
         return 3
+
+
+# --- Director spikes (A + B) ---------------------------------------------------
+#
+# These run server-side because that is where the API keys, the ML dependencies,
+# ffmpeg and the project data on /gcs all are. Nothing here writes the manifest.
+
+@app.get("/api/director/plan/{beat_id}")
+def get_director_plan(beat_id: str):
+    """The coverage plan for one beat, or null. Never touches the manifest."""
+    plan = director.load_plan(beat_id)
+    if not plan:
+        return {"ok": True, "plan": None}
+    sb = get_current_project()
+    beat = next((s for s in sb.shots if s.scene_id == beat_id), None)
+    problems = []
+    if beat:
+        try:
+            director.validate(plan, beat)
+        except director.PlanError as exc:
+            problems.append(str(exc))
+    return {
+        "ok": True,
+        "plan": asdict(plan),
+        "beat_duration": float(beat.camera.duration) if beat and beat.camera else None,
+        "coverage_total": round(plan.total_duration(), 3),
+        "problems": problems,
+    }
+
+
+@app.post("/api/director/plan/{beat_id}")
+async def put_director_plan(beat_id: str, request: Request):
+    """Write a hand-authored coverage plan (Spike B). Validated, not compiled."""
+    try:
+        data = await request.json()
+        data["beat_id"] = beat_id
+        path = director.director_dir() / f"{beat_id}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        plan = director.load_plan(beat_id)
+        sb = get_current_project()
+        beat = next((s for s in sb.shots if s.scene_id == beat_id), None)
+        problems = []
+        if beat:
+            try:
+                director.validate(plan, beat)
+            except director.PlanError as exc:
+                problems.append(str(exc))
+        return {"ok": True, "written": str(path), "shots": len(plan.coverage),
+                "coverage_total": round(plan.total_duration(), 3),
+                "problems": problems}
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/director/compile/{beat_id}")
+def compile_director_coverage(beat_id: str, force: bool = False):
+    """Render the coverage and assemble the beat clip. Spike B's whole point."""
+    try:
+        sb = get_current_project()
+        plan = director.load_plan(beat_id)
+        if not plan:
+            raise HTTPException(status_code=404, detail=f"no director plan for {beat_id}")
+        if plan.status == "draft" and not force:
+            return JSONResponse(status_code=409, content={
+                "ok": False,
+                "error": f"plan for {beat_id} is a draft; lock it first or pass force=true",
+            })
+        ep = config.episode_paths(sb.title)
+        ep["render"].mkdir(parents=True, exist_ok=True)
+
+        def fn():
+            log = lambda m: log_job("director", m)  # noqa: E731
+            log(f"Compiling coverage for {beat_id} ({len(plan.coverage)} shots)...")
+            out = director.compile_coverage(plan, sb, ep["render"], log=log)
+            log(f"Beat clip written: {_safe_rel_path(out)}")
+
+        start_job("director", fn)
+        return {"ok": True, "started": True, "beat_id": beat_id,
+                "shots": len(plan.coverage)}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/spike/identity/run")
+async def run_identity_spike(request: Request):
+    """Spike A. Progressive: pass `cells` to widen only where results justify it."""
+    try:
+        data = await request.json()
+        cfg = spike_identity.SpikeConfig(
+            character=data["character"],
+            style_medium=data.get("style_medium") or "",
+            setting=data.get("setting") or "",
+            backends=data.get("backends") or ["nano2"],
+            strategies=data.get("strategies") or ["anchor_plus_frame_ref"],
+            cells=data.get("cells") or ["cu", "mcu", "m", "profile", "ots"],
+            takes=int(data.get("takes") or 4),
+        )
+        if not cfg.style_medium:
+            sb = get_current_project()
+            first = next((s for s in sb.shots if s.style_medium), None)
+            cfg.style_medium = first.style_medium if first else ""
+
+        result: dict = {}
+
+        def fn():
+            log = lambda m: log_job("spike_identity", m)  # noqa: E731
+            result.update(spike_identity.run(cfg, log=log))
+            log(f"Spike A complete: {result.get('cells_run')} cells, "
+                f"~${result.get('estimated_spend')}")
+
+        start_job("spike_identity", fn)
+        return {"ok": True, "started": True, "cells": cfg.cells, "takes": cfg.takes}
+    except KeyError as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"missing field: {e}"})
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/spike/identity/score")
+async def score_identity_spike(request: Request):
+    """Human evaluation of one generated image. 0-3 per score key."""
+    try:
+        data = await request.json()
+        spike_identity.score_cell(
+            scene_id=data["scene_id"], path=data["path"],
+            scores=data.get("scores") or {}, reason=data.get("reason") or "")
+        return {"ok": True}
+    except KeyError as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"missing field: {e}"})
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
+@app.get("/api/spike/identity/report")
+def identity_spike_report():
+    """Coverage vocabulary: which framings can carry the face."""
+    return spike_identity.report()
 
 
 @app.get("/api/script/budget_plan")

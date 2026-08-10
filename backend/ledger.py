@@ -95,6 +95,7 @@ def record_generation(
     motion_type: str = "",
     prompt_final: str | None = None,
     softened: list[str] | None = None,
+    extra: dict | None = None,
 ) -> None:
     """One row per generated image.
 
@@ -104,7 +105,7 @@ def record_generation(
     only when it differs. Keeping both is what makes the row attributable — the base
     is the constant being controlled for, the final is the variable under test.
     """
-    _append({
+    row = {
         "event": "generate",
         "ts": time.time(),
         "project": _project(),
@@ -119,19 +120,58 @@ def record_generation(
         "prompt": prompt,
         "prompt_final": prompt_final if (prompt_final and prompt_final != prompt) else None,
         "softened": softened or None,
-    })
+    }
+    # Director / experiment metadata: shot_size, angle, character_id, purpose,
+    # constrained_by, experiment. Carried in `extra` rather than as named
+    # parameters because JSONL rows are self-describing — an older row simply
+    # lacks the key, and `summary()` already tolerates missing fields. That is
+    # what makes enriching this record free rather than a migration.
+    if extra:
+        row.update({k: v for k, v in extra.items() if k not in row})
+    _append(row)
 
 
-def record_choice(*, scene_id: str, path: str, source: str = "human") -> None:
-    """One row when a draft is selected. Only ``source="human"`` scores."""
-    _append({
+def record_choice(*, scene_id: str, path: str, source: str = "human",
+                  scores: dict | None = None, reason: str = "",
+                  extra: dict | None = None) -> None:
+    """One row when a draft is selected. Only ``source="human"`` scores.
+
+    ``scores`` carries a rated evaluation rather than a bare pick — Spike A needs
+    "recognizability 2, wardrobe drift 1" per image, which a single chosen index
+    cannot express. ``reason`` is the rejection code (face, identity, motion,
+    composition, lighting, historical, performance, camera, continuity, other).
+    """
+    row = {
         "event": "choose",
         "ts": time.time(),
         "project": _project(),
         "scene_id": scene_id,
         "path": path,
         "source": source,
-    })
+    }
+    if scores:
+        row["scores"] = scores
+    if reason:
+        row["reason"] = reason
+    if extra:
+        row.update({k: v for k, v in extra.items() if k not in row})
+    _append(row)
+
+
+def record_rejection(*, scene_id: str, path: str, reason: str = "other",
+                     extra: dict | None = None) -> None:
+    """An explicit reject. A take that is merely not chosen is far weaker signal."""
+    row = {
+        "event": "reject",
+        "ts": time.time(),
+        "project": _project(),
+        "scene_id": scene_id,
+        "path": path,
+        "reason": reason,
+    }
+    if extra:
+        row.update({k: v for k, v in extra.items() if k not in row})
+    _append(row)
 
 
 def read_rows() -> list[dict]:
