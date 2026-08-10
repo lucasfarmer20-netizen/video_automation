@@ -315,6 +315,7 @@ class Storyboard:
             music_track=data.get("music_track"),
             music_prompt=data.get("music_prompt", "") or "",
             voice_id=data.get("voice_id", "") or "",
+            vo_profile=data.get("vo_profile", "") or "",
             render=render,
             motion=motion_cfg,
             grade=grade,
