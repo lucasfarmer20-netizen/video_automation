@@ -244,6 +244,18 @@ or timing, which live in camera_move and weight.
 introduce colours it cannot physically produce; carry the image on value, \
 contrast and texture.
 
+SYNCHRONY WITH THE NARRATION
+
+The shots play in order over the beat's voiceover, so shot N lands on whatever is being said at that point. Read the narration as it will be spoken, estimate where each phrase falls, and order and weight your shots so each one arrives on the line it illustrates. An insert of hands turning a drill rod that plays four seconds after the line about turning the rod is a miss, not a detail. Cut on meaning: a new shot should arrive because the narration turned, not on a timer.
+
+Vary the weights for the same reason. Shots of near-identical length make every cut land on the same interval, which reads as mechanical rather than edited.
+
+MOTION IS NOT FREE BY ACCIDENT
+
+"parallax" moves a still by warping it under a camera move. A parallax shot with camera_move "static" therefore does not move at all — it is a held frame with extra steps. Give a shot a camera move unless stillness is genuinely the point, and remember that a slow push or a lateral drift over a depth-separated image is the cheapest motion available.
+
+Neither "static" nor "parallax" can show an ACTION. A sledge striking a drill, a wheel turning, water falling, a hand completing a gesture — none of those happen on a still, however it is warped. If the narration turns on something physically occurring and the shot exists to show that occurrence, it needs "ai_video". That is what the paid tier is for, and a 3-5 second shot of it is far better value than a long one.
+
 CRAFT
 
 - Open a scene by establishing where we are before going close.
