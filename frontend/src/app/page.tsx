@@ -13,6 +13,7 @@ import {
   Menu,
   X,
   Clapperboard,
+  ArrowLeft,
 } from "lucide-react";
 
 // Components
@@ -1022,6 +1023,21 @@ Moved to: ${res.moved_to}`);
             </div>
           ) : activeStep === 1 && activeView === "director" ? (
             <div className="flex flex-col gap-4 w-full">
+              {/* Back to Storyboard Navigation Bar */}
+              <div className="glass-surface px-4 py-2.5 rounded-xl border border-amber-500/30 flex items-center justify-between bg-amber-500/5">
+                <div className="flex items-center gap-2 font-mono text-xs font-bold text-amber-400">
+                  <Clapperboard className="w-4 h-4 text-amber-400" />
+                  <span>AI Director Coverage Mode</span>
+                </div>
+                <button
+                  onClick={() => setActiveView("grid")}
+                  className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-mono font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow neon-glow-amber"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  <span>Return to Storyboard Grid</span>
+                </button>
+              </div>
+
               <CoverageSurveyPanel
                 onSelectBeats={(beatList) => {
                   if (beatList.length > 0) setSelectedSceneId(beatList[0]);
@@ -1036,6 +1052,7 @@ Moved to: ${res.moved_to}`);
                 sceneId={selectedSceneId}
                 activeProjectTitle={project.title || "Active"}
                 mediaUrl={mediaUrl}
+                onBackToStoryboard={() => setActiveView("grid")}
               />
             </div>
           ) : activeStep === 1 && activeView === "canvas" ? (

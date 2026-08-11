@@ -42,6 +42,7 @@ import {
   LayoutGrid,
   Play,
   Grid,
+  ArrowLeft,
   List,
 } from "lucide-react";
 
@@ -49,6 +50,7 @@ interface DirectorWorkspaceProps {
   sceneId: string;
   activeProjectTitle?: string;
   mediaUrl: (path: string) => string;
+  onBackToStoryboard?: () => void;
 }
 
 const QUICK_SHORTCUTS = [
@@ -62,7 +64,12 @@ const QUICK_SHORTCUTS = [
   "+ Reduce generation cost",
 ];
 
-export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUrl }: DirectorWorkspaceProps) {
+export default function DirectorWorkspace({
+  sceneId,
+  activeProjectTitle,
+  mediaUrl,
+  onBackToStoryboard,
+}: DirectorWorkspaceProps) {
   const [coveragePlan, setCoveragePlan] = useState<DirectorCoveragePlan | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
@@ -319,8 +326,19 @@ export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUr
           </div>
         </div>
 
-        {/* Lock / Coverage Status Action + Active Project Safety Badge */}
-        <div className="flex items-center gap-3">
+        {/* Lock / Coverage Status Action + Active Project Safety Badge + Back to Storyboard */}
+        <div className="flex flex-wrap items-center gap-3">
+          {onBackToStoryboard && (
+            <button
+              onClick={onBackToStoryboard}
+              className="px-3.5 py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-amber-400 hover:text-amber-300 text-xs font-mono font-bold rounded-xl transition-all flex items-center gap-2 shadow"
+              title="Return to main Storyboard grid"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>STORYBOARD GRID</span>
+            </button>
+          )}
+
           {activeProjectTitle && (
             <span className="text-[11px] font-mono text-zinc-400 bg-zinc-900 border border-zinc-800 px-2.5 py-1 rounded-lg flex items-center gap-1.5" title="Active Project Rule §5 Safety Badge">
               <span className="w-2 h-2 rounded-full bg-amber-500" />
