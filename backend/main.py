@@ -1723,12 +1723,32 @@ def get_director_survey(profile: str = ""):
     return {"ok": True, **planner.survey(sb, profile or None)}
 
 
+def _replan_notes(base: str, warnings: list[dict]) -> str:
+    """Fold the critic's warnings into notes for the next planning round."""
+    lines = [base.strip()] if base.strip() else []
+    lines.append("The previous version of this coverage drew the criticism below. "
+                 "Address each point; do not simply restate the same plan.")
+    for w in warnings:
+        where = w.get("shot_id") or w.get("beat_id") or "scene"
+        detail = (w.get("detail") or "").strip()
+        fix = (w.get("suggestion") or "").strip()
+        lines.append(f"- [{where}] {w.get('kind', 'note')}: {detail}"
+                     + (f" Suggested fix: {fix}" if fix else ""))
+    return "\n".join(lines)
+
+
 @app.post("/api/director/plan")
 async def plan_director_scene(request: Request):
     """Plan coverage for a scene. Writes drafts; generates nothing.
 
     Body: {"beats": ["s004","s005"], "profile": "historical_docudrama",
-           "notes": "less dramatic, more environment", "critique": true}
+           "notes": "less dramatic, more environment", "critique": true,
+           "rounds": 2, "replan": false}
+
+    ``rounds`` runs plan -> critic -> re-plan against the criticism -> critic,
+    up to 3 times, keeping whichever round the critic liked best and stopping
+    early once it raises nothing. Text only -- no image or video is generated at
+    any round, so refinement is cheap here and expensive after generation.
     """
     try:
         sb = get_current_project()
@@ -1745,39 +1765,86 @@ async def plan_director_scene(request: Request):
         notes = data.get("notes") or ""
         run_critic = data.get("critique", True)
         replan = bool(data.get("replan"))
+        # plan -> critic -> re-plan against the criticism -> critic again, in one
+        # job. Every round is text only: nothing is generated and nothing is
+        # billed beyond the LLM calls, so refining before a human looks is cheap
+        # in exactly the place where changing your mind later is not.
+        rounds = max(1, min(3, int(data.get("rounds") or 1)))
+        if rounds > 1 and not run_critic:
+            raise HTTPException(status_code=400,
+                                detail="rounds > 1 requires critique=true — "
+                                       "there is nothing to re-plan against.")
         job = f"director_plan:{beat_ids[0]}"
 
         def fn():
             log = lambda m: log_job(job, m)  # noqa: E731
-            result = planner.plan_scene(sb, beat_ids, profile_key, notes, log=log,
-                                        replan=replan)
-            # Never write over a plan we deliberately declined to re-plan --
-            # including its warnings.
-            protected = set(result.get("skipped") or [])
-            # The critic is advisory. It runs after the plans are already written,
-            # so letting it fail the job threw away 23 good shots over a warning
-            # pass -- the plans were on disk and correct, and the run still
-            # reported error.
-            warnings = []
-            if run_critic:
-                try:
-                    warnings = planner.critique(sb, beat_ids, log=log)
-                except Exception as exc:  # noqa: BLE001
-                    log(f"  !! critique failed ({exc}) — plans are saved; "
-                        f"re-run POST /api/director/critique to retry")
-            if warnings:
-                # Warnings belong on the beat they concern, so the studio can show
-                # them beside the shot rather than in a separate list.
+            protected: set[str] = set()
+            warnings: list[dict] = []
+            carry = notes
+            best: tuple[int, dict] | None = None   # (warning count, plans on disk)
+            history: list[int] = []
+
+            for rnd in range(1, rounds + 1):
+                if rounds > 1:
+                    log(f"--- round {rnd} of {rounds} ---")
+                result = planner.plan_scene(sb, beat_ids, profile_key, carry,
+                                            log=log, replan=replan)
+                # Never write over a plan we deliberately declined to re-plan --
+                # including its warnings.
+                protected = set(result.get("skipped") or [])
+
+                # The critic is advisory. It runs after the plans are already
+                # written, so letting it fail the job threw away 23 good shots
+                # over a warning pass -- the plans were on disk and correct, and
+                # the run still reported error.
+                warnings = []
+                if run_critic:
+                    try:
+                        warnings = planner.critique(sb, beat_ids, log=log)
+                    except Exception as exc:  # noqa: BLE001
+                        log(f"  !! critique failed ({exc}) — plans are saved; "
+                            f"re-run POST /api/director/critique to retry")
+
+                # Warnings belong on the beat they concern, so the studio can
+                # show them beside the shot rather than in a separate list.
                 for bid in beat_ids:
                     if bid in protected:
                         continue
-                    p = director.load_plan(bid)
-                    if not p:
+                    pl = director.load_plan(bid)
+                    if not pl:
                         continue
-                    p.warnings = [w for w in warnings
-                                  if w.get("beat_id") in ("", bid)]
-                    director.save_plan(p)
-            msg = f"Planned {len(result['plans'])} beat(s); nothing was generated."
+                    pl.warnings = [w for w in warnings
+                                   if w.get("beat_id") in ("", bid)]
+                    director.save_plan(pl)
+
+                history.append(len(warnings))
+                # Keep this round only if it is actually an improvement. A
+                # re-plan can fix the shot it was told about and break two
+                # others; without this the loop would end on whichever round
+                # happened to run last and report it as refined.
+                snapshot = {bid: director.load_plan(bid) for bid in beat_ids
+                            if bid not in protected}
+                if best is None or len(warnings) < best[0]:
+                    best = (len(warnings), snapshot)
+
+                if not warnings:
+                    log(f"  round {rnd}: the critic raised nothing — stopping here.")
+                    break
+                if rnd < rounds:
+                    carry = _replan_notes(notes, warnings)
+
+            if best is not None and history and history[-1] > best[0]:
+                log(f"  the last round scored worse ({history[-1]} warnings vs "
+                    f"{best[0]}) — restoring the better plan.")
+                for pl in best[1].values():
+                    if pl:
+                        director.save_plan(pl)
+
+            msg = f"Planned {len(beat_ids) - len(protected)} beat(s); nothing was generated."
+            if len(history) > 1:
+                msg += f" Warnings by round: {' -> '.join(str(h) for h in history)}."
+            elif history:
+                msg += f" {history[0]} warning(s) for review."
             if protected:
                 msg += (f" Left {len(protected)} already-covered beat(s) untouched: "
                         f"{', '.join(sorted(protected))}.")
@@ -1787,6 +1854,7 @@ async def plan_director_scene(request: Request):
             return JSONResponse(status_code=409, content={
                 "ok": False, "error": f"a plan for {beat_ids[0]} is already running"})
         return {"ok": True, "started": True, "job": job, "beats": beat_ids,
+                "rounds": rounds,
                 "profile": planner.profile(profile_key)["key"]}
     except HTTPException:
         raise
