@@ -138,7 +138,7 @@ exists to support, so neither was kept. It should stop once the box is idle.
 
 ## Test suite
 
-108 tests, pyflakes clean, `tsc --noEmit` and `next build` pass. Runtime deps are
+117 tests, pyflakes clean, `tsc --noEmit` and `next build` pass. Runtime deps are
 now installed on the workstation, so the FastAPI app can be imported and
 exercised — `py_compile` does not catch a `NameError`, and one shipped tonight
 before that was set up.
