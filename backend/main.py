@@ -1491,6 +1491,38 @@ def get_characters():
     }
 
 
+@app.post("/api/characters/{name}/reference")
+async def upload_character_reference(name: str, file: UploadFile = File(...)):
+    """Attach a likeness reference to a character.
+
+    Distinct from render.reference_image, which is a FRAME reference -- that path
+    instructs the model to keep a page border and replace the interior, the
+    opposite of what a likeness needs. This one is the subject: keep the person,
+    change the scene.
+
+    Spike A on anchor text alone returned four different men per framing, none of
+    them the documented likeness. A 130-word structural description lost to three
+    words of setting. Text cannot carry a specific real face.
+    """
+    try:
+        chars = characters.load_characters()
+        if name not in chars:
+            chars[name] = {}
+        ref_dir = config.MANIFEST_PATH.parent / "references" / "characters"
+        ref_dir.mkdir(parents=True, exist_ok=True)
+        ext = Path(file.filename or "ref.png").suffix.lower() or ".png"
+        dest = ref_dir / f"{secure_filename(name)}{ext}"
+        with open(dest, "wb") as fh:
+            shutil.copyfileobj(file.file, fh)
+        chars[name]["reference_image"] = config.rel_media_path(dest)
+        characters.save_characters(chars)
+        return {"ok": True, "name": name,
+                "reference_image": chars[name]["reference_image"],
+                "path": str(dest)}
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
 @app.post("/api/characters/{name}")
 async def put_character(name: str, request: Request):
     """Create or update one character, including its structural anchor."""

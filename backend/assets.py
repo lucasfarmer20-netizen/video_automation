@@ -315,7 +315,8 @@ def style_prompt(prompt: str, lora: dict | None) -> str:
 
 
 def _generate_nano2(prompt: str, n: int, negative: str = NEGATIVE_PROMPT,
-                    frame_url: str | None = None) -> list[str]:
+                    frame_url: str | None = None,
+                    subject_url: str | None = None) -> list[str]:
     """Nano Banana 2 (Gemini 3 Pro Image) generation — the default backend.
 
     A reasoning model, not CFG-diffusion, so there is no ``negative_prompt`` field:
@@ -342,6 +343,37 @@ def _generate_nano2(prompt: str, n: int, negative: str = NEGATIVE_PROMPT,
         f"A flat photographic reproduction of an aged original, not a modern "
         f"illustration imitating one."
     )
+    if subject_url:
+        # A SUBJECT reference, which is the opposite instruction to a frame
+        # reference. The frame path exists to keep a page border and replace the
+        # interior; this one keeps the PERSON and replaces everything else.
+        #
+        # Spike A ran on anchor text alone and returned four different men per
+        # framing, none of them the documented likeness -- a 130-word structural
+        # description lost to three words of setting. Text cannot carry a specific
+        # real face; an image of that face might.
+        full = (
+            "The person in the reference image is the subject of this photograph. "
+            "Preserve their identity exactly: the same face, bone structure, hairline, "
+            "build and age, recognisably the same individual. Change everything else "
+            "to match the description below — the framing, pose, clothing, setting "
+            "and lighting are all as described, not as they appear in the reference. "
+            f"The photograph: {interior}"
+        )
+        result = fal_client.subscribe(
+            NANO2_EDIT_ENDPOINT,
+            arguments={
+                "prompt": full,
+                "image_urls": [subject_url],
+                "num_images": n,
+                "aspect_ratio": "16:9",
+                "resolution": NANO2_RESOLUTION,
+                "output_format": "png",
+            },
+            with_logs=False,
+        )
+        return [img["url"] for img in result.get("images", [])]
+
     if frame_url:
         full = (
             "Use the reference image ONLY as the page frame: match its border, margins, "

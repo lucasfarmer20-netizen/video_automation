@@ -27,6 +27,7 @@ on nano2" later becomes a query over data instead of a feature someone must buil
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from dataclasses import dataclass, field
 
 from . import assets, config, ledger
@@ -57,7 +58,9 @@ CELLS: list[dict] = [
 
 # Reference strategies, strongest first (Round 4: "use the strongest likely
 # character-reference strategy first").
-STRATEGIES = ["anchor_plus_frame_ref", "anchor_only"]
+# Ordered by what is most likely to work, which is now known rather than assumed:
+# anchor text alone produced four different men per framing.
+STRATEGIES = ["anchor_plus_character_ref", "anchor_only"]
 
 SCORE_KEYS = ("recognizability", "face_drift", "wardrobe_drift",
               "age_drift", "hair_drift", "lighting_robustness")
@@ -111,6 +114,7 @@ def run(cfg: SpikeConfig, log=print) -> dict:
     nothing — the scores come from Lucas via ``score_cell``.
     """
     config.require_for("assets")
+    chars = __import__('backend.characters', fromlist=['x']).load_characters()
     anchors = assets._load_character_anchors()
     anchor = (anchors.get(cfg.character) or "").strip()
     if not anchor:
@@ -127,9 +131,18 @@ def run(cfg: SpikeConfig, log=print) -> dict:
 
     for backend in cfg.backends:
         for strategy in cfg.strategies:
-            frame_ref = None
-            if strategy == "anchor_plus_frame_ref":
-                frame_ref = (getattr(config, "SPIKE_FRAME_REF", "") or "").strip() or None
+            subject_url = None
+            if strategy == "anchor_plus_character_ref":
+                ref = (chars.get(cfg.character, {}) or {}).get("reference_image") or ""
+                local = config.resolve_media(ref) if ref else None
+                if not local:
+                    log(f"  {cfg.character} has no reference_image — "
+                        f"skipping {strategy!r} (upload one via "
+                        f"POST /api/characters/{cfg.character}/reference)")
+                    continue
+                import fal_client
+                subject_url = fal_client.upload_file(str(local))
+                log(f"  using likeness reference {Path(local).name}")
             for key in cfg.cells:
                 cell = _cell(key)
                 if not cell:
@@ -145,8 +158,19 @@ def run(cfg: SpikeConfig, log=print) -> dict:
                     style_medium=cfg.style_medium, camera=Camera(),
                 )
                 try:
-                    paths = assets.generate_for_shot(
-                        synthetic, cfg.takes, backend=backend, render=None, log=log)
+                    if subject_url and backend == "nano2":
+                        urls = assets._generate_nano2(
+                            prompt, cfg.takes, subject_url=subject_url)
+                        paths = []
+                        import time as _t
+                        ts = int(_t.time())
+                        for i, u in enumerate(urls):
+                            dest = config.ASSETS / scene_id / f"var_{ts}_{i}.png"
+                            assets._download(u, dest)
+                            paths.append(config.rel_media_path(dest))
+                    else:
+                        paths = assets.generate_for_shot(
+                            synthetic, cfg.takes, backend=backend, render=None, log=log)
                 except Exception as exc:  # noqa: BLE001
                     log(f"  !! {key} failed: {exc}")
                     results.append({"cell": key, "backend": backend,
