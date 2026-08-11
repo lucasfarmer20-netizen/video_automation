@@ -62,6 +62,22 @@ async def lifespan(app: FastAPI):
     except Exception:
         print(f"Startup warning: ensure_gcs_projects failed:\n{traceback.format_exc()}")
 
+    # Point the process config at the saved active project before serving anything.
+    # Nothing did this, and cloudbuild.yaml sets no MANIFEST_PATH, so a cold
+    # container started on /app/... -- which EXISTS, because the Dockerfile COPYs
+    # the repo in, so reads succeeded and there was no error to notice. The first
+    # request to a fresh container wrote its character anchor to /app, reported
+    # "/app/characters.json" back as the path it had written, read it back
+    # successfully, and lost it at scale-to-zero. Nothing under /gcs ever saw it.
+    try:
+        active = get_active_manifest_path()
+        if active:
+            config.set_active_manifest(active)
+            print(f"Startup: active project -> {config.MANIFEST_PATH}")
+    except Exception:
+        print("Startup warning: could not sync active project:")
+        print(traceback.format_exc())
+
     if db is not None:
         try:
             for p in _scan_projects():
@@ -153,9 +169,20 @@ def get_active_manifest_path() -> str:
 
 
 def set_active_manifest_path(path: str):
-    """Save the active manifest path to the config file."""
+    """Save the active manifest path AND repoint the process config to match.
+
+    These were two separate steps and only one of them happened here, so after
+    /api/project/select the pointer file said one project while
+    config.MANIFEST_PATH / ASSETS / REFERENCES_DIR / CHARACTERS_CONFIG still named
+    the previous one -- until some later request happened to call
+    get_current_project(). Anything that wrote before that (the /api/characters
+    handlers, put_director_plan) wrote to the wrong project and reported the wrong
+    path back as if it had succeeded.
+    """
+    resolved = str(Path(path).resolve())
     ACTIVE_PROJECT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    ACTIVE_PROJECT_FILE.write_text(str(Path(path).resolve()), encoding="utf-8")
+    ACTIVE_PROJECT_FILE.write_text(resolved, encoding="utf-8")
+    config.set_active_manifest(resolved)
 
 
 def get_current_project() -> Storyboard:
@@ -991,6 +1018,22 @@ async def select_project(request: Request):
             raise HTTPException(status_code=400, detail="Project path is outside the workspace")
         if p.name != "storyboard_manifest.json" or not p.is_file():
             raise HTTPException(status_code=404, detail="Project file not found on disk")
+
+        # config.MANIFEST_PATH and friends are process globals that background
+        # threads read at call time, and this is a single Cloud Run instance. A
+        # switch mid-render sends the paid clips into the other project's assets/
+        # and writes them onto that project's identically-named scene ids, which
+        # is only recoverable by paying for the generation again. Refuse instead.
+        #
+        # The real fix is a job-scoped project context rather than globals; this
+        # is the guard until that refactor lands.
+        running = [k for k, v in get_jobs_status().items() if v.get("status") == "running"]
+        if running:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{', '.join(running)} still running — switching projects now "
+                       f"would redirect its output into the project you switch to. "
+                       f"Wait for it to finish.")
 
         set_active_manifest_path(str(p))
         return {"ok": True}
@@ -2157,6 +2200,13 @@ def get_director_plan(beat_id: str):
 async def put_director_plan(beat_id: str, request: Request):
     """Write a hand-authored coverage plan (Spike B). Validated, not compiled."""
     try:
+        # Sync the active project BEFORE resolving director_dir(). This wrote the
+        # plan, then read it back, then called get_current_project() -- so on a
+        # stale config the plan landed in the previous project's director/ and the
+        # response reported that wrong path as "written". The follow-up compile,
+        # which does sync first, then 404s with "no director plan" for a plan the
+        # API had just confirmed writing.
+        sb = get_current_project()
         data = await request.json()
         data["beat_id"] = beat_id
         path = director.director_dir() / f"{beat_id}.json"
@@ -2164,7 +2214,6 @@ async def put_director_plan(beat_id: str, request: Request):
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
         plan = director.load_plan(beat_id)
-        sb = get_current_project()
         beat = next((s for s in sb.shots if s.scene_id == beat_id), None)
         problems = []
         if beat:
