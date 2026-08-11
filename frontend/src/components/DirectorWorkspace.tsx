@@ -12,6 +12,8 @@ import {
   redirectSceneCoverage,
   setCoverageStatus,
   performShotAction,
+  updateShot,
+  waitForJob,
   critiqueCoverage,
 } from "../lib/directorApi";
 
@@ -131,10 +133,24 @@ export default function DirectorWorkspace({
         selectedShortcuts,
         preferences
       );
+      // The response means "a thread has started", not "the plan is ready".
+      // Refetching here returned the plan the user was trying to replace.
       if (res.ok) {
-        const updatedPlan = await fetchCoveragePlan(sceneId);
+        if (res.job) {
+          const done = await waitForJob(res.job, { onLog: setRedirectLog });
+          if (!done.ok) {
+            setError(
+              done.status === "timeout"
+                ? "The planner is still running — reopen this scene shortly."
+                : `Planning failed. ${(done.log || "").slice(-300)}`
+            );
+            return;
+          }
+        }
+        const updatedPlan = await fetchCoveragePlan(coveragePlan?.scene_beats || sceneId);
         setCoveragePlan(updatedPlan);
         setError(null);
+        setRedirectLog("");
       }
     } catch (err: any) {
       setError(err.message || "Failed to issue POST /api/director/plan request");
@@ -155,24 +171,61 @@ export default function DirectorWorkspace({
   };
 
   const [critiquing, setCritiquing] = useState<boolean>(false);
+  const [shotError, setShotError] = useState<string | null>(null);
+  const [redirectLog, setRedirectLog] = useState<string>("");
 
-  const handleUpdateShot = (shotId: string, updates: Partial<DirectorShot>) => {
+  // Every edit round-trips. This used to be local React state and nothing else:
+  // no call to POST /api/director/shot/{id}, the endpoint the backend documents
+  // as "the only sanctioned way" to edit a shot. Duration drags, tier flips, take
+  // selections and framing changes all evaporated on scene switch or refetch --
+  // and LOCK then validated the UNEDITED plan, 400'd with "nothing was locked",
+  // and handleToggleLock never caught it, so the button silently did nothing
+  // while the header showed a green matched-coverage badge.
+  //
+  // The server is also the only place that can do this correctly: it recomputes
+  // estimated_cost, re-routes the backend, and rebalances the sibling shots so
+  // coverage still sums to the beat. Client-side cost arithmetic is gone with it.
+  const handleUpdateShot = async (shotId: string, updates: Partial<DirectorShot>) => {
     if (!coveragePlan) return;
-    const updatedCoverage = coveragePlan.coverage.map((s) =>
+    const before = coveragePlan;
+
+    // Optimistic, so dragging a duration still feels immediate...
+    const optimistic = coveragePlan.coverage.map((s) =>
       s.id === shotId ? { ...s, ...updates } : s
     );
     // Invalidate existing warnings for this shot on hand edit until re-checked (Addendum 5.3)
     const invalidatedWarnings = coveragePlan.warnings.map((w) =>
       w.shot_id === shotId ? { ...w, stale: true } : w
     );
-    setCoveragePlan({
-      ...coveragePlan,
-      coverage: updatedCoverage,
-      warnings: invalidatedWarnings,
-      estimated_cost: updatedCoverage.reduce((acc, curr) => acc + curr.estimated_cost, 0),
-    });
+    setCoveragePlan({ ...coveragePlan, coverage: optimistic, warnings: invalidatedWarnings });
     if (selectedShot && selectedShot.id === shotId) {
       setSelectedShot({ ...selectedShot, ...updates });
+    }
+
+    try {
+      const res = await updateShot(shotId, updates as Record<string, unknown>);
+      // ...but the server's version wins, including the siblings it rebalanced
+      // and the cost it recomputed. Refetching the plan is the only way to see
+      // the sibling changes, which a merge of `res.shot` alone would miss.
+      const fresh = await fetchCoveragePlan(coveragePlan.scene_beats || [sceneId]);
+      setCoveragePlan({
+        ...fresh,
+        warnings: (fresh.warnings || []).map((w) =>
+          w.shot_id === shotId ? { ...w, stale: true } : w
+        ),
+      });
+      if (res.shot && selectedShot && selectedShot.id === shotId) {
+        setSelectedShot(res.shot);
+      }
+      if (res.problems?.length) setShotError(res.problems.join("; "));
+      else setShotError(null);
+    } catch (e: any) {
+      // A rejected edit must not linger on screen as though it took.
+      setCoveragePlan(before);
+      if (selectedShot && selectedShot.id === shotId) {
+        setSelectedShot(before.coverage.find((s) => s.id === shotId) || null);
+      }
+      setShotError(e?.message || "That edit was rejected by the server.");
     }
   };
 
@@ -192,15 +245,20 @@ export default function DirectorWorkspace({
     }
   };
 
+  // Wrapped. This was un-caught, so every 404 from the phantom /action route
+  // became an unhandled rejection with no banner at all.
   const handleShotAction = async (action: string, shot: DirectorShot) => {
-    await performShotAction(shot.id, action);
-    if (action === "delete") {
-      if (!coveragePlan) return;
-      setCoveragePlan({
-        ...coveragePlan,
-        coverage: coveragePlan.coverage.filter((s) => s.id !== shot.id),
-      });
-      setSelectedShot(null);
+    try {
+      const res = await performShotAction(shot.id, action, shot);
+      if (!res.supported) {
+        setShotError(res.error || `"${action}" is not available yet.`);
+        return;
+      }
+      const fresh = await fetchCoveragePlan(coveragePlan?.scene_beats || [sceneId]);
+      setCoveragePlan(fresh);
+      setShotError(null);
+    } catch (e: any) {
+      setShotError(e?.message || `"${action}" failed.`);
     }
   };
 
@@ -430,6 +488,14 @@ export default function DirectorWorkspace({
           </button>
         </div>
 
+        {/* The planner is a background job of tens of seconds. Show its own log
+            rather than a spinner with nothing behind it. */}
+        {redirecting && redirectLog && (
+          <pre className="max-h-24 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-[11px] font-mono text-zinc-400 whitespace-pre-wrap">
+            {redirectLog.slice(-600)}
+          </pre>
+        )}
+
         {/* Quick Shortcuts Pills */}
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] font-mono text-zinc-400 mr-1">Quick Direction:</span>
@@ -511,6 +577,20 @@ export default function DirectorWorkspace({
       </div>
 
       {/* SECTION 3: Problem Queue Alert Banner */}
+      {shotError && (
+        <div className="mb-3 flex items-start justify-between gap-3 rounded-lg border border-red-500/50 bg-red-950/40 px-3 py-2">
+          <span className="text-xs font-mono text-red-300">
+            <strong className="font-bold">Edit rejected:</strong> {shotError}
+          </span>
+          <button
+            onClick={() => setShotError(null)}
+            className="shrink-0 text-red-400 hover:text-red-200 text-xs font-mono font-bold"
+            aria-label="Dismiss"
+          >
+            &#10005;
+          </button>
+        </div>
+      )}
       {coveragePlan.warnings.length > 0 && (
         <div className="glass-panel p-3.5 rounded-xl border border-amber-500/40 bg-amber-500/10 flex items-center justify-between">
           <div className="flex items-center gap-2.5">

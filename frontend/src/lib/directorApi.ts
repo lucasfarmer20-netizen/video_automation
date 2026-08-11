@@ -145,6 +145,43 @@ export async function redirectSceneCoverage(
 }
 
 /**
+ * Wait for a background job named by the server to finish.
+ *
+ * POST /api/director/plan returns {ok, started, job} the instant start_job spawns
+ * a thread; a rounds:2 plan -> critic -> re-plan cycle is tens of seconds of
+ * Anthropic calls. Callers that refetched immediately got the OLD plan back, or
+ * "No coverage plan found" -- so the user re-clicked, start_job returned False,
+ * and the UI showed a hard 409 for a job that was running fine and would
+ * overwrite their work a minute later.
+ */
+export async function waitForJob(
+  jobKey: string,
+  opts: { onLog?: (log: string) => void; timeoutMs?: number; intervalMs?: number } = {}
+): Promise<{ ok: boolean; status: string; log: string }> {
+  const { onLog, timeoutMs = 15 * 60 * 1000, intervalMs = 2000 } = opts;
+  const started = Date.now();
+  let last = "";
+  for (;;) {
+    const res = await fetch(`${API_BASE}/api/assemble/status`);
+    const data = await res.json().catch(() => ({}));
+    const job = data?.jobs?.[jobKey];
+    if (job) {
+      if (job.log && job.log !== last) {
+        last = job.log;
+        onLog?.(job.log);
+      }
+      if (job.status !== "running") {
+        return { ok: job.status === "done", status: job.status, log: job.log || "" };
+      }
+    }
+    if (Date.now() - started > timeoutMs) {
+      return { ok: false, status: "timeout", log: last };
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
+/**
  * POST /api/director/lock/{beat_id}?locked=true|false OR POST /api/director/lock_scene
  * Requires X-Studio-Key auth header
  */
@@ -152,7 +189,12 @@ export async function setCoverageStatus(
   beatIdOrBeats: string | string[],
   locked: boolean = true
 ): Promise<{ ok: boolean; status?: string; error?: string }> {
-  if (Array.isArray(beatIdOrBeats)) {
+  // lock_scene ONLY locks -- it sets status = "locked" unconditionally and records
+  // a `locked` ledger outcome. The array branch used to run for every call and
+  // ignore `locked` entirely, so "UNLOCK TO EDIT" locked harder while the UI
+  // optimistically showed "draft". The user then edited a scene the server
+  // considered locked, and the render path kept skipping those beats.
+  if (Array.isArray(beatIdOrBeats) && locked) {
     const res = await fetch(`${API_BASE}/api/director/lock_scene`, {
       method: "POST",
       headers: getAuthHeaders({ "Content-Type": "application/json" }),
@@ -163,6 +205,22 @@ export async function setCoverageStatus(
       throw new Error(data.error || `Locking scene failed with status ${res.status}`);
     }
     return data;
+  }
+
+  // Unlocking a scene: no bulk route exists, so fan out per beat.
+  if (Array.isArray(beatIdOrBeats)) {
+    const results = await Promise.all(
+      beatIdOrBeats.map(async (b) => {
+        const r = await fetch(
+          `${API_BASE}/api/director/lock/${encodeURIComponent(b)}?locked=false`,
+          { method: "POST", headers: getAuthHeaders() }
+        );
+        return r.json();
+      })
+    );
+    const bad = results.find((r) => !r.ok);
+    if (bad) throw new Error(bad.error || "Unlocking the scene failed");
+    return { ok: true, status: "draft" };
   }
 
   const res = await fetch(
@@ -202,23 +260,72 @@ export async function critiqueCoverage(beats: string[]): Promise<{ ok: boolean; 
  * POST /api/director/shot/{shotId}/action
  * Requires X-Studio-Key auth header
  */
+/**
+ * POST /api/director/shot/{shot_id} — the only sanctioned way to edit a shot.
+ *
+ * The server recomputes estimated_cost, re-routes the backend, rebalances the
+ * sibling shots so the coverage still sums to the beat, and revalidates. None of
+ * that can be done in the browser: coverage that does not sum to its beat cannot
+ * compile, and a paid shot at an unproducible length fails only at generation
+ * time, after money has been committed.
+ */
+export async function updateShot(
+  shotId: string,
+  patch: Record<string, unknown>
+): Promise<{
+  ok: boolean;
+  shot?: DirectorShot;
+  notes?: string[];
+  problems?: string[];
+  coverage_total?: number;
+  beat_duration?: number;
+  error?: string;
+}> {
+  const res = await fetch(`${API_BASE}/api/director/shot/${encodeURIComponent(shotId)}`, {
+    method: "POST",
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(patch),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    throw new Error(data.error || data.detail || `Editing ${shotId} failed (${res.status})`);
+  }
+  return data;
+}
+
+/** Which quick actions the server can actually serve today. */
+export const SHOT_ACTIONS_SUPPORTED = ["alternate_angle"] as const;
+
+/**
+ * Quick actions. Only those expressible through the shot endpoint are real.
+ *
+ * This used to POST /api/director/shot/{id}/action, which is not a registered
+ * route -- FastAPI path params do not match across "/", so every Regenerate Take,
+ * Alternate Angle, Replace Shot and Delete Shot click 404'd and threw inside an
+ * un-caught handler. No banner, no error, the buttons simply appeared inert.
+ * Rather than keep a call to a route that does not exist, the one action the
+ * server CAN serve now goes through the real endpoint and the rest say so.
+ */
+const ANGLE_CYCLE = ["front", "three_quarter", "low", "high", "profile"];
+
 export async function performShotAction(
   shotId: string,
   action: string,
-  payload?: any
-): Promise<{ ok: boolean; updatedShot?: DirectorShot; error?: string }> {
-  const res = await fetch(`${API_BASE}/api/director/shot/${encodeURIComponent(shotId)}/action`, {
-    method: "POST",
-    headers: getAuthHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ action, payload }),
-  });
-
-  const data = await res.json();
-  if (!res.ok || !data.ok) {
-    throw new Error(data.error || `Shot action ${action} failed with status ${res.status}`);
+  shot?: DirectorShot
+): Promise<{ ok: boolean; shot?: DirectorShot; supported: boolean; error?: string }> {
+  if (action === "alternate_angle") {
+    const current = (shot?.angle || "").trim();
+    const i = ANGLE_CYCLE.indexOf(current);
+    const next = ANGLE_CYCLE[(i + 1) % ANGLE_CYCLE.length];
+    const data = await updateShot(shotId, { angle: next });
+    return { ok: true, shot: data.shot, supported: true };
   }
-
-  return data;
+  return {
+    ok: false,
+    supported: false,
+    error: `"${action}" has no server route yet — it would need a new endpoint. ` +
+           `Edit the shot's fields instead.`,
+  };
 }
 
 /**
