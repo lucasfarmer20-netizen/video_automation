@@ -26,6 +26,7 @@ on nano2" later becomes a query over data instead of a feature someone must buil
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from . import assets, config, ledger
@@ -175,15 +176,82 @@ def run(cfg: SpikeConfig, log=print) -> dict:
                 })
                 log(f"  -> {len(paths)} images for {key} (running spend ~${spent:.2f})")
 
+    manifest = {
+        "character": cfg.character,
+        "anchor": anchor,
+        "style_medium": cfg.style_medium,
+        "setting": cfg.setting,
+        "takes_per_cell": cfg.takes,
+        "estimated_spend": round(spent, 2),
+        "cells": results,
+    }
+    out_dir = spike_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "spike_a_manifest.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
     return {
         "ok": True,
         "character": cfg.character,
         "cells_run": len(results),
         "estimated_spend": round(spent, 2),
         "results": results,
-        "next": "score each cell via POST /api/spike/identity/score, then GET the report",
+        "next": "GET /api/spike/identity/sheet to look at them, then score",
     }
 
+
+
+def spike_dir():
+    """Where the spike's manifest lives. Images stay in assets/, served already."""
+    return config.MANIFEST_PATH.parent / "spike_a"
+
+
+def contact_sheet() -> dict:
+    """Every generated take, grouped by framing, with URLs to look at.
+
+    Reviewing 28 images by curling one scoring call each is not a review, it is
+    data entry -- and an experiment nobody completes tells you nothing. This
+    returns the cells with their image urls so they can be opened side by side,
+    which is what made the narrator audition actually reviewable.
+    """
+    from . import ledger
+
+    rows = [r for r in ledger.read_rows() if r.get("experiment") == "spike_a"]
+    gens = [r for r in rows if r.get("event") == "generate"]
+    scored = {r.get("path") for r in rows
+              if r.get("event") == "choose" and r.get("scores")}
+
+    cells: dict[str, dict] = {}
+    for g in gens:
+        key = f"{g.get('cell')}|{g.get('backend')}|{g.get('reference_strategy')}"
+        c = cells.setdefault(key, {
+            "cell": g.get("cell"), "shot_size": g.get("shot_size"),
+            "angle": g.get("angle"), "backend": g.get("backend"),
+            "reference_strategy": g.get("reference_strategy"),
+            "scene_id": g.get("scene_id"), "takes": [],
+        })
+        c["takes"].append({
+            "path": g.get("path"),
+            "url": f"media/{g.get('path')}",
+            "scored": g.get("path") in scored,
+        })
+    for c in cells.values():
+        c["takes"].sort(key=lambda t: t["path"])
+        c["scored"] = sum(1 for t in c["takes"] if t["scored"])
+
+    ordered = sorted(cells.values(),
+                     key=lambda c: [x["key"] for x in CELLS].index(c["cell"])
+                     if any(x["key"] == c["cell"] for x in CELLS) else 99)
+    return {
+        "cells": ordered,
+        "images": sum(len(c["takes"]) for c in ordered),
+        "scored": sum(c["scored"] for c in ordered),
+        "score_keys": list(SCORE_KEYS),
+        "how": ("Open each cell's takes together and judge whether they are the "
+                "same man. Then POST /api/spike/identity/score per image with "
+                "scores 0-3. A framing where no take is recognisable is a framing "
+                "the Director must avoid."),
+    }
 
 def score_cell(scene_id: str, path: str, scores: dict, reason: str = "") -> None:
     """Record a human evaluation of one image. 0-3 per key in SCORE_KEYS."""

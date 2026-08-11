@@ -2040,6 +2040,39 @@ async def score_identity_spike(request: Request):
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
 
 
+@app.get("/api/spike/identity/sheet")
+def identity_spike_sheet():
+    """Every take, grouped by framing, with urls — the thing you actually look at."""
+    return {"ok": True, **spike_identity.contact_sheet()}
+
+
+@app.post("/api/spike/identity/score_cell")
+async def score_identity_cell(request: Request):
+    """Score a whole framing at once: {"scene_id": "...", "scores": {...}}
+
+    Judging identity is a per-FRAMING verdict, not a per-image one -- the question
+    is whether a close-up of this man is reliable, and answering it four times per
+    cell is data entry that nobody finishes.
+    """
+    try:
+        data = await request.json()
+        sid = (data.get("scene_id") or "").strip()
+        if not sid:
+            raise HTTPException(status_code=400, detail="scene_id is required")
+        rows = [r for r in ledger.read_rows()
+                if r.get("event") == "generate" and r.get("scene_id") == sid]
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"no takes recorded for {sid}")
+        for r in rows:
+            spike_identity.score_cell(sid, r["path"], data.get("scores") or {},
+                                      data.get("reason") or "")
+        return {"ok": True, "scene_id": sid, "scored": len(rows)}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
 @app.get("/api/spike/identity/report")
 def identity_spike_report():
     """Coverage vocabulary: which framings can carry the face."""
