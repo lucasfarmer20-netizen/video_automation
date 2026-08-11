@@ -81,16 +81,27 @@ export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUr
   const [takeModalShot, setTakeModalShot] = useState<DirectorShot | null>(null);
   const [redirecting, setRedirecting] = useState<boolean>(false);
 
+  const [error, setError] = useState<string | null>(null);
+
   // Load coverage plan on scene switch
   useEffect(() => {
     let isMounted = true;
     setLoading(true);
-    fetchCoveragePlan(sceneId).then((plan) => {
-      if (isMounted) {
-        setCoveragePlan(plan);
-        setLoading(false);
-      }
-    });
+    setError(null);
+    fetchCoveragePlan(sceneId)
+      .then((plan) => {
+        if (isMounted) {
+          setCoveragePlan(plan);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (isMounted) {
+          setError(err.message || "No director coverage plan found for this scene (404)");
+          setCoveragePlan(null);
+          setLoading(false);
+        }
+      });
     return () => {
       isMounted = false;
     };
@@ -103,27 +114,36 @@ export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUr
   };
 
   const handleRedirectScene = async () => {
-    if (!coveragePlan || redirecting) return;
+    if (redirecting) return;
     setRedirecting(true);
-
-    const res = await redirectSceneCoverage(
-      sceneId,
-      redirectInput,
-      selectedShortcuts,
-      preferences
-    );
-
-    if (res.ok && res.plan) {
-      setCoveragePlan(res.plan);
+    try {
+      const res = await redirectSceneCoverage(
+        sceneId,
+        redirectInput,
+        selectedShortcuts,
+        preferences
+      );
+      if (res.ok) {
+        const updatedPlan = await fetchCoveragePlan(sceneId);
+        setCoveragePlan(updatedPlan);
+        setError(null);
+      }
+    } catch (err: any) {
+      setError(err.message || "Failed to issue POST /api/director/plan request");
+    } finally {
+      setRedirecting(false);
     }
-    setRedirecting(false);
   };
 
   const handleToggleLock = async () => {
     if (!coveragePlan) return;
-    const nextStatus = coveragePlan.status === "locked" ? "draft" : "locked";
-    await setCoverageStatus(sceneId, nextStatus);
-    setCoveragePlan({ ...coveragePlan, status: nextStatus });
+    const isCurrentlyLocked = coveragePlan.status === "locked" || coveragePlan.status === "compiled";
+    const shouldLock = !isCurrentlyLocked;
+    const beatsToLock = coveragePlan.scene_beats && coveragePlan.scene_beats.length > 0
+      ? coveragePlan.scene_beats
+      : sceneId;
+    await setCoverageStatus(beatsToLock, shouldLock);
+    setCoveragePlan({ ...coveragePlan, status: shouldLock ? "locked" : "draft" });
   };
 
   const handleUpdateShot = (shotId: string, updates: Partial<DirectorShot>) => {
@@ -165,11 +185,47 @@ export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUr
     });
   };
 
-  if (loading || !coveragePlan) {
+  if (loading) {
     return (
-      <div className="w-full h-96 flex items-center justify-center text-amber-500 gap-3">
-        <Sparkles className="w-6 h-6 animate-spin" />
-        <span className="font-mono text-sm">Loading Director Coverage Plan...</span>
+      <div className="w-full h-96 flex flex-col items-center justify-center text-amber-500 gap-3">
+        <Sparkles className="w-8 h-8 animate-spin" />
+        <span className="font-mono text-sm font-bold">Querying GET /api/director/scene?beats={sceneId}...</span>
+      </div>
+    );
+  }
+
+  if (error || !coveragePlan) {
+    return (
+      <div className="w-full max-w-[1200px] mx-auto p-8 my-10 glass-panel rounded-2xl border border-amber-500/40 bg-zinc-950 flex flex-col items-center justify-center text-center gap-4 animate-in fade-in duration-200">
+        <div className="p-3 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-400">
+          <AlertTriangle className="w-8 h-8" />
+        </div>
+        <div>
+          <h3 className="text-lg font-bold text-zinc-100 font-mono">
+            404 / Unplanned Beat Coverage ({sceneId})
+          </h3>
+          <p className="text-xs text-zinc-400 font-mono mt-1 max-w-lg leading-relaxed">
+            {error || `No coverage plan exists for beat ${sceneId}. A plan must be requested before coverage can be reviewed.`}
+          </p>
+          {activeProjectTitle && (
+            <div className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-mono text-zinc-400 bg-zinc-900 border border-zinc-800 px-3 py-1 rounded-full">
+              <span className="w-2 h-2 rounded-full bg-amber-500" />
+              <span>Target Project: <strong>{activeProjectTitle}</strong></span>
+            </div>
+          )}
+        </div>
+        <button
+          onClick={() => handleRedirectScene()}
+          disabled={redirecting}
+          className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-mono font-bold rounded-xl transition-all flex items-center gap-2 shadow-lg neon-glow-amber"
+        >
+          {redirecting ? (
+            <Sparkles className="w-4 h-4 animate-spin" />
+          ) : (
+            <Clapperboard className="w-4 h-4" />
+          )}
+          <span>POST /api/director/plan ({sceneId})</span>
+        </button>
       </div>
     );
   }
