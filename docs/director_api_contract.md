@@ -71,15 +71,26 @@ Static reference data. Fetch once, cache. Drives every dropdown.
     "motion_type": ["static","parallax","ai_video"]
   },
   "video_capabilities": [
-    { "key": "seedance_2_0", "label": "Seedance 2.0 (image-to-video)",
-      "allowed_durations": null, "min_seconds": 3, "max_seconds": 10,
-      "cost_per_second": 0.10, "needs_start_image": true,
-      "supports_reference_image": false, "supports_character_reference": false,
-      "supports_extend": true },
-    { "key": "veo_3_1", "allowed_durations": [4,6,8], "min_seconds": 4, "max_seconds": 8, … }
+    { "key": "veo_3_1", "label": "Google Veo 3.1 (image-to-video)",
+      "allowed_durations": [4.0, 6.0, 8.0],     // seconds, for display/routing
+      "duration_values": ["4s", "6s", "8s"],    // exact strings the API wants
+      "duration_wire_type": "string",           // "string" | "integer" — differs per model
+      "duration_default": "8s",
+      "min_seconds": 4.0, "max_seconds": 8.0,
+      "cost_per_second": 0.40, "verified": true,
+      "needs_start_image": true, "supports_reference_image": true,
+      "supports_character_reference": false, "supports_extend": false }
   ]
 }
 ```
+
+`video_capabilities` is generated from fal's own OpenAPI schemas by
+`scripts/sync_capabilities.py`, not hand-written. `verified: true` means the
+durations were read from the schema. **Do not compute legal durations in the
+frontend** — call the backend, or display `allowed_durations` as-is. The wire type
+differs per model (`wan_2_7` takes an integer, `veo_3_1` takes `"4s"`), and a
+hand-rolled copy of that logic is how a paid generation came back the wrong
+length.
 
 `vocabulary` is authoritative — **do not hardcode these lists in the frontend.**
 Hardcoded copies of backend registries have drifted twice in this codebase, once
