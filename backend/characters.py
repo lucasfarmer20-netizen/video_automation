@@ -39,8 +39,25 @@ from . import config
 from .assets import NANO_ENDPOINT, _save_references, load_references
 
 DEFAULT_VARIATIONS = 3
-CHARACTERS_CONFIG = config.CHARACTERS_CONFIG
-SHEETS_DIR = config.REFERENCES_DIR / "sheets"  # candidate sheets (pre-lock)
+# NOT captured at import. config.CHARACTERS_CONFIG and REFERENCES_DIR are
+# rebound by set_active_manifest on every project switch, so a module-level
+# snapshot pins this module to whichever project happened to be active when it
+# first imported -- on Cloud Run, the container's own /app copy.
+#
+# That is not a cosmetic bug. Heney's structural anchor was written through here,
+# reported as saved to /gcs/calluses/MichaelHeney/characters.json (the endpoint
+# printed config.CHARACTERS_CONFIG, which it was NOT writing to), read back
+# successfully from the same stale path, and then vanished on the next container
+# restart because /app is ephemeral. Spike A refused to run against a project
+# whose characters.json had never contained the anchor at all.
+
+def characters_config() -> Path:
+    """The active project's characters.json, resolved per call."""
+    return config.CHARACTERS_CONFIG
+
+
+def sheets_dir() -> Path:
+    return config.REFERENCES_DIR / "sheets"
 
 # Claude system prompt for distilling a style-agnostic Structural Feature Anchor.
 ANCHOR_SYSTEM = (
@@ -70,13 +87,16 @@ CHAR_SHEET_INSTRUCTION = (
 
 
 def load_characters() -> dict:
-    if CHARACTERS_CONFIG.exists():
-        return json.loads(CHARACTERS_CONFIG.read_text(encoding="utf-8"))
+    p = characters_config()
+    if p.exists():
+        return json.loads(p.read_text(encoding="utf-8"))
     return {}
 
 
 def save_characters(chars: dict) -> None:
-    CHARACTERS_CONFIG.write_text(
+    p = characters_config()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
         json.dumps(chars, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
 
@@ -169,7 +189,7 @@ def generate_sheet(name: str, spec: dict, n: int = DEFAULT_VARIATIONS) -> list[s
         )
         images = result.get("images") or []
         if images:
-            dest = SHEETS_DIR / name / f"cand_{i}.png"
+            dest = sheets_dir() / name / f"cand_{i}.png"
             _download(images[0]["url"], dest)
             paths.append(str(dest.relative_to(config.ROOT)).replace("\\", "/"))
     return paths
@@ -201,7 +221,7 @@ def lock_sheet(name: str, candidate_index: int) -> str:
     and (re)registers it in ``references.json``, replacing any cached URLs so the
     new anchor is re-uploaded on the next assets run.
     """
-    src = SHEETS_DIR / name / f"cand_{candidate_index}.png"
+    src = sheets_dir() / name / f"cand_{candidate_index}.png"
     if not src.exists():
         raise FileNotFoundError(src)
     dest = config.REFERENCES_DIR / f"char_{name}.png"
@@ -225,7 +245,7 @@ def _main() -> None:
     if args.anchors:
         res = generate_all_anchors(only=args.name)
         done = sum(1 for v in res.values() if v)
-        print(f"\nDrafted {done}/{len(res)} anchor(s) into {CHARACTERS_CONFIG.name}. Review/edit them there.")
+        print(f"\nDrafted {done}/{len(res)} anchor(s) into {characters_config().name}. Review/edit them there.")
     if args.sheets:
         result = generate_all(only=args.name, n=args.variations)
         total = sum(len(v) for v in result.values())
