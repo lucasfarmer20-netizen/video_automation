@@ -153,6 +153,12 @@ export default function WorkspacePage() {
       if (data.ok) {
         setActiveProject(data);
         setActiveChannel(data.project.channel);
+        if (data.project?.shots && data.project.shots.length > 0) {
+          const firstBeatId = data.project.shots[0].scene_id;
+          if (firstBeatId) {
+            setSelectedSceneId((prev) => (prev.startsWith("scene_") ? firstBeatId : prev));
+          }
+        }
       }
       // Metadata is a sidecar file, not part of the manifest, so it is fetched
       // separately and may simply not exist yet.
@@ -1107,7 +1113,7 @@ Moved to: ${res.moved_to}`);
                   onSendShotChat={handleSendShotChat}
                   onApplyRefinedPrompts={handleApplyRefinedPrompts}
                   onOpenDirectorWorkspace={(scId) => {
-                    setSelectedSceneId("scene_04");
+                    if (scId) setSelectedSceneId(scId);
                     setActiveView("director");
                   }}
                   mediaUrl={mediaUrl}
@@ -1124,8 +1130,8 @@ Moved to: ${res.moved_to}`);
             estimatedCost={3.82}
             onClose={() => setLockedModalBeat(null)}
             onRegenerateCoverage={() => {
+              if (lockedModalBeat) setSelectedSceneId(lockedModalBeat);
               setLockedModalBeat(null);
-              setSelectedSceneId("scene_04");
               setActiveView("director");
             }}
             onReplaceWithSingleBeat={() => {
