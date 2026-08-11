@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from . import config
@@ -47,13 +48,43 @@ def _client():
 
 
 def _write_stream(stream, dest: Path) -> Path:
-    """Write an ElevenLabs byte-iterator response to ``dest``."""
+    """Write an ElevenLabs byte-iterator response to ``dest``, atomically.
+
+    Streaming straight into the final path meant a first-chunk error or a
+    container reclaim mid-stream left a truncated or zero-byte mp3 at exactly the
+    name every later run tests with ``.exists()`` -- so the beat reported
+    "narration exists -- skipping" forever, and nothing but a manual delete
+    recovered it. Downstream that poison file is worse than a missing one:
+    ``sync_durations`` raises out of librosa and abandons the whole pass, and
+    ``build_preview`` takes the entire preview down over one beat.
+
+    ``generate_sfx_fal`` already learned this (see the unlink in its handler); the
+    narration path never got it.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with open(dest, "wb") as fh:
-        for chunk in stream:
-            if chunk:
-                fh.write(chunk)
+    tmp = dest.with_name(dest.name + ".partial")
+    try:
+        with open(tmp, "wb") as fh:
+            for chunk in stream:
+                if chunk:
+                    fh.write(chunk)
+        if tmp.stat().st_size == 0:
+            raise RuntimeError("the voice stream produced no audio")
+        # os.replace is atomic within a directory, so a reader never sees a
+        # half-written mp3 under the real name.
+        os.replace(tmp, dest)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return dest
+
+
+def _has_audio(p: Path) -> bool:
+    """A file counts as present only if it has bytes in it."""
+    try:
+        return p.is_file() and p.stat().st_size > 0
+    except OSError:
+        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -84,7 +115,7 @@ def synthesize_narration(storyboard: Storyboard | None = None,
         if not text:
             continue
         dest = narr_dir / f"{shot.scene_id}.mp3"
-        if dest.exists():
+        if _has_audio(dest):
             print(f"{shot.scene_id}: narration exists — skipping.")
             out.append(dest)
             continue

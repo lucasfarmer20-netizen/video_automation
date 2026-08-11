@@ -1082,7 +1082,7 @@ async def delete_project(request: Request):
             trash.mkdir(parents=True, exist_ok=True)
             stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
             dest = trash / f"{target.parent.name}__{target.name}__{stamp}"
-            shutil.move(str(target), str(dest))
+            _move_tree(target, dest)
             moved_to = _safe_rel_path(dest)
 
         # Never leave the studio pointed at a directory that no longer exists.
@@ -1433,15 +1433,20 @@ async def reset_project_assets(request: Request):
         bucket = trash / f"{project_dir.name}__reset_{stamp}"
         bucket.mkdir(parents=True, exist_ok=True)
 
-        moved = []
+        moved: list[str] = []
+        failed: list[str] = []
         for t in targets:
             if not t.is_dir():
                 continue
             try:
-                shutil.move(str(t), str(bucket / t.name))
+                _move_tree(t, bucket / t.name)
                 moved.append(str(t))
             except Exception as exc:  # noqa: BLE001
-                log_job("reset", f"could not move {t}: {exc}")
+                # log_job("reset", ...) dropped this line entirely -- no job named
+                # "reset" is ever registered -- so the move failed, nothing was
+                # moved, and the response still reported moved_to. Collect the
+                # failures and return them.
+                failed.append(f"{t.name}: {exc}")
 
         # Clear the manifest fields that point at what just moved, so the
         # storyboard does not reference media that is no longer there.
@@ -1459,8 +1464,11 @@ async def reset_project_assets(request: Request):
             sb.storyboard_approved = False
         save_current_project(sb)
 
-        return {"ok": True, "scopes": scopes, "moved_to": str(bucket),
-                "moved": moved, "files": counted,
+        # Report what was verified, not what was attempted. This returned
+        # moved_to unconditionally, so a reset that moved nothing read as success.
+        return {"ok": not failed, "scopes": scopes,
+                "moved_to": str(bucket) if moved else None,
+                "moved": moved, "failed": failed, "files": counted,
                 "storyboard_approved": sb.storyboard_approved,
                 "note": "Media was moved to _trash, not deleted. The script, beats "
                         "and narration text are untouched."}
@@ -2854,6 +2862,41 @@ async def upload_shot_clip(scene_id: str, file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 
+def _move_tree(src: Path, dst: Path) -> None:
+    """Move a directory on the gcsfuse mount.
+
+    Plain ``shutil.move`` cannot work here. ``os.rename`` is unsupported for
+    directories on the mount, so shutil falls back to ``copytree`` with the default
+    ``copy2`` -- which calls ``copystat`` -- and gcsfuse rejects chmod/utime with
+    ``[Errno 1] Operation not permitted``. ``copytree`` then raises before
+    ``rmtree(src)`` runs, so the caller sees a 500, the project is still there, and
+    a full byte-for-byte copy has been left behind in ``_trash``, which
+    ``_scan_projects`` hides. Every retry doubled the storage silently.
+
+    ``copyfile`` copies bytes without touching metadata, which is the operation the
+    mount actually supports. Same reason ``director.py`` and ``save_shot_assets``
+    use it.
+    """
+    shutil.move(str(src), str(dst), copy_function=shutil.copyfile)
+
+
+def require_paid_gate(sb, what: str = "render") -> None:
+    """Refuse a paid call until the storyboard is approved.
+
+    CLAUDE.md makes Gate 1 non-bypassable: approval is where the human allocates
+    the render budget, so nothing paid may run before it. The check existed in
+    three handlers and was missing from the fourth -- which is the failure mode of
+    attaching a gate to routes rather than to the spend. One helper, so a new route
+    cannot regress it by omission.
+    """
+    if not getattr(sb, "storyboard_approved", False):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Approve the storyboard first — that is where the {what} "
+                   f"budget is allocated.",
+        )
+
+
 @app.post("/api/shot/{scene_id}/generate_video")
 async def generate_shot_video(scene_id: str, request: Request):
     try:
@@ -2861,7 +2904,13 @@ async def generate_shot_video(scene_id: str, request: Request):
         shot = next((s for s in sb.shots if s.scene_id == scene_id), None)
         if not shot:
             raise HTTPException(status_code=404, detail="Scene not found")
-            
+
+        # Gate 1, before anything spends. This route reached fal with no approval
+        # check at all -- the batch render, the rough cut and director coverage
+        # each carry one, and this fourth path to Tier C simply never got it. It
+        # also buys a $0.15 still on the way down, so the check has to come before
+        # the auto-draft below, not merely before the video call.
+        require_paid_gate(sb, "render")
         config.require_for("video")
         data = await request.json()
         video_model_key = data.get("video_model") or getattr(shot, "video_model", None) or getattr(sb.render, "video_model", "seedance_2_0")
@@ -3597,8 +3646,7 @@ def run_assemble_endpoint(stage: str, force_paid: bool = False):
                     )
                 
         elif stage == "render":
-            if not sb.storyboard_approved:
-                return JSONResponse(status_code=400, content={"ok": False, "error": "Approve the storyboard first."})
+            require_paid_gate(sb, "render")
             def fn():
                 generate_fal_and_render(sb, force_paid=force_paid)
                 # Auto-generate ambient SFX for all beats in the batch render pass
