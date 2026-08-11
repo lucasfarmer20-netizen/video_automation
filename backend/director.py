@@ -493,11 +493,39 @@ def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
 
     from . import assets
 
-    key = (ds.backend or getattr(sb.render, "video_model", "") or "seedance_2_0")
-    endpoint = assets.resolve_video_backend(key)["endpoint"]
+    from . import capabilities
 
     want = float(ds.duration)
-    dur_int = max(3, min(10, int(round(want))))
+
+    # Go through the router rather than trusting the backend recorded at plan
+    # time. This function previously resolved the model itself and applied its own
+    # max(3, min(10, ...)) -- the exact hardcoded clamp Spike C exists to replace --
+    # so the capability table was consulted when PLANNING and ignored when
+    # GENERATING. That is how a 3.34s gestural shot asked wan_2_7 for 3s, received
+    # a fixed 5s clip, and then could not be trimmed.
+    routed = capabilities.resolve(
+        {"duration": want, "gestural": ds.gestural},
+        prefer=[ds.backend] if ds.backend else None)
+    if not routed.get("backend") and ds.backend:
+        # The recorded model cannot serve this shot any more -- usually because a
+        # capability entry was corrected after the plan was written. Re-resolve
+        # across everything rather than failing on a stale choice.
+        routed = capabilities.resolve({"duration": want, "gestural": ds.gestural})
+    if not routed.get("backend"):
+        raise PlanError(
+            f"{ds.id}: no configured model can produce {want:.2f}s"
+            + (" without trimming a gesture" if ds.gestural else "")
+            + f". {routed.get('reason', '')}")
+
+    key = routed["backend"]
+    endpoint = assets.resolve_video_backend(key)["endpoint"]
+    dur_int = int(routed["generate_seconds"])
+    if key != (ds.backend or key):
+        log(f"  routed {ds.id} to {key} (plan said {ds.backend!r})")
+    ds.backend = key
+    for c in routed.get("constraints") or []:
+        if c not in ds.constrained_by:
+            ds.constrained_by.append(c)
 
     prompt = ds.motion_prompt or f"Cinematic motion, authentic detail, {ds.prompt}"
     if f"{dur_int}s" not in prompt and "second" not in prompt:

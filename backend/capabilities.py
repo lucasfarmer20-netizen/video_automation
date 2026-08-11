@@ -43,6 +43,10 @@ from . import assets
 # which is the permissive default: better to attempt a generation and get a clear
 # API error than to silently exclude a model because nobody filled in a row.
 
+# `verified: True` means the durations were observed from a real generation.
+# Everything else is inferred from documentation or assumed, and assumption is
+# exactly how a 3s request came back as a 5s clip and failed a gestural shot.
+# Correct an entry the moment a run contradicts it.
 CONTINUOUS: dict = {
     "allowed_durations": None,     # None => any integer length in [min, max]
     "min_seconds": 3,
@@ -51,6 +55,7 @@ CONTINUOUS: dict = {
     "needs_start_image": True,
     "supports_reference_image": False,
     "supports_character_reference": False,
+    "verified": False,
 }
 
 VIDEO_CAPS: dict[str, dict] = {
@@ -90,12 +95,17 @@ VIDEO_CAPS: dict[str, dict] = {
         "supports_character_reference": True,
     },
     "wan_2_7": {
-        "allowed_durations": None,
-        "min_seconds": 3, "max_seconds": 5,
+        # MEASURED: asked for 3s, got exactly 5.00s. This entry previously claimed
+        # continuous 3-5s, which was a guess, and the router duly picked it for a
+        # 3.34s gestural shot that then could not be trimmed. Treat as fixed 5s
+        # until something contradicts that.
+        "allowed_durations": [5],
+        "min_seconds": 5, "max_seconds": 5,
         "cost_per_second": 0.06,
         "needs_start_image": True,
         "supports_reference_image": False,
         "supports_character_reference": False,
+        "verified": True,
     },
     "luma_dream_machine": {
         "allowed_durations": None,
