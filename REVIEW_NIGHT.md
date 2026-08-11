@@ -129,10 +129,16 @@ the Gate-1 screen against what actually lands.
 
 ## Known flaky test
 
-`tests/test_director.py::test_gestural_*` fails intermittently with
-`x264 [error]: malloc of size 3325760 failed`. It is memory pressure from running
-four agent workflows against this box overnight, it reproduces on unmodified
-HEAD, and it is not a defect. `-threads 1` does not help; `-preset ultrafast`
+`tests/test_director.py::test_gestural_*` fails with
+`x264 [error]: malloc of size 3325760 failed`. This is memory exhaustion on the
+workstation, not a defect: by the end of the night `Get-CIMInstance` itself was
+returning *"The paging file is too small for this operation to complete"*. The
+cause is the four agent review workflows run against this box overnight. It
+reproduces on unmodified HEAD and the suite passes clean when memory is
+available (117/117 observed several times earlier).
+
+**Re-run `python -m pytest tests/ -q` after a reboot before reading anything into
+it.** `-threads 1` does not help; `-preset ultrafast`
 does but shifts output by ~2 frames and breaks the duration assertions the helper
 exists to support, so neither was kept. It should stop once the box is idle.
 
