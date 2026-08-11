@@ -1762,8 +1762,52 @@ async def critique_director_scene(request: Request):
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
 
 
+@app.post("/api/director/lock_scene")
+async def lock_director_scene(request: Request):
+    """Lock every beat in a scene at once. {"beats": [...]}
+
+    Validates all of them first and locks none if any fails — a half-locked scene
+    is worse than an unlocked one, because the render path would then skip some
+    beats and cover others.
+    """
+    try:
+        data = await request.json()
+        ids = [str(b) for b in (data.get("beats") or []) if b]
+        if not ids:
+            raise HTTPException(status_code=400, detail="beats[] is required")
+        sb = get_current_project()
+        plans, problems = [], []
+        for bid in ids:
+            plan = director.load_plan(bid)
+            beat = next((x for x in sb.shots if x.scene_id == bid), None)
+            if not plan or beat is None:
+                problems.append(f"{bid}: no plan")
+                continue
+            if plan.status == "compiling":
+                problems.append(f"{bid}: currently compiling")
+                continue
+            try:
+                director.validate(plan, beat)
+                plans.append(plan)
+            except director.PlanError as exc:
+                problems.append(str(exc))
+        if problems:
+            return JSONResponse(status_code=400,
+                                content={"ok": False, "error": "nothing was locked",
+                                         "problems": problems})
+        for plan in plans:
+            plan.status = "locked"
+            director.save_plan(plan)
+        return {"ok": True, "locked": [p.beat_id for p in plans],
+                "estimated_cost": planner.scene_summary(ids)["estimated_cost"]}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
 @app.get("/api/director/scene")
-def get_director_scene(beats: str = ""):
+def get_director_scene(beats: str = "", tier: str = ""):
     """Everything the studio needs for a scene: plans, cost, warnings, status.
 
     `beats` is a comma-separated list, e.g. ?beats=s004,s005
@@ -1776,13 +1820,25 @@ def get_director_scene(beats: str = ""):
     out = []
     for bid in ids:
         p = director.load_plan(bid)
-        out.append({
+        entry = {
             "beat_id": bid,
             "beat_duration": durations.get(bid),
             "plan": asdict(p) if p else None,
             "coverage_total": round(p.total_duration(), 3) if p else 0.0,
-        })
-    return {"ok": True, "beats": out, "summary": planner.scene_summary(ids)}
+        }
+        if p:
+            # Tier is computed here, never in the client. See director.shot_tier.
+            entry["triage"] = director.triage(p)
+            by_id = {ds.id: director.shot_tier(ds, p.warnings) for ds in p.coverage}
+            for shot in entry["plan"]["coverage"]:
+                shot.update(by_id.get(shot["id"], {}))
+            if tier == "needs_review":
+                keep = set(entry["triage"]["needs_review"])
+                entry["plan"]["coverage"] = [c for c in entry["plan"]["coverage"]
+                                             if c["id"] in keep]
+        out.append(entry)
+    return {"ok": True, "beats": out, "summary": planner.scene_summary(ids),
+            "tier": tier or "all"}
 
 
 @app.post("/api/director/lock/{beat_id}")

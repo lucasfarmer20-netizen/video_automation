@@ -167,6 +167,66 @@ class CoveragePlan:
         return sum(s.duration for s in self.coverage)
 
 
+
+# --- review triage --------------------------------------------------------------
+#
+# Reviewing 158 shots one at a time is not a workflow, so the frontend triages
+# them. That triage MUST be computed here, once. A client-side copy of this rule
+# would drift from the server's, and this codebase has already shipped two
+# registries duplicated into the UI that quietly disagreed with the backend.
+
+TIER_STANDARD = 1     # free, unremarkable, safe to accept in bulk
+TIER_CHECK = 2        # spends money, or a technical limit changed the shot
+TIER_CREATIVE = 3     # needs a human's taste, not their approval
+
+
+def shot_tier(ds: "DirectorShot", warnings: list[dict] | None = None) -> dict:
+    """Which review tier a shot falls in, and why.
+
+    The reason is returned alongside the number because "tier 2" on its own tells
+    a reviewer nothing, and a tier they cannot interrogate is one they will learn
+    to click past.
+    """
+    flagged = [w for w in (warnings or []) if w.get("shot_id") == ds.id]
+    if ds.identity_critical:
+        return {"tier": TIER_CREATIVE, "reason": "identity anchor — pick the take"}
+    if ds.face_visibility in ("moderate", "high"):
+        return {"tier": TIER_CREATIVE,
+                "reason": f"face visible ({ds.face_visibility}) and identity is unmeasured"}
+    if flagged:
+        return {"tier": TIER_CREATIVE,
+                "reason": flagged[0].get("kind") or "flagged by the critic"}
+    if ds.constrained_by:
+        return {"tier": TIER_CHECK,
+                "reason": "changed by a technical limit: " + ", ".join(ds.constrained_by)}
+    if ds.motion_type == "ai_video":
+        return {"tier": TIER_CHECK, "reason": "paid generation"}
+    return {"tier": TIER_STANDARD, "reason": "standard free coverage"}
+
+
+def triage(plan: "CoveragePlan") -> dict:
+    """Tier every shot in a plan, with the cost sitting in each tier.
+
+    Cost per tier matters more than the counts. Free coverage is the *largest*
+    line item in a film -- every parallax shot still needs a still -- so a UI that
+    labels tier 1 "$0, no clicks" hides the majority of the spend behind the
+    reassuring colour.
+    """
+    out = {TIER_STANDARD: [], TIER_CHECK: [], TIER_CREATIVE: []}
+    for ds in plan.coverage:
+        t = shot_tier(ds, plan.warnings)
+        out[t["tier"]].append((ds, t["reason"]))
+    return {
+        "tiers": {
+            str(k): {
+                "shots": len(v),
+                "cost": round(sum(ds.estimated_cost for ds, _ in v), 2),
+                "ids": [ds.id for ds, _ in v],
+            } for k, v in out.items()
+        },
+        "needs_review": [ds.id for ds, _ in out[TIER_CHECK] + out[TIER_CREATIVE]],
+    }
+
 # --- persistence ---------------------------------------------------------------
 #
 # One file per beat, outside the manifest. Small, independently writable, and
