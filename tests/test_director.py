@@ -255,3 +255,35 @@ def test_fit_refuses_to_trim_a_gesture(tmp_path):
     with pytest.raises(PlanError, match="gestural"):
         director.fit_clip(c, 3.2, gestural=True, log=lambda m: None)
     assert abs(director.probe_seconds(c) - 4.0) < 0.06
+
+
+# --- Gate 1: coverage must not be a back door to the paid tier ------------------
+
+def _sb(approved: bool):
+    from backend.manifest import Storyboard, RenderConfig
+    return Storyboard(id="p", title="T", shots=[_beat(27.0)],
+                      render=RenderConfig(), storyboard_approved=approved)
+
+
+def test_paid_coverage_refused_until_the_storyboard_is_approved(tmp_path, monkeypatch):
+    """Coverage is a second route to Tier C and must honour the same gate."""
+    monkeypatch.setattr(director.config, "MANIFEST_PATH", tmp_path / "m.json")
+    plan = _plan([27.0])
+    plan.coverage[0].motion_type = "ai_video"
+    director.save_plan(plan)
+    with pytest.raises(PlanError, match="not approved"):
+        director.compile_coverage(plan, _sb(approved=False), tmp_path / "render",
+                                  log=lambda m: None)
+
+
+def test_free_coverage_compiles_before_approval(tmp_path, monkeypatch):
+    """Static and parallax cost nothing, so they stay open pre-gate."""
+    monkeypatch.setattr(director.config, "MANIFEST_PATH", tmp_path / "m.json")
+    plan = _plan([27.0])
+    plan.coverage[0].motion_type = "parallax"
+    director.save_plan(plan)
+    # Fails later for want of media, but NOT on the approval check.
+    with pytest.raises(Exception) as exc:
+        director.compile_coverage(plan, _sb(approved=False), tmp_path / "render",
+                                  log=lambda m: None)
+    assert "not approved" not in str(exc.value)

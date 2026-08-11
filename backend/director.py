@@ -579,6 +579,26 @@ def compile_coverage(plan: CoveragePlan, sb: Storyboard, render_dir: Path,
 
     validate(plan, beat)
 
+    # Gate 1. Coverage is a new route to the paid video tier, and it was walking
+    # straight past the approval gate that the ordinary render path honours:
+    # compile_coverage calls generate_paid_clip for any ai_video shot, and nothing
+    # here consulted storyboard_approved. CLAUDE.md is unambiguous that Tier C is
+    # unreachable until the storyboard is approved, because approval is where the
+    # human allocates the render budget -- and a coverage plan that spends on
+    # generated video before that is exactly the spend the gate exists to stop.
+    #
+    # Free tiers stay open. Static and parallax cost nothing, and drafts are
+    # explicitly a pre-gate activity, so an unapproved beat can still be assembled
+    # locally for review.
+    paid = [s.id for s in plan.coverage if s.motion_type == "ai_video"]
+    if paid and not getattr(sb, "storyboard_approved", False):
+        raise PlanError(
+            f"{plan.beat_id}: {len(paid)} shot(s) want paid video ({paid}) but the "
+            f"storyboard is not approved. Approve it first — that is where the "
+            f"render budget is allocated. Static and parallax coverage can compile "
+            f"before approval."
+        )
+
     # Queue behind any other compile. See _COMPILE_LOCK.
     if not _COMPILE_LOCK.acquire(blocking=False):
         log("  another beat is compiling — waiting for it to finish...")
