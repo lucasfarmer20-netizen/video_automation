@@ -2122,6 +2122,16 @@ async def patch_director_shot(shot_id: str, request: Request):
             if not routed.get("backend"):
                 if strict:
                     return routed
+                # Clear the stale routing too. Leaving backend and estimated_cost
+                # as they were meant planner.scene_summary went on summing a price
+                # for a shot that can no longer be generated at that length, into
+                # the total on the screen where the human approves the budget --
+                # and director.validate does not check routability, so the plan
+                # locked clean and only failed at compile, after approval.
+                target_ds.backend = ""
+                target_ds.estimated_cost = capabilities.COST_PER_IMAGE
+                if "no_legal_backend" not in target_ds.constrained_by:
+                    target_ds.constrained_by.append("no_legal_backend")
                 notes.append(f"{target_ds.id}: now {target_ds.duration:.2f}s, which "
                              f"no model can generate — change its length or drop it "
                              f"to a free tier before locking")
@@ -2144,10 +2154,16 @@ async def patch_director_shot(shot_id: str, request: Request):
 
         # Re-price after BOTH kinds of edit, and for every sibling the rebalance
         # moved -- their durations changed, so their prices did too.
+        # Strict only when the body actually asked for something that changes
+        # routing. Keying on identity alone meant that once a rebalance had left
+        # THIS shot at an unroutable length, every later patch to it -- selecting a
+        # take, editing a prompt -- 400'd citing a duration the user never typed,
+        # which would have killed the Take Selector all over again.
+        router_edit = any(k in data for k in ("duration", "motion_type", "gestural"))
         touched = [ds] + [o for o in plan.coverage
                           if o.id != ds.id and o.id in rebalanced]
         for t in touched:
-            failed = _reprice(t, strict=(t is ds))
+            failed = _reprice(t, strict=(t is ds and router_edit))
             if failed is not None:
                 return JSONResponse(status_code=400, content={
                     "ok": False,
@@ -2166,7 +2182,16 @@ async def patch_director_shot(shot_id: str, request: Request):
                 director.validate(plan, beat)
             except director.PlanError as exc:
                 problems.append(str(exc))
-        return {"ok": True, "shot": asdict(ds), "notes": notes,
+        shot_out = asdict(ds)
+        # The list endpoint resolves this; the patch response did not, so
+        # setSelectedShot(res.shot) replaced a shot that had a thumbnail with one
+        # that did not and the image went blank after every edit.
+        _vars = ds.draft_variations or []
+        _i = ds.chosen_variation
+        shot_out["thumbnail_url"] = (
+            _vars[_i] if isinstance(_i, int) and 0 <= _i < len(_vars)
+            else (_vars[0] if _vars else ""))
+        return {"ok": True, "shot": shot_out, "notes": notes,
                 "problems": problems,
                 "coverage_total": round(plan.total_duration(), 3),
                 "beat_duration": float(beat.camera.duration) if beat else None}

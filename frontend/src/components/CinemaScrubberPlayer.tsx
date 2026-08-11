@@ -54,9 +54,11 @@ export default function CinemaScrubberPlayer({
   };
 
   const getThumbnailSrc = (shot: DirectorShot) => {
-    if (shot.chosen_variation && shot.draft_variations[shot.chosen_variation - 1]) {
-      return mediaUrl(shot.draft_variations[shot.chosen_variation - 1]);
-    }
+    // chosen_variation is 0-BASED, and the server already resolves it into
+    // thumbnail_url (main.py). Two bugs lived in the branch this replaces: it
+    // subtracted 1, so it showed the neighbouring take on the Gate-1 review
+    // surface; and `if (shot.chosen_variation && ...)` treats a legitimate take 0
+    // as falsy, so the first take never resolved at all.
     if (shot.thumbnail_url) return mediaUrl(shot.thumbnail_url);
     if (shot.clip) return mediaUrl(shot.clip);
     return null;

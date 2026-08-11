@@ -181,3 +181,73 @@ def test_a_free_shot_is_not_charged_a_video_rate_after_a_resize(plan):
     after = director.load_plan("s011").coverage[0]
     assert after.backend == ""
     assert after.estimated_cost == pytest.approx(0.15, abs=0.001)
+
+
+def test_a_non_routing_edit_is_not_refused_for_a_stale_duration(plan):
+    """Strictness keyed on identity, not on what the body asked for. Once a
+    rebalance had left this shot at an unroutable length, selecting a take or
+    editing a prompt 400'd citing a duration the user never typed -- killing the
+    Take Selector by a different route."""
+    p = director.load_plan("s011")
+    p.coverage[0].motion_type = "ai_video"
+    # 1.5s gestural is genuinely unroutable: wan_2_7 has the lowest floor at 2.0s
+    # and gestural forbids rounding up. 2.0 -- which this test first used -- IS
+    # wan's floor and routes fine, so the test passed against the unfixed code.
+    p.coverage[0].camera.duration = 1.5
+    p.coverage[0].gestural = True
+    p.coverage[0].draft_variations = ["a.png", "b.png", "c.png"]
+    director.save_plan(p)
+
+    for body in ({"chosen_variation": 1}, {"prompt": "a different subject"},
+                 {"identity_critical": True}, {"shot_size": "cu"}):
+        r = plan.post("/api/director/shot/s011.01", json=body)
+        assert r.status_code == 200, f"{body} -> {r.status_code} {r.text[:140]}"
+
+
+def test_a_routing_edit_on_an_unproducible_length_is_still_refused(plan):
+    """The strictness is worth keeping where it belongs."""
+    plan.post("/api/director/shot/s011.01", json={"motion_type": "ai_video"})
+    p = director.load_plan("s011")
+    p.coverage[0].gestural = True
+    director.save_plan(p)
+    r = plan.post("/api/director/shot/s011.01", json={"duration": 1.4})
+    assert r.status_code == 400
+    assert "no model" in (r.json().get("error") or "")
+
+
+def test_an_unroutable_sibling_does_not_keep_a_price_it_cannot_be_made_at(plan):
+    """planner.scene_summary sums estimated_cost into the Gate-1 total, and
+    director.validate does not check routability -- so a stale price on an
+    ungeneratable shot was approved as budget and only failed at compile."""
+    p = director.load_plan("s011")
+    for c in p.coverage:
+        c.motion_type = "ai_video"
+    p.coverage[1].gestural = True
+    p.coverage[1].backend = "wan_2_7"
+    p.coverage[1].estimated_cost = 0.51
+    director.save_plan(p)
+
+    # Grow shot 1 so the rebalance drives the sibling under wan_2_7's 2.0s floor,
+    # the lowest of any configured model. Asserted, not `if`-guarded: a setup that
+    # quietly fails to reach the state under test is how a vacuous test happens.
+    plan.post("/api/director/shot/s011.01", json={"duration": 10.8})
+    sib = director.load_plan("s011").coverage[1]
+    assert sib.duration < 2.0, (
+        f"setup did not reach the unroutable state (sibling at {sib.duration}s)")
+    assert sib.backend == "", "a shot no model can make must not name one"
+    assert sib.estimated_cost <= 0.16, (
+        f"it must not still be priced at ${sib.estimated_cost} for a length it "
+        f"cannot be generated at — that figure is summed into the Gate-1 total")
+    assert "no_legal_backend" in sib.constrained_by
+
+
+def test_the_patch_response_carries_the_resolved_thumbnail(plan):
+    """The list endpoint resolves thumbnail_url; the patch response did not, so
+    setSelectedShot(res.shot) blanked the image after every edit."""
+    p = director.load_plan("s011")
+    p.coverage[0].draft_variations = ["a.png", "b.png"]
+    p.coverage[0].chosen_variation = 1
+    director.save_plan(p)
+    r = plan.post("/api/director/shot/s011.01", json={"shot_size": "cu"})
+    assert r.status_code == 200
+    assert r.json()["shot"]["thumbnail_url"] == "b.png"
