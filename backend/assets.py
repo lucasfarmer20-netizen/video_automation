@@ -825,7 +825,7 @@ def apply_strategy(name: str, base_prompt: str) -> str:
 
 def generate_for_shot(
     shot: Shot, n: int, backend: str = DEFAULT_BACKEND, lora: dict | None = None,
-    render=None, log=print,
+    render=None, log=print, subject_url: str | None = None,
 ) -> list[str]:
     """Generate + download n draft variations for one beat; record their paths.
 
@@ -841,7 +841,8 @@ def generate_for_shot(
         all_rel_paths = []
         for b in backends:
             try:
-                paths = generate_for_shot(shot, n, backend=b, lora=lora, render=render, log=log)
+                paths = generate_for_shot(shot, n, backend=b, lora=lora, render=render,
+                                          log=log, subject_url=subject_url)
                 all_rel_paths.extend(paths)
             except Exception as e:
                 log(f"Error generating for backend {b}: {e}")
@@ -870,7 +871,8 @@ def generate_for_shot(
             prompt = apply_strategy(name, base_prompt)
             try:
                 urls, sent, softened = _generate_urls(
-                    shot, prompt, 1, backend, lora, render, log=log)
+                    shot, prompt, 1, backend, lora, render, log=log,
+                    subject_url=subject_url)
             except Exception as exc:  # noqa: BLE001
                 # One strategy failing must not cost the beat its other takes.
                 log(f"  !! variant {slot} ({name}) failed: {exc}")
@@ -879,7 +881,8 @@ def generate_for_shot(
                 made.append((name, sent, softened, url))
     else:
         urls, sent, softened = _generate_urls(
-            shot, base_prompt, n, backend, lora, render, log=log)
+            shot, base_prompt, n, backend, lora, render, log=log,
+            subject_url=subject_url)
         for url in urls:
             made.append(("baseline", sent, softened, url))
 
@@ -908,7 +911,8 @@ def generate_for_shot(
 
 
 def _generate_urls(shot: Shot, prompt: str, n: int, backend: str,
-                   lora: dict | None, render, log=print) -> tuple[list[str], str, list[str]]:
+                   lora: dict | None, render, log=print,
+                   subject_url: str | None = None) -> tuple[list[str], str, list[str]]:
     """One generation request. Returns (urls, prompt actually sent, softenings).
 
     Split out of ``generate_for_shot`` so a beat can be produced either as a single
@@ -920,8 +924,12 @@ def _generate_urls(shot: Shot, prompt: str, n: int, backend: str,
         # optionally conditioned on the project's global frame reference.
         negative, _steps, _guidance, _nag = _resolve_render(render)
         frame_url = (getattr(render, "reference_image_url", "") or "").strip() or None
+        # A likeness reference wins over the frame reference: Spike A showed text
+        # anchors alone produce a different person every take, and there is no
+        # point preserving a page border while losing the face.
         return _with_softening(
-            lambda p: _generate_nano2(p, n, negative, frame_url), prompt, log)
+            lambda p: _generate_nano2(p, n, negative, frame_url,
+                                      subject_url=subject_url), prompt, log)
     if backend == "flux-cfg":
         # medium-leading positive prompt + NAG negative prompt (cheaper fallback).
         negative, steps, guidance, nag = _resolve_render(render)

@@ -618,6 +618,32 @@ def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
     return dest
 
 
+
+def character_in_shot(ds: "DirectorShot") -> tuple[str, str]:
+    """Which known character this shot shows, and their likeness reference.
+
+    Detected by name in the subject or prompt, and by explicit
+    reference_dependencies. Spike A measured the consequence of getting this
+    wrong: with a likeness reference every take is the same documented man;
+    without one, four takes give four different strangers. So a shot that names a
+    character and does not carry their reference is not slightly worse, it is a
+    different person.
+    """
+    try:
+        from . import characters
+        known = characters.load_characters()
+    except Exception:  # noqa: BLE001
+        return "", ""
+    haystack = f"{ds.subject} {ds.prompt}".lower()
+    for name, spec in (known or {}).items():
+        named = name.lower() in haystack or name in (ds.reference_dependencies or [])
+        if not named:
+            continue
+        ref = (spec or {}).get("reference_image") or ""
+        local = config.resolve_media(ref) if ref else None
+        return name, (str(local) if local else "")
+    return "", ""
+
 def _synthetic_shot(ds: DirectorShot, beat: Shot) -> Shot:
     """A throwaway ``Shot`` standing in for one Director Shot.
 
@@ -751,6 +777,23 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                 from . import assets, motion   # lazy: only generated shots need these
 
                 synth = _synthetic_shot(ds, beat)
+
+                # A shot showing a known character gets their likeness, and their
+                # anchor text via Shot.references -> _character_clause.
+                who, ref_path = character_in_shot(ds)
+                subject_url = ""
+                if who:
+                    synth.references = list(dict.fromkeys(list(synth.references) + [who]))
+                    if ref_path:
+                        import fal_client
+                        subject_url = fal_client.upload_file(ref_path)
+                        log(f"  {ds.id}: {who} likeness reference attached")
+                    elif ds.face_visibility in ("moderate", "high"):
+                        log(f"  !! {ds.id} shows {who} at face_visibility="
+                            f"{ds.face_visibility} but {who} has no reference image — "
+                            f"expect a different face. Upload one via "
+                            f"POST /api/characters/{who}/reference")
+
                 if ds.draft_variations:
                     # Resumed run: reuse the stills already paid for.
                     synth.draft_variations = list(ds.draft_variations)
@@ -759,7 +802,8 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                 else:
                     n = 4 if ds.identity_critical else 1
                     assets.generate_for_shot(
-                        synth, n, backend=img_backend, render=sb.render, log=log)
+                        synth, n, backend=img_backend, render=sb.render, log=log,
+                        subject_url=subject_url or None)
                     ds.draft_variations = list(synth.draft_variations)
                     ds.chosen_variation = synth.chosen_variation
                     ds.estimated_cost += n * 0.15

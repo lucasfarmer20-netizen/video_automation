@@ -256,6 +256,14 @@ The shots play in order over the beat's voiceover, so shot N lands on whatever i
 
 Vary the weights deliberately. Within a beat the longest shot should be roughly twice the shortest — a master or an establishing shot holds, an insert is quick. Weights that are all the same produce cuts on a fixed interval, which reads as a slideshow rather than an edit; if every shot in a beat carries the same weight, you have not decided what the beat is about.
 
+FACES
+
+Each entry in "characters" carries max_face_visibility. Do not exceed it.
+
+A character with has_likeness_reference true can be generated as the same recognisable person across shots, so close-ups and face-forward coverage of them are legitimate. A character without one cannot: repeated shots produce different people, which reads as a continuity error rather than a style. For those, keep face_visibility at "low" or "none" and cover them observationally — from behind, in profile, half-lit, at a distance, or through their hands, tools and actions. That is not a compromise; it is how most documentary footage of working people is shot anyway.
+
+Set identity_critical true only for the one or two shots per scene that must establish who someone is, and only for a character who has a likeness reference.
+
 MOTION IS NOT FREE BY ACCIDENT
 
 "parallax" moves a still by warping it under a camera move. A parallax shot with camera_move "static" therefore does not move at all — it is a held frame with extra steps. Give a shot a camera move unless stillness is genuinely the point, and remember that a slow push or a lateral drift over a depth-separated image is the cheapest motion available.
@@ -442,10 +450,14 @@ def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = No
     if not beats:
         raise ValueError(f"no such beats: {beat_ids}")
 
-    anchors = {}
+    anchors, castable = {}, {}
     try:
         from .assets import _load_character_anchors
+        from . import characters as _chars
         anchors = _load_character_anchors()
+        for name, spec in (_chars.load_characters() or {}).items():
+            ref = (spec or {}).get("reference_image") or ""
+            castable[name] = bool(ref and config.resolve_media(ref))
     except Exception:  # noqa: BLE001
         pass
 
@@ -461,7 +473,16 @@ def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = No
         # sledgehammers and rock, because "PAID and strictly limited" read as a
         # prohibition and nothing said how many were actually available.
         "ai_video_allowance_for_this_scene": prof.get("max_ai_video_per_scene", 0),
-        "characters_available": sorted(anchors) or ["(none defined)"],
+        # Which characters can carry a recognisable face, and which cannot.
+        # Measured, not assumed: Spike A showed a likeness reference holds identity
+        # across takes and text anchors alone do not.
+        "characters": [
+            {"name": n,
+             "has_likeness_reference": bool(castable.get(n)),
+             "max_face_visibility": "high" if castable.get(n) else "low"}
+            for n in sorted(set(anchors) | set(castable))
+        ] or [{"name": "(none defined)", "has_likeness_reference": False,
+               "max_face_visibility": "none"}],
         "human_notes": notes,
         "beats": beats,
     }
