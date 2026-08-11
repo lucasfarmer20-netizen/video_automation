@@ -1762,6 +1762,113 @@ async def critique_director_scene(request: Request):
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
 
 
+@app.post("/api/director/shot/{shot_id}")
+async def patch_director_shot(shot_id: str, request: Request):
+    """Edit one Director Shot inside its plan. The only sanctioned way to do it.
+
+    Body: any of shot_size, angle, purpose, composition, subject, prompt,
+          motion_prompt, camera_move, duration, motion_type, face_visibility,
+          gestural, identity_critical
+
+    Duration and motion_type are why this lives on the server. Coverage must sum
+    to the beat or the plan cannot compile, so lengthening one shot has to take
+    the time from somewhere; and setting motion_type to ai_video is only legal if
+    some model can actually produce that length -- generated video comes in fixed
+    sizes that differ per endpoint, and a 3.34s paid shot is not slightly wrong,
+    it is unproducible. A client writing these fields directly is how that
+    happened once already.
+    """
+    try:
+        beat_id = shot_id.split(".")[0]
+        plan = director.load_plan(beat_id)
+        if not plan:
+            raise HTTPException(status_code=404, detail=f"no plan for {beat_id}")
+        if plan.status in ("compiling", "compiled"):
+            raise HTTPException(status_code=409,
+                                detail=f"{beat_id} is {plan.status}; unlock or re-plan first")
+        ds = next((s for s in plan.coverage if s.id == shot_id), None)
+        if ds is None:
+            raise HTTPException(status_code=404, detail=f"no shot {shot_id}")
+
+        data = await request.json()
+        for f in ("shot_size", "angle", "purpose", "composition", "subject",
+                  "prompt", "motion_prompt", "face_visibility"):
+            if f in data:
+                setattr(ds, f, str(data[f] or ""))
+        for f in ("gestural", "identity_critical"):
+            if f in data:
+                setattr(ds, f, bool(data[f]))
+        if "camera_move" in data:
+            ds.camera.move = str(data["camera_move"] or "static")
+
+        notes: list[str] = []
+
+        if "duration" in data:
+            want = max(0.5, float(data["duration"]))
+            delta = round(want - ds.duration, 2)
+            ds.camera.duration = round(want, 2)
+            # Take the difference from the other shots, largest first, so the beat
+            # still adds up. Without this the edit silently breaks the plan and the
+            # user only discovers it when locking fails.
+            others = [o for o in plan.coverage if o.id != ds.id]
+            remaining = delta
+            for o in sorted(others, key=lambda x: -x.duration):
+                if abs(remaining) < 0.01:
+                    break
+                room = o.duration - 1.2 if remaining > 0 else float("inf")
+                take = min(remaining, room) if remaining > 0 else remaining
+                o.camera.duration = round(o.duration - take, 2)
+                remaining = round(remaining - take, 2)
+            if abs(remaining) >= 0.01:
+                notes.append(f"could not rebalance {remaining:+.2f}s across the other shots")
+
+        if "motion_type" in data:
+            mt = str(data["motion_type"])
+            if mt not in ("static", "parallax", "ai_video"):
+                raise HTTPException(status_code=400, detail=f"bad motion_type {mt!r}")
+            if mt == "ai_video":
+                routed = capabilities.resolve({"duration": ds.duration,
+                                               "gestural": ds.gestural})
+                if not routed.get("backend"):
+                    return JSONResponse(status_code=400, content={
+                        "ok": False,
+                        "error": f"no model can generate {ds.duration:.2f}s"
+                                 + (" without trimming a gesture" if ds.gestural else ""),
+                        "hint": "change the duration, or clear gestural",
+                    })
+                ds.backend = routed["backend"]
+                ds.estimated_cost = round(capabilities.COST_PER_IMAGE
+                                          + float(routed.get("estimated_cost") or 0), 3)
+                for c in routed.get("constraints") or []:
+                    if c not in ds.constrained_by:
+                        ds.constrained_by.append(c)
+                notes.append(f"routed to {routed['backend']} at "
+                             f"{routed['generate_seconds']}s")
+            else:
+                ds.backend = ""
+                ds.estimated_cost = capabilities.COST_PER_IMAGE
+            ds.motion_type = mt
+
+        director.save_plan(plan)
+
+        sb = get_current_project()
+        beat = next((s for s in sb.shots if s.scene_id == beat_id), None)
+        problems = []
+        if beat is not None:
+            try:
+                director.validate(plan, beat)
+            except director.PlanError as exc:
+                problems.append(str(exc))
+        return {"ok": True, "shot": asdict(ds), "notes": notes,
+                "problems": problems,
+                "coverage_total": round(plan.total_duration(), 3),
+                "beat_duration": float(beat.camera.duration) if beat else None}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
 @app.post("/api/director/lock_scene")
 async def lock_director_scene(request: Request):
     """Lock every beat in a scene at once. {"beats": [...]}
