@@ -1832,6 +1832,20 @@ def get_director_scene(beats: str = "", tier: str = ""):
             by_id = {ds.id: director.shot_tier(ds, p.warnings) for ds in p.coverage}
             for shot in entry["plan"]["coverage"]:
                 shot.update(by_id.get(shot["id"], {}))
+                # One field for "the image that represents this shot", so the
+                # client never has to index draft_variations itself. The frontend
+                # was reading draft_variations[chosen_variation - 1], which is off
+                # by one (the index is 0-based) and skipped entirely when the
+                # chosen take is 0, because 0 is falsy in JS. Both bugs disappear
+                # if the server just says which image it is.
+                idx = shot.get("chosen_variation")
+                variations = shot.get("draft_variations") or []
+                pick = ""
+                if isinstance(idx, int) and 0 <= idx < len(variations):
+                    pick = variations[idx]
+                elif variations:
+                    pick = variations[0]
+                shot["thumbnail_url"] = pick        # "" until stills are generated
             if tier == "needs_review":
                 keep = set(entry["triage"]["needs_review"])
                 entry["plan"]["coverage"] = [c for c in entry["plan"]["coverage"]
