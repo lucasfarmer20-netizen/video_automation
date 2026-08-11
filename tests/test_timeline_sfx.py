@@ -125,3 +125,47 @@ def test_build_emits_one_audio_track_per_layer_and_keeps_beats_aligned(tmp_path,
 
     named = [i.name for t in sfx_tracks for i in t if isinstance(i, otio.schema.Clip)]
     assert any("wind" in n for n in named) and any("fire" in n for n in named)
+
+
+def test_audio_tracks_end_exactly_where_the_picture_does(tmp_path, monkeypatch):
+    """Head/clip/tail were each rounded to frames independently, so they could sum
+    to one frame more or fewer than the beat. Invisible per beat; over 158 beats it
+    put narration more than a second early in the FCPXML while build_preview, which
+    mixes sample-accurately, stayed locked."""
+    proj = tmp_path / "proj"
+    sfx_dir, narr_dir, render_dir = proj / "sfx", proj / "narr", proj / "render"
+    for d in (sfx_dir, narr_dir, render_dir):
+        d.mkdir(parents=True)
+    monkeypatch.setattr(T.config, "episode_paths",
+                        lambda title: {"render": render_dir, "narration": narr_dir,
+                                       "sfx": sfx_dir, "root": proj})
+    monkeypatch.setattr(T.config, "MANIFEST_PATH", proj / "storyboard_manifest.json")
+    # Awkward lengths on purpose: these are the ones that round badly.
+    monkeypatch.setattr(T, "_probe_seconds", lambda p: 1.134)
+
+    shots = []
+    for i in range(40):
+        sid = f"s{i:03d}"
+        _mp3(narr_dir / f"{sid}.mp3")
+        _mp3(sfx_dir / f"{sid}__L1.mp3")
+        sh = Shot(scene_id=sid, narration="n", prompt="p",
+                  camera=Camera(move="static", duration=4.566 + (i % 5) * 0.077),
+                  sfx="")
+        sh.offset_narration = 0.761
+        sh.sfx_layers = [AudioLayer(id="a", prompt="",
+                                    file=str(sfx_dir / f"{sid}__L1.mp3"),
+                                    label="room", offset=0.313)]
+        shots.append(sh)
+
+    otio_path, _f, _rt = T.build(_sb(shots), render_dir=render_dir,
+                                 out_stem=str(tmp_path / "out"))
+    tl = otio.adapters.read_from_file(str(otio_path))
+    video = [t for t in tl.tracks if t.kind == otio.schema.TrackKind.Video][0]
+    v_frames = sum(i.source_range.duration.value for i in video)
+
+    for t in _audio_tracks(tl):
+        if t.name == "Music":
+            continue                       # looped bed, deliberately not beat-aligned
+        frames = sum(i.source_range.duration.value for i in t)
+        assert frames == v_frames, (
+            f"{t.name} drifted {(frames - v_frames) / T.FPS:+.3f}s from the picture")

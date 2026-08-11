@@ -141,6 +141,41 @@ def _make_resolve_compatible(path: Path, width: int, height: int, event_name: st
     )
 
 
+def _lay_beat(track, dur: float, head: float, clip_seconds: float,
+              make_clip) -> None:
+    """Append head-gap + clip + tail-gap totalling EXACTLY the beat's frame count.
+
+    Each piece used to be converted to frames independently, so head/clip/tail
+    could round to one frame more or fewer than the beat itself. One frame per
+    beat is invisible; across a 158-beat episode it accumulated to over a second,
+    and the audio tracks ended a different length from V1 -- narration drifting
+    progressively early through the FCPXML while build_preview, which mixes
+    sample-accurately, stayed locked.
+
+    Quantising the beat ONCE and deriving the tail by subtraction makes the parts
+    sum to the whole by construction rather than by luck.
+    """
+    total_f = _rt(dur).value
+    head_f = max(0, min(_rt(max(0.0, head)).value, total_f))
+    clip_f = max(0, min(_rt(max(0.0, clip_seconds)).value, total_f - head_f))
+    tail_f = total_f - head_f - clip_f
+
+    if clip_f <= 0:
+        if total_f > 0:
+            track.append(_gap_frames(total_f))
+        return
+    if head_f > 0:
+        track.append(_gap_frames(head_f))
+    track.append(make_clip(clip_f / FPS))
+    if tail_f > 0:
+        track.append(_gap_frames(tail_f))
+
+
+def _gap_frames(frames: int):
+    return otio.schema.Gap(source_range=otio.opentime.TimeRange(
+        otio.opentime.RationalTime(0, FPS), otio.opentime.RationalTime(frames, FPS)))
+
+
 def _layer_source(lay, sfx_dir: Path, scene_id: str) -> Path | None:
     """Resolve one SFX layer to a real file, the way ``build_preview`` does."""
     src = Path(lay.file) if lay.file else (sfx_dir / f"{scene_id}.mp3")
@@ -207,20 +242,12 @@ def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
         # authority on levels and fades; this track carries position and length.
         nf = narr_dir / f"{shot.scene_id}.mp3"
         if nf.exists():
-            head = max(0.0, float(getattr(shot, "offset_narration", 0.0) or 0.0))
-            head = min(head, dur)
+            head = min(max(0.0, float(getattr(shot, "offset_narration", 0.0) or 0.0)), dur)
             nd = min(_probe_seconds(nf), max(0.0, dur - head))
-            if nd <= 0.02:
-                _fill(A_narr, 0, dur, None)
-            else:
-                if head > 0.02:
-                    A_narr.append(_gap(head))
-                A_narr.append(_clip(f"{shot.scene_id}_vo", nf, nd))
-                tail = dur - head - nd
-                if tail > 0.02:
-                    A_narr.append(_gap(tail))
+            _lay_beat(A_narr, dur, head, nd,
+                      lambda secs: _clip(f"{shot.scene_id}_vo", nf, secs))
         else:
-            _fill(A_narr, 0, dur, None)
+            A_narr.append(_gap_frames(_rt(dur).value))
 
         # A2.. — every ambience layer this beat carries, one per track, each
         # positioned at its own offset. Every track advances by exactly `dur` so
@@ -230,23 +257,14 @@ def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
             lay = layers[idx] if idx < len(layers) else None
             src = _layer_source(lay, sfx_dir, shot.scene_id) if lay else None
             if src is None:
-                track.append(_gap(dur))
+                track.append(_gap_frames(_rt(dur).value))
                 continue
             # A negative offset would start this sound under the previous beat,
             # which a per-beat track cannot express; clamp to the beat's head.
-            head = max(0.0, float(lay.offset or 0.0))
-            avail = max(0.0, dur - head)
-            xd = min(_probe_seconds(src), avail)
-            if xd <= 0.02:
-                track.append(_gap(dur))
-                continue
-            if head > 0.02:
-                track.append(_gap(head))
-            track.append(_clip(f"{shot.scene_id}_{lay.label or 'sfx'}{idx + 1}",
-                               src, xd))
-            tail = dur - head - xd
-            if tail > 0.02:
-                track.append(_gap(tail))
+            head = min(max(0.0, float(lay.offset or 0.0)), dur)
+            xd = min(_probe_seconds(src), max(0.0, dur - head))
+            name = f"{shot.scene_id}_{lay.label or 'sfx'}{idx + 1}"
+            _lay_beat(track, dur, head, xd, lambda secs, n=name, sp=src: _clip(n, sp, secs))
 
     # A3 — music bed, looped to cover the runtime
     if sb.music_track:
@@ -260,6 +278,20 @@ def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
                 A_music.append(_clip(f"music_{i}", mpath, seg, media_seconds=mdur))
                 filled += seg
                 i += 1
+
+    # Every audio track must end exactly where the picture does. Each piece used
+    # to be rounded to frames independently, so tracks drifted apart by a frame
+    # per beat and narration landed progressively early in the FCPXML. This is the
+    # check that keeps it that way -- a note, not an exception, because a timeline
+    # that is slightly wrong is still worth delivering, and silence is what let
+    # the drift accumulate unnoticed in the first place.
+    v_frames = sum(i.source_range.duration.value for i in V)
+    for _t in (A_narr, *A_sfx_tracks):
+        t_frames = sum(i.source_range.duration.value for i in _t)
+        if t_frames != v_frames:
+            drift = (t_frames - v_frames) / FPS
+            print(f"  !! {_t.name} is {drift:+.3f}s against the picture "
+                  f"({t_frames} vs {v_frames} frames) — tracks will not stay in sync.")
 
     tl.tracks.extend([V, A_narr, *A_sfx_tracks, A_music])
 

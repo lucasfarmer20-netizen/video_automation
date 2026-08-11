@@ -87,12 +87,18 @@ export default function TakeSelectorModal({
         )}
         <div className="p-6 grid grid-cols-2 md:grid-cols-4 gap-4 bg-zinc-950">
           {variations.slice(0, 4).map((varUrl, idx) => {
+            // chosen_variation is 0-BASED everywhere on the server:
+            // director.py indexes draft_variations[chosen_variation] directly, and
+            // that is the still uploaded to the paid image-to-video model. This
+            // stored idx + 1, so picking TAKE 1 animated take 2, TAKE 4 of 4 was
+            // rejected as out of range, and a stored 0 highlighted no tile at all.
+            // The label stays 1-based because humans count from one.
             const takeNum = idx + 1;
-            const isSelected = activeChoice === takeNum;
+            const isSelected = activeChoice === idx;
             return (
               <div
                 key={takeNum}
-                onClick={() => setActiveChoice(takeNum)}
+                onClick={() => setActiveChoice(idx)}
                 className={`relative flex flex-col rounded-xl overflow-hidden border cursor-pointer transition-all duration-200 ${
                   isSelected
                     ? "border-purple-500 bg-purple-500/15 neon-glow-purple scale-[1.03]"
@@ -146,7 +152,7 @@ export default function TakeSelectorModal({
         {/* Action Footer */}
         <div className="p-4 border-t border-zinc-800 bg-zinc-900/50 flex items-center justify-between">
           <span className="text-xs text-zinc-400 font-mono">
-            Selected: <strong className="text-purple-300">Take {activeChoice}</strong>
+            Selected: <strong className="text-purple-300">Take {activeChoice + 1}</strong>
           </span>
           <div className="flex gap-2">
             <button
@@ -160,7 +166,7 @@ export default function TakeSelectorModal({
               className="px-5 py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold font-mono rounded-lg transition-colors flex items-center gap-1.5 shadow-lg shadow-purple-900/40"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              Lock Take {activeChoice}
+              Lock Take {activeChoice + 1}
             </button>
           </div>
         </div>

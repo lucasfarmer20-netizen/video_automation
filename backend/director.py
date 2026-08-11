@@ -819,8 +819,26 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                     ds.estimated_cost += n * 0.15
 
                 if ds.motion_type == "ai_video":
-                    generate_paid_clip(ds, synth, sb, out_dir, log=log)
-                    ds.estimated_cost += 0.60      # rough; real figure comes from fal
+                    # generate_paid_clip downloads to `target`. ds.clip was only
+                    # assigned AFTER normalize/fit below, so a post-processing
+                    # failure left a paid mp4 sitting on disk that the resume guard
+                    # could not see (it tests ds.clip and not ds.error, and the
+                    # handler sets ds.error) -- and the retry the error message
+                    # asks for went straight back to fal. Every attempt bought the
+                    # same clip again. Spike F hit exactly this: the generation
+                    # succeeded and the compile failed after it.
+                    #
+                    # So: generate only when nothing is on disk, and record the
+                    # paid bytes the instant they land, before anything that can
+                    # fail runs against them.
+                    if target.is_file() and target.stat().st_size > 0:
+                        log(f"  {ds.id}: paid clip already downloaded — re-running "
+                            f"post-processing only, not re-billing")
+                    else:
+                        generate_paid_clip(ds, synth, sb, out_dir, log=log)
+                        ds.estimated_cost += 0.60  # rough; real figure comes from fal
+                        ds.clip = config.rel_media_path(target)
+                        save_plan(plan)
                 else:
                     motion.render_shot(synth, out_dir=out_dir, storyboard=sb)
 

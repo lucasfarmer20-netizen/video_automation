@@ -2009,6 +2009,7 @@ async def patch_director_shot(shot_id: str, request: Request):
         # drawer posted {"camera": {"duration": 4.2}} while this only ever read a
         # flat "duration", so the slider round-tripped a 200 and changed nothing --
         # the endpoint reported success for an edit it had silently discarded.
+        rebalanced: set[str] = set()
         camera_in = data.pop("camera", None)
         if isinstance(camera_in, dict):
             if "duration" in camera_in and "duration" not in data:
@@ -2049,7 +2050,10 @@ async def patch_director_shot(shot_id: str, request: Request):
             v = data["chosen_variation"]
             if v is not None:
                 v = int(v)
-                if not (0 <= v < max(1, len(ds.draft_variations or []))):
+                # No max(1, ...) escape hatch: a shot with no drafts has no take
+                # 0 either, and accepting one records a choice that indexes a
+                # list which does not exist.
+                if not (0 <= v < len(ds.draft_variations or [])):
                     raise HTTPException(
                         status_code=400,
                         detail=f"take {v} does not exist for {shot_id} "
@@ -2077,6 +2081,7 @@ async def patch_director_shot(shot_id: str, request: Request):
             # user only discovers it when locking fails.
             others = [o for o in plan.coverage if o.id != ds.id]
             remaining = delta
+            rebalanced: set[str] = set()
             for o in sorted(others, key=lambda x: -x.duration):
                 if abs(remaining) < 0.01:
                     break
@@ -2086,37 +2091,70 @@ async def patch_director_shot(shot_id: str, request: Request):
                 # shortfall this loop is closing.
                 room = max(0.0, o.duration - planner.MIN_SHOT_SECONDS) if remaining > 0 else float("inf")
                 take = min(remaining, room) if remaining > 0 else remaining
+                if abs(take) >= 0.01:
+                    rebalanced.add(o.id)
                 o.camera.duration = round(o.duration - take, 2)
                 remaining = round(remaining - take, 2)
             if abs(remaining) >= 0.01:
                 notes.append(f"could not rebalance {remaining:+.2f}s across the other shots")
 
+        def _reprice(target_ds, *, strict: bool):
+            """Re-route and re-price one shot for its CURRENT duration and tier.
+
+            Price and model both depend on length, so a duration edit invalidates
+            them exactly as a tier edit does. Only the tier branch re-ran this, so
+            dragging a shot from 4s to 10s left it priced and routed for 4s -- an
+            ai_video shot stayed on wan_2_7 at $0.39 when the router's real answer
+            was kling_2_1_standard at $0.65. That is a 66% under-report on the
+            screen where the human allocates the Gate-1 budget. The rebalance
+            spreads the same staleness onto siblings nobody touched.
+
+            strict=False for siblings: a sibling that becomes unproducible is a
+            note, not a 400, because the user did not ask to change it and
+            refusing would make the edit they DID ask for impossible.
+            """
+            if target_ds.motion_type != "ai_video":
+                target_ds.backend = ""
+                target_ds.estimated_cost = capabilities.COST_PER_IMAGE
+                return None
+            routed = capabilities.resolve({"duration": target_ds.duration,
+                                           "gestural": target_ds.gestural})
+            if not routed.get("backend"):
+                if strict:
+                    return routed
+                notes.append(f"{target_ds.id}: now {target_ds.duration:.2f}s, which "
+                             f"no model can generate — change its length or drop it "
+                             f"to a free tier before locking")
+                return None
+            target_ds.backend = routed["backend"]
+            target_ds.estimated_cost = round(capabilities.COST_PER_IMAGE
+                                             + float(routed.get("estimated_cost") or 0), 3)
+            for c in routed.get("constraints") or []:
+                if c not in target_ds.constrained_by:
+                    target_ds.constrained_by.append(c)
+            notes.append(f"{target_ds.id}: routed to {routed['backend']} at "
+                         f"{routed['generate_seconds']}s (${target_ds.estimated_cost:.2f})")
+            return None
+
         if "motion_type" in data:
             mt = str(data["motion_type"])
             if mt not in ("static", "parallax", "ai_video"):
                 raise HTTPException(status_code=400, detail=f"bad motion_type {mt!r}")
-            if mt == "ai_video":
-                routed = capabilities.resolve({"duration": ds.duration,
-                                               "gestural": ds.gestural})
-                if not routed.get("backend"):
-                    return JSONResponse(status_code=400, content={
-                        "ok": False,
-                        "error": f"no model can generate {ds.duration:.2f}s"
-                                 + (" without trimming a gesture" if ds.gestural else ""),
-                        "hint": "change the duration, or clear gestural",
-                    })
-                ds.backend = routed["backend"]
-                ds.estimated_cost = round(capabilities.COST_PER_IMAGE
-                                          + float(routed.get("estimated_cost") or 0), 3)
-                for c in routed.get("constraints") or []:
-                    if c not in ds.constrained_by:
-                        ds.constrained_by.append(c)
-                notes.append(f"routed to {routed['backend']} at "
-                             f"{routed['generate_seconds']}s")
-            else:
-                ds.backend = ""
-                ds.estimated_cost = capabilities.COST_PER_IMAGE
             ds.motion_type = mt
+
+        # Re-price after BOTH kinds of edit, and for every sibling the rebalance
+        # moved -- their durations changed, so their prices did too.
+        touched = [ds] + [o for o in plan.coverage
+                          if o.id != ds.id and o.id in rebalanced]
+        for t in touched:
+            failed = _reprice(t, strict=(t is ds))
+            if failed is not None:
+                return JSONResponse(status_code=400, content={
+                    "ok": False,
+                    "error": f"no model can generate {ds.duration:.2f}s"
+                             + (" without trimming a gesture" if ds.gestural else ""),
+                    "hint": "change the duration, or clear gestural",
+                })
 
         director.save_plan(plan)
 
