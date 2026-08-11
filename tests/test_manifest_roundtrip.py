@@ -87,3 +87,55 @@ def test_shots_and_nested_config_survive():
     assert back.shots[0].camera.move == "pan_left"
     assert back.render.variations == 4
     assert back.mix.sfx == 0.42
+
+
+# --- Firestore beat reconciliation (review round 1, finding #5b) ---------------
+
+class _FakeDoc:
+    def __init__(self, doc_id): self.id = doc_id
+
+
+class _FakeCollection:
+    def __init__(self, store): self.store = store
+    def document(self, doc_id): return _FakeDoc(doc_id)
+    def list_documents(self): return [_FakeDoc(k) for k in list(self.store)]
+
+
+class _FakeBatch:
+    def __init__(self, store): self.store, self.deleted = store, []
+    def set(self, ref, data): self.store[ref.id] = data
+    def delete(self, ref): self.deleted.append(ref.id); self.store.pop(ref.id, None)
+    def commit(self): pass
+
+
+def test_shrinking_an_episode_deletes_the_beats_it_dropped(monkeypatch):
+    """save_project upserted and never deleted, and load_project streams the whole
+    subcollection -- so redrafting 25 beats down to 15 left 10 zombies carrying the
+    old script's narration and approved=true, and the next read returned 25."""
+    from backend import manifest as M
+
+    beats_store = {f"s{i:03d}": {"scene_id": f"s{i:03d}", "narration": "old"}
+                   for i in range(1, 26)}
+    batches = []
+
+    class _ProjRef:
+        def set(self, data): pass
+        def collection(self, name): return _FakeCollection(beats_store)
+
+    class _DB:
+        def collection(self, name):
+            return type("C", (), {"document": lambda _s, _i: _ProjRef()})()
+        def batch(self):
+            b = _FakeBatch(beats_store); batches.append(b); return b
+
+    monkeypatch.setattr(M, "db", _DB())
+
+    sb = M.Storyboard(title="T", id="proj")
+    sb.shots = [M.Shot(scene_id=f"s{i:03d}", narration="new", prompt="p",
+                       camera=M.Camera(move="static", duration=6.0))
+                for i in range(1, 16)]
+    M.save_project(sb)
+
+    assert sorted(batches[0].deleted) == [f"s{i:03d}" for i in range(16, 26)]
+    assert len(beats_store) == 15
+    assert all(v["narration"] == "new" for v in beats_store.values())

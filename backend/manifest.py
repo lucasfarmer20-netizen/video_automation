@@ -350,12 +350,24 @@ def save_project(sb: Storyboard) -> None:
     shots_data = data.pop("shots", [])
     p_ref.set(data)
     
-    # Save shots to subcollection
+    # Save shots to subcollection.
+    #
+    # This upserted and never deleted, and `load_project` streams the WHOLE
+    # subcollection back. Redraft an episode from 25 beats to 15 and s016-s025
+    # stay behind as zombies -- carrying the old script's narration, prompts,
+    # approved=true and motion_type -- so the next read returns 25 beats, 10 of
+    # them from an episode that no longer exists. Nothing anywhere reconciled it.
+    keep = {shot.get("scene_id") for shot in shots_data}
+    beats = p_ref.collection("beats")
+    stale = [d.id for d in beats.list_documents() if d.id not in keep]         if hasattr(beats, "list_documents") else         [d.id for d in beats.stream() if d.id not in keep]
+
     batch = db.batch()
     for shot in shots_data:
         s_id = shot.get("scene_id")
-        s_ref = p_ref.collection("beats").document(s_id)
+        s_ref = beats.document(s_id)
         batch.set(s_ref, shot)
+    for s_id in stale:
+        batch.delete(beats.document(s_id))
     batch.commit()
 
 

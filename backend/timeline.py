@@ -141,6 +141,15 @@ def _make_resolve_compatible(path: Path, width: int, height: int, event_name: st
     )
 
 
+def _layer_source(lay, sfx_dir: Path, scene_id: str) -> Path | None:
+    """Resolve one SFX layer to a real file, the way ``build_preview`` does."""
+    src = Path(lay.file) if lay.file else (sfx_dir / f"{scene_id}.mp3")
+    if not src.is_absolute():
+        src = config.resolve_media(str(src), scene_id) or (sfx_dir / src.name)
+    src = Path(src) if src else None
+    return src if src and src.is_file() else None
+
+
 def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
           out_stem: str | None = None) -> tuple[Path, Path | None, float]:
     """Assemble the timeline and write .otio (+ .fcpxml). Returns (otio, fcpxml, runtime)."""
@@ -153,7 +162,20 @@ def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
     tl = otio.schema.Timeline(name=sb.title or "The Illuminated Bestiary")
     V = otio.schema.Track(name="V1", kind=otio.schema.TrackKind.Video)
     A_narr = otio.schema.Track(name="Narration", kind=otio.schema.TrackKind.Audio)
-    A_sfx = otio.schema.Track(name="SFX", kind=otio.schema.TrackKind.Audio)
+    # One track per layer slot. build() tested the legacy single-file shape --
+    # `shot.sfx` non-empty AND <scene>.mp3 present -- while the studio writes
+    # layers as <scene>__L1.mp3 with an empty prompt on uploads. So the A2 track
+    # got a pure gap and the Resolve deliverable (and the bundle ZIP, which packs
+    # only what the XML references) shipped with NO ambience at all, while the
+    # preview mixed it correctly. That breaks the Gate-2 promise that both
+    # finishing routes come from the same approved manifest.
+    _layer_lists = {sh.scene_id: audio.resolve_sfx_layers(sh, sfx_dir) for sh in sb.shots}
+    _n_sfx = max([len(v) for v in _layer_lists.values()] or [0]) or 1
+    A_sfx_tracks = [
+        otio.schema.Track(name="SFX" if _n_sfx == 1 else f"SFX {i + 1}",
+                          kind=otio.schema.TrackKind.Audio)
+        for i in range(_n_sfx)
+    ]
     A_music = otio.schema.Track(name="Music", kind=otio.schema.TrackKind.Audio)
 
     runtime = 0.0
@@ -178,13 +200,31 @@ def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
         else:
             _fill(A_narr, 0, dur, None)
 
-        # A2 — sound effect, only where the beat carries one
-        xf = sfx_dir / f"{shot.scene_id}.mp3"
-        if (shot.sfx or "").strip() and xf.exists():
-            xd = min(_probe_seconds(xf), dur)
-            _fill(A_sfx, xd, dur, _clip(f"{shot.scene_id}_sfx", xf, xd))
-        else:
-            _fill(A_sfx, 0, dur, None)
+        # A2.. — every ambience layer this beat carries, one per track, each
+        # positioned at its own offset. Every track advances by exactly `dur` so
+        # the beats stay aligned across tracks.
+        layers = _layer_lists.get(shot.scene_id) or []
+        for idx, track in enumerate(A_sfx_tracks):
+            lay = layers[idx] if idx < len(layers) else None
+            src = _layer_source(lay, sfx_dir, shot.scene_id) if lay else None
+            if src is None:
+                track.append(_gap(dur))
+                continue
+            # A negative offset would start this sound under the previous beat,
+            # which a per-beat track cannot express; clamp to the beat's head.
+            head = max(0.0, float(lay.offset or 0.0))
+            avail = max(0.0, dur - head)
+            xd = min(_probe_seconds(src), avail)
+            if xd <= 0.02:
+                track.append(_gap(dur))
+                continue
+            if head > 0.02:
+                track.append(_gap(head))
+            track.append(_clip(f"{shot.scene_id}_{lay.label or 'sfx'}{idx + 1}",
+                               src, xd))
+            tail = dur - head - xd
+            if tail > 0.02:
+                track.append(_gap(tail))
 
     # A3 — music bed, looped to cover the runtime
     if sb.music_track:
@@ -199,7 +239,7 @@ def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
                 filled += seg
                 i += 1
 
-    tl.tracks.extend([V, A_narr, A_sfx, A_music])
+    tl.tracks.extend([V, A_narr, *A_sfx_tracks, A_music])
 
     slug = re.sub(r"[^a-z0-9]+", "_", (out_stem or sb.title or "deep_root_lore").lower()).strip("_") or "timeline"
     # Write next to the manifest, i.e. into the project directory on the GCS
