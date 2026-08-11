@@ -72,7 +72,12 @@ class SpikeConfig:
     style_medium: str                    # the project's medium; the anchor must survive it
     setting: str = ""                    # one sentence of context, kept constant across cells
     backends: list[str] = field(default_factory=lambda: ["nano2"])
-    strategies: list[str] = field(default_factory=lambda: ["anchor_plus_frame_ref"])
+    # Defaults derive from STRATEGIES, never a second literal. Three copies of
+    # this default existed -- here, the module constant, and the endpoint's
+    # fallback -- and renaming one left the other two pointing at a strategy the
+    # code no longer matches, so a run with a likeness reference silently
+    # measured text again. $1.20 for an answer we already had.
+    strategies: list[str] = field(default_factory=lambda: [STRATEGIES[0]])
     cells: list[str] = field(default_factory=lambda: ["cu", "mcu", "m", "profile", "ots"])
     takes: int = 4                       # "could I pick a good one?" is the real question
     stop_after_failed_cells: int = 3     # aggressive stopping (Round 4)
@@ -128,6 +133,14 @@ def run(cfg: SpikeConfig, log=print) -> dict:
     results: list[dict] = []
     spent = 0.0
     consecutive_skips = 0
+
+    unknown = [s for s in cfg.strategies if s not in STRATEGIES]
+    if unknown:
+        raise RuntimeError(
+            f"unknown strategy {unknown} — valid: {STRATEGIES}. Refusing to run: "
+            f"an unrecognised strategy previously fell through to a text-only "
+            f"generation that looked like a successful reference test."
+        )
 
     for backend in cfg.backends:
         for strategy in cfg.strategies:

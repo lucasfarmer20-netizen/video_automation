@@ -2151,7 +2151,7 @@ async def run_identity_spike(request: Request):
             style_medium=data.get("style_medium") or "",
             setting=data.get("setting") or "",
             backends=data.get("backends") or ["nano2"],
-            strategies=data.get("strategies") or ["anchor_plus_frame_ref"],
+            strategies=data.get("strategies") or [spike_identity.STRATEGIES[0]],
             cells=data.get("cells") or ["cu", "mcu", "m", "profile", "ots"],
             takes=int(data.get("takes") or 4),
         )
