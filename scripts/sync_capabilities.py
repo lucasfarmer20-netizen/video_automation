@@ -141,6 +141,10 @@ def main() -> None:
                          f'"max_seconds": {d.get("maximum", 10)},')
         lines.append(f'        "duration_wire_type": {d["wire_type"]!r},')
         lines.append(f'        "duration_default": {d.get("default")!r},')
+        # Read from the schema, not remembered. main.py used to decide this with
+        # `elif "seedance" not in endpoint`, which was right by luck and wrong in
+        # kind -- the same shape of guess that made every duration entry wrong.
+        lines.append(f'        "supports_generate_audio": {bool(d.get("generate_audio"))!r},')
         for k in ("cost_per_second", "needs_start_image", "supports_reference_image",
                   "supports_character_reference"):
             if k in prev:

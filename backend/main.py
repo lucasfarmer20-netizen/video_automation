@@ -567,31 +567,27 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
                 model_endpoint = resolve_video_model_endpoint(video_key)
                 log(f"[{idx}/{total}] PAID video for {shot.scene_id} via {model_endpoint} (chaining: {chaining_mode}) ...")
                 target_dur = float(getattr(shot.camera, "duration", 6.0))
-                dur_int = max(3, min(10, int(round(target_dur))))
 
                 gen_audio = shot.video_audio
                 if gen_audio is None:
                     gen_audio = getattr(sb.render, "video_audio", True)
 
+                # Every model's own spelling and its own limits, from the schemas.
+                # The hand-written clamp this replaces sent kling/wan/luma no
+                # duration at all, sent seedance an illegal "3", and capped
+                # everything at 10s though seedance and wan reach 15.
+                dur_args, dur_note = capabilities.video_arguments(
+                    video_key, target_dur, generate_audio=bool(gen_audio),
+                    cap_to_ceiling=True)
+                if dur_note:
+                    log(f"  {shot.scene_id}: {dur_note}")
+                dur_int = capabilities.clamp_duration(video_key, target_dur)
+
                 motion_prompt = shot.motion_prompt or f"Cinematic motion, high-quality, authentic detail, {shot.prompt}"
                 if f"{dur_int}s" not in motion_prompt and "second" not in motion_prompt:
                     motion_prompt = f"{motion_prompt} (duration: ~{dur_int} seconds)"
 
-                arguments = {
-                    "prompt": motion_prompt,
-                    "duration": str(dur_int),
-                    "generate_audio": gen_audio,
-                }
-                if "veo" in model_endpoint:
-                    if dur_int <= 5:
-                        arguments["duration"] = "4s"
-                    elif dur_int <= 7:
-                        arguments["duration"] = "6s"
-                    else:
-                        arguments["duration"] = "8s"
-                elif "seedance" not in model_endpoint:
-                    arguments.pop("duration", None)
-                    arguments.pop("generate_audio", None)
+                arguments = {"prompt": motion_prompt, **dur_args}
 
                 # Native Video Extend
                 # These are image-to-video endpoints: a start image is required on
@@ -2936,32 +2932,29 @@ async def generate_shot_video(scene_id: str, request: Request):
 
         public_image_url = fal_client.upload_file(str(local_image_path))
         target_dur = float(getattr(shot.camera, "duration", 6.0))
-        dur_int = max(3, min(10, int(round(target_dur))))
-
-        motion_prompt = shot.motion_prompt or f"Cinematic motion, high-quality, authentic detail, {shot.prompt}"
-        if f"{dur_int}s" not in motion_prompt and "second" not in motion_prompt:
-            motion_prompt = f"{motion_prompt} (duration: ~{dur_int} seconds)"
 
         gen_audio = shot.video_audio
         if gen_audio is None:
             gen_audio = getattr(sb.render, "video_audio", True)
 
+        # Same schema-derived router as the batch path. These two blocks were
+        # byte-for-byte duplicates, which is why both carried all four defects.
+        dur_args, dur_note = capabilities.video_arguments(
+            video_model_key, target_dur, generate_audio=bool(gen_audio),
+            cap_to_ceiling=True)
+        if dur_note:
+            print(f"{scene_id}: {dur_note}")
+        dur_int = capabilities.clamp_duration(video_model_key, target_dur)
+
+        motion_prompt = shot.motion_prompt or f"Cinematic motion, high-quality, authentic detail, {shot.prompt}"
+        if f"{dur_int}s" not in motion_prompt and "second" not in motion_prompt:
+            motion_prompt = f"{motion_prompt} (duration: ~{dur_int} seconds)"
+
         arguments = {
             "image_url": public_image_url,
             "prompt": motion_prompt,
-            "duration": str(dur_int),
-            "generate_audio": gen_audio,
+            **dur_args,
         }
-        if "veo" in model_endpoint:
-            if dur_int <= 5:
-                arguments["duration"] = "4s"
-            elif dur_int <= 7:
-                arguments["duration"] = "6s"
-            else:
-                arguments["duration"] = "8s"
-        elif "seedance" not in model_endpoint:
-            arguments.pop("duration", None)
-            arguments.pop("generate_audio", None)
 
         # Extend previous segment natively
         chaining_mode = getattr(sb.render, "video_chaining", "native_extend")

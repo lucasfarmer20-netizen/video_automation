@@ -67,6 +67,7 @@ VIDEO_CAPS: dict[str, dict] = {
         "min_seconds": 4.0, "max_seconds": 15.0,
         "duration_wire_type": 'string',
         "duration_default": 'auto',
+        "supports_generate_audio": True,
         "cost_per_second": 0.1,
         "needs_start_image": True,
         "supports_reference_image": False,
@@ -80,6 +81,7 @@ VIDEO_CAPS: dict[str, dict] = {
         "min_seconds": 4.0, "max_seconds": 8.0,
         "duration_wire_type": 'string',
         "duration_default": '8s',
+        "supports_generate_audio": True,
         "cost_per_second": 0.4,
         "needs_start_image": True,
         "supports_reference_image": True,
@@ -93,6 +95,7 @@ VIDEO_CAPS: dict[str, dict] = {
         "min_seconds": 5.0, "max_seconds": 10.0,
         "duration_wire_type": 'string',
         "duration_default": '5',
+        "supports_generate_audio": False,
         "cost_per_second": 0.05,
         "needs_start_image": True,
         "supports_reference_image": False,
@@ -106,6 +109,7 @@ VIDEO_CAPS: dict[str, dict] = {
         "min_seconds": 5.0, "max_seconds": 10.0,
         "duration_wire_type": 'string',
         "duration_default": '5',
+        "supports_generate_audio": False,
         "cost_per_second": 0.28,
         "needs_start_image": True,
         "supports_reference_image": True,
@@ -119,6 +123,7 @@ VIDEO_CAPS: dict[str, dict] = {
         "min_seconds": 2.0, "max_seconds": 15.0,
         "duration_wire_type": 'integer',
         "duration_default": 5,
+        "supports_generate_audio": False,
         "cost_per_second": 0.06,
         "needs_start_image": True,
         "supports_reference_image": False,
@@ -132,6 +137,7 @@ VIDEO_CAPS: dict[str, dict] = {
         "min_seconds": 5.0, "max_seconds": 9.0,
         "duration_wire_type": 'string',
         "duration_default": '5s',
+        "supports_generate_audio": False,
         "cost_per_second": 0.14,
         "needs_start_image": True,
         "supports_reference_image": True,
@@ -209,6 +215,59 @@ def duration_argument(key: str, seconds: float):
         if m and abs(float(m.group(1)) - picked) < 0.01:
             return v
     return int(picked) if caps.get("duration_wire_type") == "integer" else str(int(picked))
+
+def video_arguments(key: str, seconds: float, *, generate_audio: bool = True,
+                    cap_to_ceiling: bool = False) -> tuple[dict, str]:
+    """The duration/audio half of a fal video request, in this model's own spelling.
+
+    Returns ``(arguments, note)``. The note is empty when the request was served
+    exactly, and otherwise says what was changed -- callers log it rather than
+    discovering the difference in the finished cut.
+
+    Replaces a hand-written block that lived byte-for-byte at two call sites in
+    main.py:
+
+        dur_int = max(3, min(10, int(round(target_dur))))
+        arguments = {"duration": str(dur_int), "generate_audio": gen_audio}
+        if "veo" in endpoint:      arguments["duration"] = "4s"/"6s"/"8s"
+        elif "seedance" not in endpoint:
+            arguments.pop("duration"); arguments.pop("generate_audio")
+
+    Four separate defects in nine lines. kling, wan and luma -- three of the six
+    registered backends, all selectable from the studio dropdown -- were sent NO
+    duration at all, so each rendered its own 5s default and the rest of the beat
+    became a freeze-frame. seedance, the default, was sent "3" for any beat under
+    3.5s, which is not in its enum (minimum 4) and 422s, losing the beat's clip
+    entirely. Every model was capped at 10s though seedance and wan allow 15. And
+    veo rounded a 5.0s beat DOWN to "4s" while ``legal_durations`` rounds it up to
+    6 -- the same shot came out a different length depending on which path ran it.
+
+    ``cap_to_ceiling`` is the difference between the two callers. Director coverage
+    plans a shot to fit a slot, so a request beyond the model's reach means the
+    plan is wrong and must be re-routed or split -- omitting the duration is right.
+    The batch render has no such option: the beat gets one clip and freeze-frame
+    padding for the remainder, so asking for the model's MAXIMUM is strictly better
+    than omitting the field and letting it fall back to a 5s default. Without this
+    a 20s beat on seedance generated 5s and froze for 15 rather than generating 15
+    and freezing for 5.
+    """
+    caps = spec(key)
+    out: dict = {}
+    picked, note = legal_durations(key, seconds)
+    if picked is None and cap_to_ceiling:
+        ceiling = float(caps["max_seconds"])
+        picked, note = legal_durations(key, ceiling)
+        if picked is not None:
+            note = (f"{seconds:.2f}s exceeds what {caps['label']} can generate; "
+                    f"asked for its maximum {picked}s (the remainder freeze-frames)")
+    if picked is not None:
+        dur = duration_argument(key, float(picked))
+        if dur is not None:
+            out["duration"] = dur
+    if caps.get("supports_generate_audio"):
+        out["generate_audio"] = bool(generate_audio)
+    return out, note
+
 
 def clamp_duration(key: str, seconds: float) -> int:
     """Legal length, falling back to the model's own ceiling.

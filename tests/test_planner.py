@@ -226,3 +226,59 @@ def test_replan_overrides_the_guard(tmp_path, monkeypatch):
     with pytest.raises(Exception) as exc:
         P.plan_scene(_sb_with(["s012"]), ["s012"], log=lambda m: None, replan=True)
     assert "locked coverage" not in str(exc.value)
+
+
+# --- the video argument router (review round 1, finding #4) ---------------------
+
+def test_every_model_gets_a_duration_in_its_own_spelling():
+    """kling, wan and luma were sent NO duration at all, so each rendered its own
+    5s default and the rest of the beat became a freeze-frame."""
+    for key in cap.VIDEO_CAPS:
+        args, _ = cap.video_arguments(key, 6.0, cap_to_ceiling=True)
+        assert "duration" in args, f"{key} was sent no duration"
+    # And in the wire type its schema declares, not a uniform string.
+    assert isinstance(cap.video_arguments("wan_2_7", 6.0)[0]["duration"], int)
+    assert cap.video_arguments("veo_3_1", 6.0)[0]["duration"] == "6s"
+    assert cap.video_arguments("luma_dream_machine", 6.0)[0]["duration"] == "9s"
+
+
+def test_seedance_is_never_sent_a_length_below_its_floor():
+    """max(3, min(10, ...)) sent "3" to an enum whose minimum is 4 -> 422, and the
+    beat shipped with no Tier-C clip at all."""
+    args, note = cap.video_arguments("seedance_2_0", 3.2)
+    assert args["duration"] == "4"
+    assert "raised" in note or "rounded" in note
+    allowed = {str(v) for v in cap.VIDEO_CAPS["seedance_2_0"]["duration_values"]}
+    for want in (0.5, 2.0, 3.0, 3.9):
+        assert str(cap.video_arguments("seedance_2_0", want)[0]["duration"]) in allowed
+
+
+def test_a_long_beat_asks_for_the_maximum_not_the_default():
+    """The old clamp capped everything at 10s. A 20.9s beat on seedance now asks
+    for 15s -- ten more seconds of real motion, ten fewer of frozen frame."""
+    args, note = cap.video_arguments("seedance_2_0", 20.86, cap_to_ceiling=True)
+    assert args["duration"] == "15"
+    assert "exceeds" in note and "maximum" in note
+
+
+def test_director_is_told_it_cannot_be_served_rather_than_quietly_capped():
+    """Coverage can re-route or split a shot; the batch render cannot. Only the
+    batch render caps."""
+    args, note = cap.video_arguments("seedance_2_0", 20.86, cap_to_ceiling=False)
+    assert "duration" not in args
+    assert "exceeds" in note
+
+
+def test_generate_audio_only_where_the_schema_declares_it():
+    """Decided by `elif "seedance" not in endpoint`, which was right by luck."""
+    assert cap.video_arguments("seedance_2_0", 6.0)[0]["generate_audio"] is True
+    assert cap.video_arguments("veo_3_1", 6.0)[0]["generate_audio"] is True
+    for key in ("kling_2_1_standard", "kling_2_master", "wan_2_7", "luma_dream_machine"):
+        assert "generate_audio" not in cap.video_arguments(key, 6.0)[0], key
+
+
+def test_veo_rounds_the_same_direction_as_the_planner():
+    """The batch path rounded 5.0s DOWN to "4s" while legal_durations rounds it up,
+    so one shot came out a different length depending on which path rendered it."""
+    assert cap.video_arguments("veo_3_1", 5.0)[0]["duration"] == "6s"
+    assert cap.legal_durations("veo_3_1", 5.0)[0] == 6
