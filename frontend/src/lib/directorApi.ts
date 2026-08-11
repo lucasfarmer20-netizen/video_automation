@@ -16,9 +16,24 @@ const API_BASE =
     : "";
 
 /**
-  * GET /api/director/profiles
-  * Authoritative profiles, vocabulary, and video_capabilities
-  */
+ * Helper to include X-Studio-Key header on all mutating (POST) requests
+ * Read from localStorage.studioKey (matching page.tsx authHeaders)
+ */
+export function getAuthHeaders(base: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = { ...base };
+  if (typeof window !== "undefined") {
+    const key = window.localStorage.getItem("studioKey") || "";
+    if (key) {
+      headers["X-Studio-Key"] = key;
+    }
+  }
+  return headers;
+}
+
+/**
+ * GET /api/director/profiles
+ * Authoritative profiles, vocabulary, and video_capabilities
+ */
 export async function fetchDirectorProfiles(): Promise<DirectorProfilesResponse> {
   const res = await fetch(`${API_BASE}/api/director/profiles`);
   if (!res.ok) {
@@ -32,9 +47,9 @@ export async function fetchDirectorProfiles(): Promise<DirectorProfilesResponse>
 }
 
 /**
-  * GET /api/director/scene?beats=s004,s005,s006
-  * Read model for a scene or set of beats
-  */
+ * GET /api/director/scene?beats=s004,s005,s006
+ * Read model for a scene or set of beats (unauthenticated reads)
+ */
 export async function fetchCoveragePlan(
   beatIds: string | string[],
   tierFilter?: "needs_review"
@@ -92,9 +107,9 @@ export async function fetchCoveragePlan(
 }
 
 /**
-  * POST /api/director/plan
-  * Request creative redirection or scene coverage re-planning
-  */
+ * POST /api/director/plan
+ * Request creative redirection or scene coverage re-planning (Requires X-Studio-Key auth)
+ */
 export async function redirectSceneCoverage(
   beats: string | string[],
   commandText: string,
@@ -112,7 +127,7 @@ export async function redirectSceneCoverage(
 
   const res = await fetch(`${API_BASE}/api/director/plan`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       beats: beatList,
       profile: profile || "historical_docudrama",
@@ -130,8 +145,9 @@ export async function redirectSceneCoverage(
 }
 
 /**
-  * POST /api/director/lock/{beat_id}?locked=true|false OR POST /api/director/lock_scene
-  */
+ * POST /api/director/lock/{beat_id}?locked=true|false OR POST /api/director/lock_scene
+ * Requires X-Studio-Key auth header
+ */
 export async function setCoverageStatus(
   beatIdOrBeats: string | string[],
   locked: boolean = true
@@ -139,7 +155,7 @@ export async function setCoverageStatus(
   if (Array.isArray(beatIdOrBeats)) {
     const res = await fetch(`${API_BASE}/api/director/lock_scene`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: getAuthHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ beats: beatIdOrBeats }),
     });
     const data = await res.json();
@@ -153,7 +169,7 @@ export async function setCoverageStatus(
     `${API_BASE}/api/director/lock/${encodeURIComponent(beatIdOrBeats)}?locked=${locked}`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: getAuthHeaders(),
     }
   );
 
@@ -166,12 +182,13 @@ export async function setCoverageStatus(
 }
 
 /**
-  * POST /api/director/critique
-  */
+ * POST /api/director/critique
+ * Requires X-Studio-Key auth header
+ */
 export async function critiqueCoverage(beats: string[]): Promise<{ ok: boolean; warnings: DirectorWarning[] }> {
   const res = await fetch(`${API_BASE}/api/director/critique`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ beats }),
   });
   const data = await res.json();
@@ -182,8 +199,9 @@ export async function critiqueCoverage(beats: string[]): Promise<{ ok: boolean; 
 }
 
 /**
-  * POST /api/director/shot/{shotId}/action
-  */
+ * POST /api/director/shot/{shotId}/action
+ * Requires X-Studio-Key auth header
+ */
 export async function performShotAction(
   shotId: string,
   action: string,
@@ -191,7 +209,7 @@ export async function performShotAction(
 ): Promise<{ ok: boolean; updatedShot?: DirectorShot; error?: string }> {
   const res = await fetch(`${API_BASE}/api/director/shot/${encodeURIComponent(shotId)}/action`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ action, payload }),
   });
 
@@ -219,11 +237,11 @@ export async function fetchCoverageSurvey(): Promise<CoverageSurvey> {
   return data;
 }
 
-// Optional exported mock constants for unit testing if required
+// Real beat ID mock constant for unit testing / UI preview if needed
 export const MOCK_SCENES: SceneSummary[] = [
   {
     scene_id: "s004",
-    title: "04 — The Mountain Takes Its Toll",
+    title: "s004 — The Mountain Takes Its Toll",
     duration: 72,
     beats_count: 3,
     shots_count: 11,

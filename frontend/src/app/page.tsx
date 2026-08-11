@@ -92,7 +92,7 @@ export default function WorkspacePage() {
   
   // View states
   const [activeView, setActiveView] = useState<"grid" | "canvas" | "director">("grid");
-  const [selectedSceneId, setSelectedSceneId] = useState<string>("scene_04");
+  const [selectedSceneId, setSelectedSceneId] = useState<string>("s004");
   const [lockedModalBeat, setLockedModalBeat] = useState<string | null>(null);
   // Which pipeline step is showing. Additive rollout: this only filters which
   // existing panels render -- no control has moved or been rebuilt.
