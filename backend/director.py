@@ -144,6 +144,17 @@ class DirectorShot:
     draft_variations: list[str] = field(default_factory=list)
     chosen_variation: int | None = None
     clip: str = ""                     # render/<beat_id>/<id>.mp4
+    # What fal was actually billed for, and for which inputs. `clip` cannot serve
+    # this purpose: motion.render_shot writes the SAME path for a free parallax
+    # render, and out_dir is render/<beat_id>/ -- a pure function of beat id and
+    # shot index, both stable across re-plans, and nothing ever clears it. A guard
+    # that only asked "is there a file at target?" therefore accepted a leftover
+    # clip from a discarded plan, or a free render of a shot later promoted to
+    # ai_video, as though it were the paid one: shipping the wrong footage and
+    # never generating at all. That is a worse failure than the re-billing it
+    # replaced, because it is silent.
+    paid_clip: str = ""                # set ONLY when fal was billed
+    paid_signature: str = ""           # the inputs that clip was bought for
     estimated_cost: float = 0.0
     error: str = ""
 
@@ -683,6 +694,22 @@ def _synthetic_shot(ds: DirectorShot, beat: Shot) -> Shot:
     )
 
 
+def paid_signature(ds: "DirectorShot") -> str:
+    """Identify the inputs a paid clip was bought for.
+
+    A stored paid clip is only reusable if the things that determined its content
+    are unchanged. Change the still, the motion prompt, the length or the model
+    and the file on disk is no longer the clip this shot is asking for -- so it
+    must be regenerated rather than silently reused.
+    """
+    import hashlib
+    parts = [ds.id, str(ds.chosen_variation), ds.motion_prompt or ds.prompt or "",
+             f"{ds.duration:.2f}", ds.backend or "",
+             (ds.draft_variations or [""])[ds.chosen_variation or 0]
+             if ds.draft_variations else ""]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
 def compile_coverage(plan: CoveragePlan, sb: Storyboard, render_dir: Path,
                      backend: str | None = None, log=print,
                      skip_existing: bool = True) -> Path:
@@ -831,13 +858,27 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                     # So: generate only when nothing is on disk, and record the
                     # paid bytes the instant they land, before anything that can
                     # fail runs against them.
-                    if target.is_file() and target.stat().st_size > 0:
+                    want = paid_signature(ds)
+                    have = (ds.paid_clip
+                            and ds.paid_clip == config.rel_media_path(target)
+                            and ds.paid_signature == want
+                            and target.is_file() and target.stat().st_size > 0)
+                    if have:
                         log(f"  {ds.id}: paid clip already downloaded — re-running "
                             f"post-processing only, not re-billing")
                     else:
+                        # Anything at `target` now is either a free render or a
+                        # clip bought for different inputs. Neither is this shot's
+                        # paid clip, so it must not be mistaken for one.
+                        if target.is_file() and not ds.paid_clip:
+                            log(f"  {ds.id}: discarding a non-paid file already at "
+                                f"{target.name} before generating")
+                        target.unlink(missing_ok=True)
                         generate_paid_clip(ds, synth, sb, out_dir, log=log)
                         ds.estimated_cost += 0.60  # rough; real figure comes from fal
                         ds.clip = config.rel_media_path(target)
+                        ds.paid_clip = ds.clip
+                        ds.paid_signature = want
                         save_plan(plan)
                 else:
                     motion.render_shot(synth, out_dir=out_dir, storyboard=sb)

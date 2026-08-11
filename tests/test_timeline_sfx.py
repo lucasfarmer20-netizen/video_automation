@@ -83,8 +83,6 @@ def test_legacy_single_file_beats_still_work(tmp_path):
 
 def test_a_missing_layer_file_resolves_to_nothing(tmp_path):
     sfx_dir = tmp_path / "sfx"; sfx_dir.mkdir()
-    shot = Shot(scene_id="s004", narration="n", prompt="p",
-                camera=Camera(move="static", duration=6.0), sfx="")
     lay = AudioLayer(id="a", prompt="", file=str(sfx_dir / "gone.mp3"), label="x")
     assert T._layer_source(lay, sfx_dir, "s004") is None
 
