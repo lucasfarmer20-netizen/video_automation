@@ -176,3 +176,53 @@ def test_shot_vocabulary_matches_the_director_shot_dataclass():
     for field in ("purpose", "shot_size", "angle", "motion_type", "face_visibility"):
         assert hasattr(ds, field)
     assert set(P.MOTION_TYPES) == {"static", "parallax", "ai_video"}
+
+
+# --- the locked-coverage guard -------------------------------------------------
+
+def _sb_with(beat_ids):
+    from backend.manifest import Camera, Shot, Storyboard
+    return Storyboard(
+        title="T",
+        shots=[Shot(scene_id=b, narration="n", prompt="p",
+                    camera=Camera(move="static", duration=20.0)) for b in beat_ids],
+    )
+
+
+def test_plan_scene_refuses_to_overwrite_covered_beats(tmp_path, monkeypatch):
+    """Planning a scene must not clobber coverage that is already compiled.
+
+    plan_scene saved a fresh status="draft" plan for every beat it was given.
+    On a beat that was already compiled that discards the paid coverage record
+    AND drops the beat's render protection, because has_locked_coverage accepts
+    only locked/compiling/compiled -- so the next render would overwrite the
+    clip it had already paid for.
+    """
+    from backend import director
+    monkeypatch.setattr(director.config, "MANIFEST_PATH",
+                        tmp_path / "storyboard_manifest.json")
+
+    compiled = director.CoveragePlan(beat_id="s012", beat_duration=20.0,
+                                     status="compiled")
+    director.save_plan(compiled)
+
+    # Every beat locked -> refuse loudly rather than silently doing nothing.
+    with pytest.raises(ValueError, match="locked coverage"):
+        P.plan_scene(_sb_with(["s012"]), ["s012"], log=lambda m: None)
+
+    # The plan on disk is untouched.
+    assert director.load_plan("s012").status == "compiled"
+    assert director.has_locked_coverage("s012") is True
+
+
+def test_replan_overrides_the_guard(tmp_path, monkeypatch):
+    """The guard is a default, not a wall -- replan=True must still get through."""
+    from backend import director
+    monkeypatch.setattr(director.config, "MANIFEST_PATH",
+                        tmp_path / "storyboard_manifest.json")
+    director.save_plan(director.CoveragePlan(beat_id="s012", beat_duration=20.0,
+                                             status="compiled"))
+    # Gets past the guard and fails later, at the Claude call -- not at the guard.
+    with pytest.raises(Exception) as exc:
+        P.plan_scene(_sb_with(["s012"]), ["s012"], log=lambda m: None, replan=True)
+    assert "locked coverage" not in str(exc.value)

@@ -1744,11 +1744,16 @@ async def plan_director_scene(request: Request):
         profile_key = data.get("profile")
         notes = data.get("notes") or ""
         run_critic = data.get("critique", True)
+        replan = bool(data.get("replan"))
         job = f"director_plan:{beat_ids[0]}"
 
         def fn():
             log = lambda m: log_job(job, m)  # noqa: E731
-            result = planner.plan_scene(sb, beat_ids, profile_key, notes, log=log)
+            result = planner.plan_scene(sb, beat_ids, profile_key, notes, log=log,
+                                        replan=replan)
+            # Never write over a plan we deliberately declined to re-plan --
+            # including its warnings.
+            protected = set(result.get("skipped") or [])
             # The critic is advisory. It runs after the plans are already written,
             # so letting it fail the job threw away 23 good shots over a warning
             # pass -- the plans were on disk and correct, and the run still
@@ -1764,13 +1769,19 @@ async def plan_director_scene(request: Request):
                 # Warnings belong on the beat they concern, so the studio can show
                 # them beside the shot rather than in a separate list.
                 for bid in beat_ids:
+                    if bid in protected:
+                        continue
                     p = director.load_plan(bid)
                     if not p:
                         continue
                     p.warnings = [w for w in warnings
                                   if w.get("beat_id") in ("", bid)]
                     director.save_plan(p)
-            log(f"Planned {len(result['plans'])} beat(s); nothing was generated.")
+            msg = f"Planned {len(result['plans'])} beat(s); nothing was generated."
+            if protected:
+                msg += (f" Left {len(protected)} already-covered beat(s) untouched: "
+                        f"{', '.join(sorted(protected))}.")
+            log(msg)
 
         if not start_job(job, fn):
             return JSONResponse(status_code=409, content={

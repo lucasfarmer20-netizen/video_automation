@@ -443,12 +443,38 @@ def _beat_context(sb: Storyboard, beat_ids: list[str]) -> list[dict]:
 
 
 def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = None,
-               notes: str = "", log=print) -> dict:
-    """Plan coverage for contiguous beats. Returns plans; writes them as drafts."""
+               notes: str = "", log=print, replan: bool = False) -> dict:
+    """Plan coverage for contiguous beats. Returns plans; writes them as drafts.
+
+    Beats whose coverage is already locked or compiled are planned AROUND, not
+    over: they stay in the brief so the scene reads continuously, but their plan
+    on disk is left alone.
+
+    That guard is not defensive tidiness. Saving a fresh draft over a compiled
+    plan discards the record of coverage that has already been paid for and
+    rendered, and -- because ``has_locked_coverage`` recognises only
+    locked/compiling/compiled -- it simultaneously drops the beat's protection
+    from the render loop, which would then render straight over the compiled
+    clip. One planning call on a scene the survey recommends would have thrown
+    away s012's $3.25 twice over.
+
+    Pass ``replan=True`` to deliberately re-plan a locked beat.
+    """
     prof = profile(profile_key)
     beats = _beat_context(sb, beat_ids)
     if not beats:
         raise ValueError(f"no such beats: {beat_ids}")
+
+    protected: set[str] = set()
+    if not replan:
+        protected = {b for b in beat_ids if director.has_locked_coverage(b)}
+        if protected and set(beat_ids) <= protected:
+            raise ValueError(
+                f"every requested beat already has locked coverage "
+                f"({', '.join(sorted(protected))}). Pass replan=true to plan over it."
+            )
+        for b in sorted(protected):
+            log(f"  {b}: coverage already locked — planning around it, not over it.")
 
     anchors, castable = {}, {}
     try:
@@ -519,6 +545,8 @@ def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = No
         beat = next((x for x in sb.shots if x.scene_id == bid), None)
         if beat is None:
             log(f"  !! planner returned an unknown beat {bid!r} — skipped")
+            continue
+        if bid in protected:
             continue
         seconds = float(beat.camera.duration)
         shots = entry.get("shots") or []
@@ -600,6 +628,7 @@ def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = No
         "visual_strategy": raw.get("visual_strategy", ""),
         "blocking": raw.get("blocking", {}),
         "plans": plans,
+        "skipped": sorted(protected),
         "profile": prof,
     }
 
