@@ -11,6 +11,10 @@ export interface DirectorShot {
   beat_id: string;
   shot_number?: string; // e.g. "04.05" or "s004.05"
 
+  // Backend-computed Tier (1 = standard $0.15 still, 2 = check/limit changed, 3 = creative/face anchor)
+  tier: 1 | 2 | 3;
+  tier_reason?: string;
+
   // Editorial intent
   purpose: string; // "establishing" | "master" | "reaction" | "insert" | "cutaway" | "detail" | "transition"
   subject: string;
@@ -78,6 +82,21 @@ export interface DirectorWarning {
   severity?: "warning" | "error";
 }
 
+export interface DirectorTriageTier {
+  shots: number;
+  cost: number;
+  ids: string[];
+}
+
+export interface DirectorTriage {
+  tiers: {
+    "1": DirectorTriageTier;
+    "2": DirectorTriageTier;
+    "3": DirectorTriageTier;
+  };
+  needs_review: string[];
+}
+
 export interface DirectorCoveragePlan {
   plan_id: string;
   scene_id: string;
@@ -95,6 +114,7 @@ export interface DirectorCoveragePlan {
     characters?: string[];
     props?: string[];
   } | string;
+  triage?: DirectorTriage;
   created_by?: "planner" | "manual";
   version?: number;
   coverage: DirectorShot[];

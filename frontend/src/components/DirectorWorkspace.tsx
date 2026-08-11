@@ -20,6 +20,7 @@ import ProblemQueueDrawer from "./ProblemQueueDrawer";
 import TakeSelectorModal from "./TakeSelectorModal";
 import CinemaScrubberPlayer from "./CinemaScrubberPlayer";
 import CompactMontageMatrix from "./CompactMontageMatrix";
+import CoverageRhythmBeatSheet from "./CoverageRhythmBeatSheet";
 import { MOCK_SCENES } from "../lib/directorApi";
 
 import {
@@ -40,6 +41,7 @@ import {
   LayoutGrid,
   Play,
   Grid,
+  List,
 } from "lucide-react";
 
 interface DirectorWorkspaceProps {
@@ -72,8 +74,8 @@ export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUr
     economicalVsQuality: 75,
   });
 
-  // Drawer, Modal & Review Mode State
-  const [reviewMode, setReviewMode] = useState<"grid" | "scrubber" | "matrix">("grid");
+  // Drawer, Modal & Review Mode State (Plan Review vs Take Review)
+  const [reviewMode, setReviewMode] = useState<"rhythm" | "grid" | "scrubber" | "matrix">("rhythm");
   const [selectedShot, setSelectedShot] = useState<DirectorShot | null>(null);
   const [problemDrawerOpen, setProblemDrawerOpen] = useState<boolean>(false);
   const [takeModalShot, setTakeModalShot] = useState<DirectorShot | null>(null);
@@ -429,16 +431,28 @@ export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUr
         </div>
       )}
 
-      {/* SECTION 4: Review Modes & Storyboard Coverage */}
+      {/* SECTION 4: Dual Review Surfaces (Plan Review vs Take Review) */}
       <div className="flex flex-col gap-3">
-        <div className="flex items-center justify-between text-xs font-mono font-bold text-zinc-400 px-1">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs font-mono font-bold text-zinc-400 gap-2 px-1">
           <div className="flex items-center gap-2">
-            <span>COVERAGE REVIEW MODE</span>
+            <span className="text-zinc-200">COVERAGE REVIEW SURFACE</span>
             <span className="text-[10px] text-zinc-500">({coveragePlan.coverage.length} Shots)</span>
           </div>
 
-          {/* Mode Switcher Buttons */}
-          <div className="flex items-center bg-zinc-950 p-1 rounded-lg border border-zinc-800 gap-1">
+          {/* Mode Switcher Buttons Grouped by Phase */}
+          <div className="flex flex-wrap items-center bg-zinc-950 p-1 rounded-lg border border-zinc-800 gap-1">
+            <span className="text-[10px] font-mono text-zinc-500 px-1.5 uppercase font-bold">Plan Review (Pre-Gen):</span>
+            <button
+              onClick={() => setReviewMode("rhythm")}
+              className={`px-2.5 py-1 rounded transition flex items-center gap-1.5 text-xs font-mono font-bold ${
+                reviewMode === "rhythm"
+                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                  : "text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              <List className="w-3.5 h-3.5" />
+              <span>Rhythm & Beat Sheet</span>
+            </button>
             <button
               onClick={() => setReviewMode("grid")}
               className={`px-2.5 py-1 rounded transition flex items-center gap-1.5 text-xs font-mono font-bold ${
@@ -448,35 +462,42 @@ export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUr
               }`}
             >
               <LayoutGrid className="w-3.5 h-3.5" />
-              <span>Storyboard Grid</span>
+              <span>Storyboard Cards</span>
             </button>
+
+            <span className="text-[10px] font-mono text-zinc-500 px-1.5 uppercase font-bold border-l border-zinc-800 pl-2">Take Review (Post-Compile):</span>
             <button
               onClick={() => setReviewMode("scrubber")}
               className={`px-2.5 py-1 rounded transition flex items-center gap-1.5 text-xs font-mono font-bold ${
                 reviewMode === "scrubber"
-                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                  ? "bg-purple-500/20 text-purple-300 border border-purple-500/40"
                   : "text-zinc-500 hover:text-zinc-300"
               }`}
             >
-              <Play className="w-3.5 h-3.5" />
+              <Play className="w-3.5 h-3.5 text-purple-400" />
               <span>Cinema Scrubber</span>
             </button>
             <button
               onClick={() => setReviewMode("matrix")}
               className={`px-2.5 py-1 rounded transition flex items-center gap-1.5 text-xs font-mono font-bold ${
                 reviewMode === "matrix"
-                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                  ? "bg-purple-500/20 text-purple-300 border border-purple-500/40"
                   : "text-zinc-500 hover:text-zinc-300"
               }`}
             >
-              <Grid className="w-3.5 h-3.5" />
+              <Grid className="w-3.5 h-3.5 text-purple-400" />
               <span>Montage Matrix</span>
             </button>
           </div>
         </div>
 
         {/* View Mode Rendering */}
-        {reviewMode === "scrubber" ? (
+        {reviewMode === "rhythm" ? (
+          <CoverageRhythmBeatSheet
+            shots={coveragePlan.coverage}
+            onSelectShot={(s) => setSelectedShot(s)}
+          />
+        ) : reviewMode === "scrubber" ? (
           <CinemaScrubberPlayer
             shots={coveragePlan.coverage}
             onSelectShot={(s) => setSelectedShot(s)}
