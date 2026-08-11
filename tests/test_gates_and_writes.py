@@ -136,3 +136,73 @@ def test_setting_the_active_project_repoints_the_process_config(tmp_path, monkey
     assert config.MANIFEST_PATH == man.resolve()
     assert config.CHARACTERS_CONFIG == proj.resolve() / "characters.json"
     assert config.ASSETS == proj.resolve() / "assets"
+
+
+# --- paid assets: never re-bill, never ship a deleted take --------------------
+
+def test_deleting_the_active_take_replaces_the_clip_in_the_cut(tmp_path, monkeypatch):
+    """Repointing shot.video_clip left render/<scene>.mp4 holding the DELETED
+    take's pixels, so preview, FCPXML and master all kept playing the rejected
+    take -- and the re-bill guard then refused to re-render over it."""
+    from backend import config
+    from backend import main as M
+    from backend.manifest import Camera, MotionType, Shot, Storyboard
+
+    assets = tmp_path / "assets" / "s001"
+    render = tmp_path / "render"
+    assets.mkdir(parents=True); render.mkdir(parents=True)
+    take_a, take_b = assets / "v0.mp4", assets / "v1.mp4"
+    take_a.write_bytes(b"AAAA"); take_b.write_bytes(b"BBBB")
+    placed = render / "s001.mp4"
+    placed.write_bytes(b"AAAA")                       # take A is in the cut
+
+    shot = Shot(scene_id="s001", narration="n", prompt="p",
+                camera=Camera(move="static", duration=6.0),
+                motion_type=MotionType.AI_VIDEO)
+    shot.video_variations = [str(take_a), str(take_b)]
+    shot.video_clip = str(take_a)
+    sb = Storyboard(title="T", shots=[shot], storyboard_approved=True)
+
+    monkeypatch.setattr(M, "get_current_project", lambda: sb)
+    monkeypatch.setattr(M, "save_current_project", lambda _sb: None)
+    monkeypatch.setattr(M.config, "episode_paths",
+                        lambda title: {"render": render, "narration": tmp_path,
+                                       "sfx": tmp_path, "root": tmp_path})
+    monkeypatch.setattr(M.config, "resolve_media",
+                        lambda rel, scene_id=None: Path(rel) if Path(rel).is_file() else None)
+    monkeypatch.setattr(M, "log_job", lambda *a, **k: None)
+
+    res = M.delete_video_variation("s001", 0)
+    assert res["ok"] and res["now_active"] == str(take_b)
+    assert not take_a.exists(), "the rejected take's file is gone"
+    assert placed.read_bytes() == b"BBBB", "the cut must play the surviving take"
+
+
+def test_deleting_the_last_take_clears_the_placed_clip(tmp_path, monkeypatch):
+    from backend import main as M
+    from backend.manifest import Camera, MotionType, Shot, Storyboard
+
+    assets = tmp_path / "assets" / "s001"; render = tmp_path / "render"
+    assets.mkdir(parents=True); render.mkdir(parents=True)
+    only = assets / "v0.mp4"; only.write_bytes(b"AAAA")
+    placed = render / "s001.mp4"; placed.write_bytes(b"AAAA")
+
+    shot = Shot(scene_id="s001", narration="n", prompt="p",
+                camera=Camera(move="static", duration=6.0),
+                motion_type=MotionType.AI_VIDEO)
+    shot.video_variations = [str(only)]
+    shot.video_clip = str(only)
+    sb = Storyboard(title="T", shots=[shot], storyboard_approved=True)
+
+    monkeypatch.setattr(M, "get_current_project", lambda: sb)
+    monkeypatch.setattr(M, "save_current_project", lambda _sb: None)
+    monkeypatch.setattr(M.config, "episode_paths",
+                        lambda title: {"render": render, "narration": tmp_path,
+                                       "sfx": tmp_path, "root": tmp_path})
+    monkeypatch.setattr(M.config, "resolve_media",
+                        lambda rel, scene_id=None: Path(rel) if Path(rel).is_file() else None)
+
+    res = M.delete_video_variation("s001", 0)
+    assert res["ok"] and res["now_active"] is None
+    assert shot.video_clip is None
+    assert not placed.exists(), "no take left, so nothing may remain in the cut"

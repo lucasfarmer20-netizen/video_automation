@@ -569,6 +569,20 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
 
             if is_ai and not force_paid and (shot.video_clip or shot.video_variations):
                 placed = out_dir / f"{shot.scene_id}.mp4"
+                # The clip may be paid for and on disk without being PLACED:
+                # generate_shot_video explicitly tolerates placement failing --
+                # it persists the variation, catches, and tells the user "the clip
+                # was generated and kept". That state passed the manifest test and
+                # failed the file test, so the next batch called fal again for a
+                # clip already sitting under assets/. Re-place before re-billing.
+                if not placed.exists():
+                    for cand in ([shot.video_clip] if shot.video_clip else []) + list(shot.video_variations or []):
+                        if cand and config.resolve_media(cand, shot.scene_id):
+                            log(f"[{idx}/{total}] {shot.scene_id}: paid clip already "
+                                f"generated but never placed — placing it instead of "
+                                f"re-billing.")
+                            set_active_video_clip(sb, shot, cand, out_dir)
+                            break
                 if placed.exists():
                     log_job(
                         "render",
@@ -3212,14 +3226,27 @@ def delete_video_variation(scene_id: str, var_idx: int):
         rel_path = video_vars.pop(var_idx)
         abs_path = config.resolve_media(rel_path, scene_id)
         if abs_path is not None:
-            abs_path.unlink()
+            abs_path.unlink(missing_ok=True)
 
-
+        # Repointing shot.video_clip was not enough: render/<scene>.mp4 still held
+        # the DELETED take's pixels, so preview, FCPXML and master all kept playing
+        # the take that was just rejected. Re-rendering did not help either -- the
+        # re-bill guard sees a placed file and logs "paid clip already rendered --
+        # keeping it" -- so the only escapes were re-billing with force_paid or
+        # manually re-picking a variation.
+        replaced = None
         if shot.video_clip == rel_path:
-            shot.video_clip = video_vars[0] if video_vars else None
-            
+            out_dir = config.episode_paths(sb.title)["render"]
+            if video_vars:
+                set_active_video_clip(sb, shot, video_vars[0], out_dir)
+                replaced = video_vars[0]
+            else:
+                shot.video_clip = None
+                (out_dir / f"{scene_id}.mp4").unlink(missing_ok=True)
+
         save_current_project(sb)
-        return {"ok": True}
+        return {"ok": True, "deleted": rel_path, "now_active": replaced,
+                "remaining": len(video_vars)}
     except HTTPException as he:
         raise he
     except Exception as e:
