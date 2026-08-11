@@ -141,12 +141,12 @@ caches waveform envelopes. Worth building then, against a known shape.
 
 ---
 
-## 6. Three gaps in the current workspace
+## 5. Three gaps in the current workspace
 
 Written after reading `DirectorWorkspace.tsx` and `directorApi.ts` at `09dea91`.
 The rewire to the shipped contract is done and correct — these are what remain.
 
-### 6.1 The survey should be the entry point, not the beat card
+### 5.1 The survey should be the entry point, not the beat card
 
 `GET /api/director/survey` (new) answers the question that comes *before* opening
 a workspace: **which beats are worth covering at all.**
@@ -187,7 +187,7 @@ COVERAGE SURVEY                    616s episode · 197s frozen if untouched (32%
 ○    s018   11.4s  static     short enough to hold                —
 ```
 
-### 6.2 Warnings belong on the shot they name, not only in a drawer
+### 5.2 Warnings belong on the shot they name, not only in a drawer
 
 Every warning already carries `beat_id` and `shot_id` precisely so it can be
 rendered in place:
@@ -207,7 +207,7 @@ Keep the drawer as the *queue* (Problem Queue, `?tier=needs_review`), but it
 should navigate to shots rather than being the only place the text appears.
 A warning with `shot_id: ""` is scene-level and belongs in the header.
 
-### 6.3 Re-critique after edits — and mark the warnings stale meanwhile
+### 5.3 Re-critique after edits — and mark the warnings stale meanwhile
 
 `critiqueCoverage()` exists in `directorApi.ts` and nothing calls it. The critic
 currently runs only inside **Redirect Scene**, which re-plans — so after a hand
@@ -227,7 +227,7 @@ to drive both the running tally and the staleness flag without a second request.
 
 ---
 
-## 5. The division that keeps us in sync
+## 6. The division that keeps us in sync
 
 **Backend owns:** what a tier means, what a duration may be, which model serves a
 shot, whether a plan can compile, what anything costs.
