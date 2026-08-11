@@ -82,7 +82,7 @@ export default function CompactMontageMatrix({
               {/* Micro Shot Thumbnails Grid */}
               <div className="flex flex-wrap items-center gap-1.5 flex-1">
                 {allShots
-                  .filter((s) => s.scene_id === scene.scene_id || s.beat_id.startsWith("s004"))
+                  .filter((s) => Boolean(s.beat_id))
                   .slice(0, scene.shots_count)
                   .map((shot) => {
                     const isAiVideo = shot.motion_type === "ai_video";
