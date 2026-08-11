@@ -1,7 +1,7 @@
 # Overnight review — what changed and what to do
 
-Four agent review rounds (272 agents) plus a targeted verification pass, and 14
-fix commits. **Nothing is deployed.** Everything below is on `main`, pushed.
+Four agent review rounds plus a targeted verification pass — 285 agents, 18 fix
+commits. **Nothing is deployed.** Everything below is on `main`, pushed.
 
 ## Deploy
 
@@ -98,15 +98,43 @@ just a bug fix.
 
 ## How much to trust this
 
-Every fix has a test verified by reverting the fix and watching it fail. But the
-honest number: **roughly half the fixes written tonight contained an error that a
-later round found.** Round 1's gcsfuse fix did literally nothing. Round 2's
-field-validation fix was a regression that killed the Tier-C budget control and
-shipped green because that endpoint had no tests. Both are fixed, and both were
-found by pointing agents at the newest code rather than the oldest.
+Every fix has a test verified by reverting the fix and watching it fail, and the
+money-path guards are additionally mutation-tested — each clause removed in turn
+and confirmed to break a test.
+
+The honest number: **roughly half the fixes written tonight contained an error a
+later round found.** Three examples, all mine:
+
+- The round-1 gcsfuse fix did literally nothing — `copy_function` governs file
+  copies only, and `copytree` `copystat`s directories regardless.
+- The round-2 field-validation fix was a regression that killed the Tier-C budget
+  control, and shipped green because that endpoint had no tests.
+- The round-4 re-bill guard asked only "is there a file at target?" — and
+  `motion.render_shot` writes that exact path, so a **free** parallax render was
+  accepted as the paid clip. Reproduced: 0 paid calls, free footage shipped as
+  paid, $0.00 recorded. That is worse than the re-billing it replaced, because it
+  is silent.
+
+Three tests I wrote were vacuous and were caught by mutation-testing rather than
+by reading them: one wrote its fixture to a path the guard never reads, and two
+used 2.0s as an "unroutable" length when 2.0s is exactly `wan_2_7`'s floor. All
+are fixed and now fail when the code they guard is reverted.
+
+The pattern that worked: **point the agents at the newest code, not the oldest.**
+Every round found more in the previous round's fixes than in the original
+codebase.
 
 Treat the first paid run as a test. Watch the render log, and check the cost on
 the Gate-1 screen against what actually lands.
+
+## Known flaky test
+
+`tests/test_director.py::test_gestural_*` fails intermittently with
+`x264 [error]: malloc of size 3325760 failed`. It is memory pressure from running
+four agent workflows against this box overnight, it reproduces on unmodified
+HEAD, and it is not a defect. `-threads 1` does not help; `-preset ultrafast`
+does but shifts output by ~2 frames and breaks the duration assertions the helper
+exists to support, so neither was kept. It should stop once the box is idle.
 
 ## Test suite
 
