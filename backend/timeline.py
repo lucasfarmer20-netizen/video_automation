@@ -339,16 +339,32 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
     if peak > 1.0:
         mix /= peak
 
+    # Per-episode temp names. These were hardcoded "_leshy_*" from when the
+    # pipeline built one episode, which is both confusing in a traceback and a
+    # collision waiting to happen: two builds would write the same three files.
     scratch = Path(tempfile.gettempdir())
-    wav = scratch / "_leshy_mix.wav"
+    tag = config.slug(sb.title or "episode")[:40] or "episode"
+    wav = scratch / f"_{tag}_mix.wav"
     wavfile.write(str(wav), sr, (mix * 32767).astype(np.int16))
-    concat = scratch / "_leshy_concat.txt"
+    concat = scratch / f"_{tag}_concat.txt"
+    # Every beat must have a clip. Without this the concat demuxer is handed
+    # paths that do not exist and exits 254, whose message names neither the
+    # missing files nor the fact that anything is missing at all.
+    missing = [s.scene_id for s in sb.shots
+               if not (render_dir / f"{s.scene_id}.mp4").is_file()]
+    if missing:
+        raise RuntimeError(
+            f"cannot build a preview: {len(missing)} of {len(sb.shots)} beats have "
+            f"no rendered clip ({', '.join(missing[:8])}"
+            f"{' …' if len(missing) > 8 else ''}). Render the beats first."
+        )
+
     concat.write_text(
         "".join(f"file '{(render_dir / (s.scene_id + '.mp4')).resolve().as_posix()}'\n"
                 for s in sb.shots),
         encoding="utf-8",
     )
-    tmpv = scratch / "_leshy_v.mp4"
+    tmpv = scratch / f"_{tag}_v.mp4"
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
                     "-i", str(concat), "-c", "copy", str(tmpv)], check=True)
     out = Path(out) if out else (render_dir / "_preview.mp4")
