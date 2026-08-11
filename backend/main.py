@@ -944,6 +944,11 @@ def get_active_project():
                 "script_locked": sb.script_locked,
                 "storyboard_approved": sb.storyboard_approved,
                 "voice_id": getattr(sb, "voice_id", "") or "",
+                # Which narrator this episode uses. Persisted correctly but absent
+                # from this payload, so the studio had no way to show it — the
+                # third hand-maintained field list this one value had to be added
+                # to (dataclass, from_dict, here).
+                "vo_profile": getattr(sb, "vo_profile", "") or "",
                 "music_track": sb.music_track or "",
                 "render": asdict(sb.render),
                 "shots": shots_payload,
