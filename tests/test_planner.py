@@ -282,3 +282,26 @@ def test_veo_rounds_the_same_direction_as_the_planner():
     so one shot came out a different length depending on which path rendered it."""
     assert cap.video_arguments("veo_3_1", 5.0)[0]["duration"] == "6s"
     assert cap.legal_durations("veo_3_1", 5.0)[0] == 6
+
+
+def test_aliased_model_keys_resolve_to_real_capabilities():
+    """main.py resolved the alias when building the endpoint URL but passed the RAW
+    key to the capability lookup, so the request went to one model while the limits
+    came from the permissive CONTINUOUS fallback (min 3, max 10, no enum)."""
+    from backend import assets
+    for alias, real in list(assets.VIDEO_BACKEND_ALIASES.items())[:8]:
+        if real not in cap.VIDEO_CAPS:
+            continue
+        assert cap.spec(alias)["key"] == real, alias
+        assert cap.spec(alias)["allowed_durations"] == cap.VIDEO_CAPS[real]["allowed_durations"]
+    # kling_2_5_turbo_pro is the entry that rendered on a different model for
+    # months; it must now report Kling 2.1's real 5/10 enum, not 3-10 continuous.
+    sp = cap.spec("kling_2_5_turbo_pro")
+    assert sp["allowed_durations"] == [5.0, 10.0]
+    assert cap.video_arguments("kling_2_5_turbo_pro", 3.0)[0]["duration"] == "5"
+
+
+def test_an_unknown_key_still_falls_back_rather_than_raising():
+    sp = cap.spec("something_nobody_registered")
+    assert sp["key"] == "something_nobody_registered"
+    assert sp["max_seconds"] > 0

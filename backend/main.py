@@ -420,7 +420,35 @@ def _pad_clip_to_beat(path: Path, target_seconds: float) -> None:
     except Exception:
         return
     shortfall = float(target_seconds) - float(current)
-    if current <= 0 or shortfall < 0.1:
+    if current <= 0 or abs(shortfall) < 0.1:
+        return
+
+    if shortfall < 0:
+        # The clip is LONGER than its beat, which happens whenever narration is
+        # re-recorded shorter and sync_durations shrinks the slot. This function
+        # only ever padded, so the over-long clip survived forever: the rough
+        # cut's stale-clip cleanup deliberately excludes AI_VIDEO, and the
+        # re-bill keep-branch calls straight back into here. build_preview then
+        # concatenates with -c copy while laying audio against manifest offsets,
+        # so every beat AFTER it drifts out of sync and -shortest truncates the
+        # tail. timeline.build trims correctly via source_range, so the FCPXML
+        # and the preview disagreed about the same cut.
+        trimmed = path.with_name(f"{path.stem}__trim.mp4")
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-i", str(path),
+                 "-t", f"{float(target_seconds):.3f}",
+                 "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-an",
+                 str(trimmed)],
+                check=True,
+            )
+            shutil.copyfile(trimmed, path)
+            trimmed.unlink(missing_ok=True)
+            log_job("render", f"  trimmed to beat length: {current:.1f}s -> "
+                              f"{float(target_seconds):.1f}s")
+        except Exception as exc:  # noqa: BLE001
+            trimmed.unlink(missing_ok=True)
+            log_job("render", f"  !! could not trim {path.name} to its beat: {exc}")
         return
 
     padded = path.with_name(f"{path.stem}__padded.mp4")
@@ -1041,14 +1069,7 @@ async def select_project(request: Request):
         #
         # The real fix is a job-scoped project context rather than globals; this
         # is the guard until that refactor lands.
-        running = [k for k, v in get_jobs_status().items() if v.get("status") == "running"]
-        if running:
-            raise HTTPException(
-                status_code=409,
-                detail=f"{', '.join(running)} still running — switching projects now "
-                       f"would redirect its output into the project you switch to. "
-                       f"Wait for it to finish.")
-
+        refuse_if_jobs_running("switching projects")
         set_active_manifest_path(str(p))
         return {"ok": True}
     except HTTPException as he:
@@ -1126,6 +1147,9 @@ async def delete_project(request: Request):
 
         size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
         was_active = config.MANIFEST_PATH.resolve() == p
+        if was_active:
+            # Deleting the active project repoints the globals to whatever remains.
+            refuse_if_jobs_running("deleting the active project")
 
         if purge:
             shutil.rmtree(target)
@@ -1183,6 +1207,9 @@ async def update_project_meta(request: Request):
 @app.post("/api/project/new")
 async def new_project(request: Request):
     try:
+        # Creating a project makes it active, which repoints the same globals
+        # /api/project/select is guarded against repointing.
+        refuse_if_jobs_running("creating a project")
         data = await request.json()
         name = (data.get("name") or "").strip()
         channel = (data.get("channel") or "bestiary").strip()
@@ -1975,6 +2002,32 @@ async def patch_director_shot(shot_id: str, request: Request):
             raise HTTPException(status_code=404, detail=f"no shot {shot_id}")
 
         data = await request.json()
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+        # Accept the nested camera shape the studio was already sending. The
+        # drawer posted {"camera": {"duration": 4.2}} while this only ever read a
+        # flat "duration", so the slider round-tripped a 200 and changed nothing --
+        # the endpoint reported success for an edit it had silently discarded.
+        camera_in = data.pop("camera", None)
+        if isinstance(camera_in, dict):
+            if "duration" in camera_in and "duration" not in data:
+                data["duration"] = camera_in["duration"]
+            if "move" in camera_in and "camera_move" not in data:
+                data["camera_move"] = camera_in["move"]
+
+        # Reject what we cannot apply. Ignoring unknown keys is what let two
+        # separate client bugs report success for edits that never happened.
+        known = {"shot_size", "angle", "purpose", "composition", "subject",
+                 "prompt", "motion_prompt", "face_visibility", "gestural",
+                 "identity_critical", "camera_move", "duration", "motion_type"}
+        unknown = sorted(set(data) - known)
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown field(s) {unknown} — this endpoint accepts "
+                       f"{sorted(known)}. Nothing was changed.")
+
         for f in ("shot_size", "angle", "purpose", "composition", "subject",
                   "prompt", "motion_prompt", "face_visibility"):
             if f in data:
@@ -1999,7 +2052,11 @@ async def patch_director_shot(shot_id: str, request: Request):
             for o in sorted(others, key=lambda x: -x.duration):
                 if abs(remaining) < 0.01:
                     break
-                room = o.duration - 1.2 if remaining > 0 else float("inf")
+                # max(0.0, ...): a sibling already at or below the floor has no
+                # room to give. Without the clamp `room` goes negative, `take` is
+                # negative, and the sibling is LENGTHENED -- growing the very
+                # shortfall this loop is closing.
+                room = max(0.0, o.duration - planner.MIN_SHOT_SECONDS) if remaining > 0 else float("inf")
                 take = min(remaining, room) if remaining > 0 else remaining
                 o.camera.duration = round(o.duration - take, 2)
                 remaining = round(remaining - take, 2)
@@ -2922,21 +2979,68 @@ async def upload_shot_clip(scene_id: str, file: UploadFile = File(...)):
 
 
 def _move_tree(src: Path, dst: Path) -> None:
-    """Move a directory on the gcsfuse mount.
+    """Move a directory on the gcsfuse mount, by hand.
 
-    Plain ``shutil.move`` cannot work here. ``os.rename`` is unsupported for
-    directories on the mount, so shutil falls back to ``copytree`` with the default
-    ``copy2`` -- which calls ``copystat`` -- and gcsfuse rejects chmod/utime with
-    ``[Errno 1] Operation not permitted``. ``copytree`` then raises before
-    ``rmtree(src)`` runs, so the caller sees a 500, the project is still there, and
-    a full byte-for-byte copy has been left behind in ``_trash``, which
-    ``_scan_projects`` hides. Every retry doubled the storage silently.
+    shutil.move cannot do this. os.rename is unsupported for directories on the
+    mount, so shutil falls back to copytree -- and copytree calls
+    ``copystat(src, dst)`` on every DIRECTORY unconditionally, at
+    shutil._copytree's last line, regardless of copy_function. gcsfuse rejects the
+    chmod/utime that implies with "[Errno 1] Operation not permitted". copytree
+    then raises before rmtree(src) runs, so the caller saw a 500, the project was
+    still there, and a full byte-for-byte duplicate was left in _trash -- which
+    _scan_projects hides. Every retry doubled the storage silently.
 
-    ``copyfile`` copies bytes without touching metadata, which is the operation the
-    mount actually supports. Same reason ``director.py`` and ``save_shot_assets``
-    use it.
+    Passing copy_function=shutil.copyfile does NOT fix that: copy_function governs
+    file copies only. I made exactly that mistake, and the review caught that the
+    behaviour was identical to no fix at all. So this walks the tree itself and
+    touches no metadata anywhere.
+
+    The source is removed only after the copy is verified file-for-file, because
+    the failure this replaces was one where a half-finished move reported success.
     """
-    shutil.move(str(src), str(dst), copy_function=shutil.copyfile)
+    src, dst = Path(src), Path(dst)
+    dst.mkdir(parents=True, exist_ok=True)
+
+    copied = 0
+    for item in sorted(src.rglob("*")):
+        target = dst / item.relative_to(src)
+        if item.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(item, target)     # bytes only; never copy2/copystat
+            copied += 1
+
+    expected = sum(1 for f in src.rglob("*") if f.is_file())
+    landed = sum(1 for f in dst.rglob("*") if f.is_file())
+    if landed < expected:
+        raise RuntimeError(
+            f"refusing to delete {src.name}: copied {landed} of {expected} file(s) "
+            f"to {dst}. The source is untouched."
+        )
+    shutil.rmtree(src)
+
+
+def refuse_if_jobs_running(what: str) -> None:
+    """Refuse an operation that repoints the process config while a job is live.
+
+    config.MANIFEST_PATH / ASSETS / REFERENCES_DIR are process globals that worker
+    threads read at call time, on a single Cloud Run instance. Repointing them
+    mid-render means save_shot_assets can no longer find the beat's scene_id in
+    the now-active manifest, returns early, and the paid clip ends up recorded in
+    NO manifest at all -- so the next non-forced render bills for it again.
+
+    This guard was added to /api/project/select and only there. /api/project/new
+    and the was_active branch of /api/project/delete rebind the same globals and
+    had no check, which is what comes of attaching a guard to one route instead of
+    to the thing it protects.
+    """
+    running = [k for k, v in get_jobs_status().items() if v.get("status") == "running"]
+    if running:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{', '.join(running)} still running — {what} now would redirect "
+                   f"its output into another project. Wait for it to finish.")
 
 
 def require_paid_gate(sb, what: str = "render") -> None:
@@ -3599,7 +3703,12 @@ def build_rough_cut(force_paid: bool = False):
             retimed = [s for s in sb.shots
                        if s.camera and abs(before.get(s.scene_id, 0.0)
                                            - float(s.camera.duration)) > 0.05
-                       and s.motion_type != MotionType.AI_VIDEO]
+                       and s.motion_type != MotionType.AI_VIDEO
+                       # A beat assembled from a locked director plan owns its
+                       # clip regardless of tier. Deleting a compiled parallax
+                       # coverage beat here would throw away a real compile and
+                       # silently fall back to a single-shot render.
+                       and not director.has_locked_coverage(s.scene_id)]
             if retimed:
                 rdir = ep["render"]
                 for s in retimed:

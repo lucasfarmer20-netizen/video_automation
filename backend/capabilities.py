@@ -153,10 +153,30 @@ COST_PER_IMAGE = float(os.environ.get("COST_PER_IMAGE", "0.15"))
 
 
 def spec(key: str) -> dict:
-    """Capabilities for a video backend, with permissive defaults."""
+    """Capabilities for a video backend, with permissive defaults.
+
+    The key is resolved through ``assets.VIDEO_BACKEND_ALIASES`` HERE rather than
+    at the call sites. main.py resolved the alias when building the endpoint URL
+    and then passed the RAW string to video_arguments/clamp_duration, so the
+    request went to the right model while the limits came from the permissive
+    CONTINUOUS fallback -- min 3, max 10, no duration_values, no
+    supports_generate_audio. A legacy manifest naming an aliased model could
+    therefore still be sent a duration its endpoint rejects, which is precisely
+    the failure this table exists to prevent.
+
+    Resolving inside spec() means no caller can get it wrong.
+    """
+    resolved = key
+    try:
+        aliases = getattr(assets, "VIDEO_BACKEND_ALIASES", {}) or {}
+        if key not in VIDEO_CAPS:
+            resolved = aliases.get(key) or aliases.get(str(key).lower()) or key
+    except Exception:  # noqa: BLE001 — a missing alias table must not break lookup
+        resolved = key
     caps = dict(CONTINUOUS)
-    caps.update(VIDEO_CAPS.get(key, {}))
-    caps["key"] = key
+    caps.update(VIDEO_CAPS.get(resolved, {}))
+    caps["key"] = resolved
+    caps["requested_key"] = key
     caps["label"] = (assets.VIDEO_BACKENDS.get(key, {}) or {}).get("label", key)
     caps["supports_extend"] = bool((assets.VIDEO_BACKENDS.get(key, {}) or {}).get("supports_extend"))
     return caps

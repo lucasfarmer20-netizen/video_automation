@@ -206,3 +206,95 @@ def test_deleting_the_last_take_clears_the_placed_clip(tmp_path, monkeypatch):
     assert res["ok"] and res["now_active"] is None
     assert shot.video_clip is None
     assert not placed.exists(), "no take left, so nothing may remain in the cut"
+
+
+# --- moving a project on a mount that rejects metadata ------------------------
+
+def _mount_like_gcsfuse(monkeypatch):
+    """Make copystat/chmod/utime raise the way gcsfuse does.
+
+    Without this the tests pass on a normal filesystem no matter what the code
+    does -- which is exactly why the first version of this fix looked correct and
+    changed nothing.
+    """
+    import shutil as _sh
+    import os as _os
+
+    def denied(*a, **k):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(_sh, "copystat", denied)
+    monkeypatch.setattr(_os, "chmod", denied)
+    monkeypatch.setattr(_os, "utime", denied)
+    # Directory renames are unsupported on the mount, which is what sends
+    # shutil.move down the copytree path in the first place.
+    real_rename = _os.rename
+    def rename(src, dst, *a, **k):
+        if Path(src).is_dir():
+            raise OSError(18, "Invalid cross-device link")
+        return real_rename(src, dst, *a, **k)
+    monkeypatch.setattr(_os, "rename", rename)
+
+
+def _project(root: Path) -> Path:
+    p = root / "chan" / "Ep"
+    (p / "assets" / "s001").mkdir(parents=True)
+    (p / "render").mkdir()
+    (p / "storyboard_manifest.json").write_text("{}", encoding="utf-8")
+    (p / "assets" / "s001" / "v0.png").write_bytes(b"img")
+    (p / "render" / "s001.mp4").write_bytes(b"vid")
+    return p
+
+
+def test_plain_shutil_move_really_does_fail_on_this_mount(tmp_path, monkeypatch):
+    """The premise. If this ever stops failing, the fix below is unnecessary."""
+    import shutil as _sh
+    _mount_like_gcsfuse(monkeypatch)
+    src = _project(tmp_path)
+    with pytest.raises(Exception):
+        _sh.move(str(src), str(tmp_path / "_trash" / "Ep"))
+
+
+def test_copy_function_copyfile_is_not_enough(tmp_path, monkeypatch):
+    """The mistake this fix corrects: copy_function governs FILE copies only, and
+    shutil._copytree copystat()s every directory regardless."""
+    import shutil as _sh
+    _mount_like_gcsfuse(monkeypatch)
+    src = _project(tmp_path)
+    with pytest.raises(Exception):
+        _sh.move(str(src), str(tmp_path / "_trash" / "Ep"),
+                 copy_function=_sh.copyfile)
+
+
+def test_move_tree_moves_everything_and_removes_the_source(tmp_path, monkeypatch):
+    from backend import main as M
+    _mount_like_gcsfuse(monkeypatch)
+    src = _project(tmp_path)
+    dst = tmp_path / "_trash" / "Ep"
+
+    M._move_tree(src, dst)
+
+    assert not src.exists(), "the source must be gone after a move"
+    assert (dst / "storyboard_manifest.json").read_text() == "{}"
+    assert (dst / "assets" / "s001" / "v0.png").read_bytes() == b"img"
+    assert (dst / "render" / "s001.mp4").read_bytes() == b"vid"
+
+
+def test_move_tree_keeps_the_source_when_the_copy_is_short(tmp_path, monkeypatch):
+    """A half-finished move must never delete the original -- the whole failure
+    being replaced is one where an incomplete move reported success."""
+    import shutil as _sh
+    from backend import main as M
+    _mount_like_gcsfuse(monkeypatch)
+    src = _project(tmp_path)
+
+    real_copyfile = _sh.copyfile
+    def flaky(a, b, *args, **kw):
+        if str(a).endswith("s001.mp4"):
+            return b        # silently copies nothing
+        return real_copyfile(a, b, *args, **kw)
+    monkeypatch.setattr(M.shutil, "copyfile", flaky)
+
+    with pytest.raises(RuntimeError, match="refusing to delete"):
+        M._move_tree(src, tmp_path / "_trash" / "Ep")
+    assert src.exists() and (src / "render" / "s001.mp4").is_file()

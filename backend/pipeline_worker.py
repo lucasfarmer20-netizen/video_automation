@@ -46,8 +46,17 @@ def start_job(name: str, fn: Callable[[], None]) -> bool:
             with _jobs_lock:
                 _jobs[name]["status"] = "done"
         except Exception as e:
-            err_str = traceback.format_exc()
-            log_job(name, f"Process failed with error: {e}\n{err_str}")
+            # The full traceback goes to stdout (Cloud Logging), not into the job
+            # buffer: GET /api/assemble/status is UNAUTHENTICATED -- the middleware
+            # only checks X-Studio-Key on non-GET methods -- so anything put here
+            # is public, and a traceback carries absolute container paths plus
+            # whatever appears in the frames.
+            #
+            # The type and message stay, because a job that failed must still say
+            # why. Surfacing that was the point of this buffer in the first place.
+            print(f"[job:{name}] failed:")
+            print(traceback.format_exc())
+            log_job(name, f"Process failed with error: {type(e).__name__}: {e}")
             with _jobs_lock:
                 _jobs[name]["status"] = "error"
 

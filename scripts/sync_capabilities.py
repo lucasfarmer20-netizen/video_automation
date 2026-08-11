@@ -108,6 +108,10 @@ def main() -> None:
         if not d:
             print(f"{key:20} no duration field — leaving as configured")
             continue
+        # Read from the same Input schema. This was d.get("generate_audio"), a key
+        # duration_spec never produces, so --write emitted False for every model
+        # and would have wiped the correct values on the next run.
+        d["generate_audio"] = "generate_audio" in ((_input_schema(doc) or {}).get("properties") or {})
         found[key] = d
         vals = d.get("values")
         rng = f"{d.get('minimum')}-{d.get('maximum')}" if not vals else ""
@@ -117,6 +121,18 @@ def main() -> None:
     if not args.write:
         print("\n(dry run — pass --write to update backend/capabilities.py)")
         return
+
+    # A partial fetch must not become a partial table. --write splices the
+    # generated block over the WHOLE VIDEO_CAPS literal, so any model whose schema
+    # failed to fetch was silently dropped -- while the log said "leaving as
+    # configured", which was untrue.
+    missing = [k for k in assets.VIDEO_BACKENDS if k not in found]
+    if missing:
+        print()
+        print(f"Refusing to write: no schema for {missing}. "
+              f"Writing now would DELETE those entries from VIDEO_CAPS, not leave "
+              f"them as configured. Re-run when the fetches succeed.")
+        raise SystemExit(1)
 
     path = Path(__file__).resolve().parent.parent / "backend" / "capabilities.py"
     src = path.read_text(encoding="utf-8")

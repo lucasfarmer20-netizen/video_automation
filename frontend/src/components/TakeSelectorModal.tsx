@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { DirectorShot } from "../types/director";
 import { UserCheck, CheckCircle2, X, Sparkles, Image as ImageIcon } from "lucide-react";
 
@@ -19,18 +19,24 @@ export default function TakeSelectorModal({
   onSelectTake,
   mediaUrl,
 }: TakeSelectorModalProps) {
+  // Hooks must run on EVERY render, so the early return cannot come first.
+  // It did: React saw zero hooks on the initial render and one the moment the
+  // modal opened, and threw "Rendered more hooks than during the previous
+  // render." The Take Selector could not be opened at all -- which is also why
+  // the chosen_variation round-trip below was unreachable rather than merely
+  // broken.
+  const [activeChoice, setActiveChoice] = useState<number>(shot?.chosen_variation ?? 0);
+
+  useEffect(() => {
+    if (shot) setActiveChoice(shot.chosen_variation ?? 0);
+  }, [shot?.id, shot?.chosen_variation]);
+
   if (!isOpen || !shot) return null;
 
-  const variations = shot.draft_variations.length > 0
-    ? shot.draft_variations
-    : [
-        "/media/assets/s004/var_01.png",
-        "/media/assets/s004/var_02.png",
-        "/media/assets/s004/var_03.png",
-        "/media/assets/s004/var_04.png",
-      ];
-
-  const [activeChoice, setActiveChoice] = useState<number>(shot.chosen_variation || 1);
+  // No placeholder takes. These were four hardcoded /media/assets/s004/ paths,
+  // so a beat with no drafts showed another beat's images as though they were
+  // its own -- and s004 does not exist in every project.
+  const variations = shot.draft_variations || [];
 
   const handleConfirm = () => {
     onSelectTake(shot.id, activeChoice);
@@ -68,7 +74,17 @@ export default function TakeSelectorModal({
           </button>
         </div>
 
-        {/* 4-Take Grid */}
+        {/* Takes. An empty grid with no explanation is worse than a message. */}
+        {variations.length === 0 && (
+          <div className="p-6 bg-zinc-950 text-center">
+            <p className="text-sm font-mono text-zinc-400">
+              This beat has no draft takes yet.
+            </p>
+            <p className="mt-1 text-xs font-mono text-zinc-500">
+              Generate drafts for {shot.id} first — there is nothing to choose between.
+            </p>
+          </div>
+        )}
         <div className="p-6 grid grid-cols-2 md:grid-cols-4 gap-4 bg-zinc-950">
           {variations.slice(0, 4).map((varUrl, idx) => {
             const takeNum = idx + 1;

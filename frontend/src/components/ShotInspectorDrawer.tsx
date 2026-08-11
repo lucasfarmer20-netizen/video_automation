@@ -44,11 +44,20 @@ export default function ShotInspectorDrawer({
   const [angle, setAngle] = useState(shot.angle);
   const [motionType, setMotionType] = useState(shot.motion_type);
 
+  // Flat `duration`, because that is the key patch_director_shot reads. This sent
+  // {camera:{duration}}, which the endpoint ignored while returning 200 -- so the
+  // slider round-tripped a success and changed nothing on the server.
+  //
+  // Committed on release, not on change: at step=0.1 an onChange handler fires
+  // roughly fifty POSTs and fifty full-plan refetches across one drag, each of
+  // which rebalances the sibling shots.
   const handleSaveDuration = (val: number) => {
     setDuration(val);
-    onUpdateShot(shot.id, {
-      camera: { ...shot.camera, duration: val },
-    });
+  };
+
+  const commitDuration = (val: number) => {
+    if (Math.abs(val - (shot.camera?.duration ?? 0)) < 0.01) return;
+    onUpdateShot(shot.id, { duration: val } as any);
   };
 
   const getThumbnailSrc = () => {
@@ -180,11 +189,17 @@ export default function ShotInspectorDrawer({
             </div>
             <input
               type="range"
-              min="1.0"
+              /* 1.2 is planner.MIN_SHOT_SECONDS. At the old min of 1.0 the slider
+                 could ask for a shot below the floor, which drove the sibling
+                 rebalance into negative room on the server. */
+              min="1.2"
               max="10.0"
               step="0.1"
               value={duration}
               onChange={(e) => handleSaveDuration(parseFloat(e.target.value))}
+              onMouseUp={(e) => commitDuration(parseFloat((e.target as HTMLInputElement).value))}
+              onTouchEnd={(e) => commitDuration(parseFloat((e.target as HTMLInputElement).value))}
+              onKeyUp={(e) => commitDuration(parseFloat((e.target as HTMLInputElement).value))}
               className="w-full accent-amber-500 bg-zinc-800 h-1.5 rounded-lg cursor-pointer"
             />
           </div>
