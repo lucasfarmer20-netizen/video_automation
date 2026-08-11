@@ -287,3 +287,23 @@ def test_free_coverage_compiles_before_approval(tmp_path, monkeypatch):
         director.compile_coverage(plan, _sb(approved=False), tmp_path / "render",
                                   log=lambda m: None)
     assert "not approved" not in str(exc.value)
+
+
+@needs_ffmpeg
+def test_gestural_tolerates_a_sub_frame_overrun(tmp_path):
+    """A model asked for 5s returns 5.04s. That is a rounding error, not a gesture.
+
+    The guard fired on 0.04s -- one frame at 24fps -- and failed a compile whose
+    paid generation had otherwise succeeded end to end.
+    """
+    c = _make_clip(tmp_path / "g.mp4", 5.04)
+    director.fit_clip(c, 5.00, gestural=True, log=lambda m: None)
+    assert abs(director.probe_seconds(c) - 5.00) < 0.06
+
+
+@needs_ffmpeg
+def test_gestural_still_refuses_a_real_trim(tmp_path):
+    """The guard must still stop a cut that could land mid-movement."""
+    c = _make_clip(tmp_path / "g2.mp4", 5.0)
+    with pytest.raises(PlanError, match="gestural"):
+        director.fit_clip(c, 3.34, gestural=True, log=lambda m: None)

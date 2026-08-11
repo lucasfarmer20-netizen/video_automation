@@ -56,6 +56,15 @@ CANON_PIXFMT = "yuv420p"
 # laid against the manifest's durations, not the video's.
 DURATION_TOLERANCE = 0.05
 
+# How much a gestural clip may be trimmed before the movement is at risk.
+#
+# The guard exists to stop a sledge blow being cut at 80% of its swing. It fired
+# on a 0.04s overrun -- ONE FRAME at 24fps -- because a model asked for 5s
+# returned 5.04s, which they routinely do. A quarter second off the tail of a
+# five-second shot cannot break a gesture; a 1.7s trim can. The distinction is
+# the size of the cut, not whether the shot is gestural at all.
+GESTURAL_TRIM_TOLERANCE = 0.25
+
 PLAN_VERSION = 1
 
 # Only one compile renders at a time, process-wide.
@@ -439,11 +448,12 @@ def fit_clip(path: Path, want: float, gestural: bool = False, log=print) -> None
         log(f"  {path.name}: padded {have:.2f}s -> {want:.2f}s (froze final frame)")
         return
 
-    if gestural:
+    if gestural and abs(delta) > GESTURAL_TRIM_TOLERANCE:
         raise PlanError(
-            f"{path.name}: is {have:.2f}s but the shot wants {want:.2f}s, and it is "
-            f"marked gestural so it must not be trimmed mid-movement — regenerate it "
-            f"at a legal duration for this model, or clear `gestural`"
+            f"{path.name}: is {have:.2f}s but the shot wants {want:.2f}s "
+            f"({abs(delta):.2f}s over), and it is marked gestural so it must not be "
+            f"trimmed mid-movement — regenerate it at a legal duration for this "
+            f"model, or clear `gestural`"
         )
     tmp = path.with_name(f"{path.stem}__fit.mp4")
     subprocess.run(
