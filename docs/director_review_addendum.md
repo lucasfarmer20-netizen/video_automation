@@ -138,6 +138,93 @@ Deliberately. Pre-generation there is nothing to thumbnail, and post-generation
 take review is real it needs a cached sidecar, the way `/api/audio/peaks` already
 caches waveform envelopes. Worth building then, against a known shape.
 
+
+---
+
+## 6. Three gaps in the current workspace
+
+Written after reading `DirectorWorkspace.tsx` and `directorApi.ts` at `09dea91`.
+The rewire to the shipped contract is done and correct — these are what remain.
+
+### 6.1 The survey should be the entry point, not the beat card
+
+`GET /api/director/survey` (new) answers the question that comes *before* opening
+a workspace: **which beats are worth covering at all.**
+
+```jsonc
+{
+  "episode_seconds": 616.0,
+  "frozen_if_nothing_covered": 197.0,      // seconds
+  "frozen_pct": 32,
+  "recommended": ["s001","s006","s011", …],           // scored 3
+  "scenes": [["s001"],["s006"],["s011","s012","s013","s014","s015"], …],
+  "beats": [
+    { "beat_id": "s001", "seconds": 28.2, "motion_type": "ai_video",
+      "frozen_if_left": 18.2, "recommend": 3,
+      "reason": "18s of this paid beat would be a frozen frame (65% of it)",
+      "narration": "…" }
+  ]
+}
+```
+
+Today the only way in is a `DIRECT` button on a BeatCard, which means committing
+to cover a beat *before* anything says whether it is worth covering. The survey
+is free, instant and deterministic — no LLM call — so it can render on load.
+
+`scenes` is already grouped into contiguous runs, because planning is
+scene-level. That list is the work queue: on MichaelHeney it turns 13 recommended
+beats into 7 planning calls.
+
+Suggested shape — a list, not a grid:
+
+```
+COVERAGE SURVEY                    616s episode · 197s frozen if untouched (32%)
+
+●●●  s001   28.2s  ai_video   18s would be frozen (65%)          [ plan scene ]
+●●●  s006   25.9s  ai_video   16s would be frozen (61%)          [ plan scene ]
+●●●  s011–s015   129s  ai_video ×5   84s would be frozen         [ plan scene ]
+●●   s003   28.2s  parallax   28s on one image (~7 shots' worth)  [ plan ]
+○    s018   11.4s  static     short enough to hold                —
+```
+
+### 6.2 Warnings belong on the shot they name, not only in a drawer
+
+Every warning already carries `beat_id` and `shot_id` precisely so it can be
+rendered in place:
+
+```jsonc
+{ "beat_id": "s004", "shot_id": "s004.03", "kind": "repeated_framing",
+  "detail": "s004.02 and s004.03 are the same subject from the same axis…",
+  "suggestion": "Change s004.03 to a low or three_quarter angle." }
+```
+
+A drawer makes the reviewer hold "s004.03 has a problem" in their head while
+they go and find s004.03. Put the warning on the card — the shot and its
+criticism read together, and the suggestion is actionable where the edit
+controls already are.
+
+Keep the drawer as the *queue* (Problem Queue, `?tier=needs_review`), but it
+should navigate to shots rather than being the only place the text appears.
+A warning with `shot_id: ""` is scene-level and belongs in the header.
+
+### 6.3 Re-critique after edits — and mark the warnings stale meanwhile
+
+`critiqueCoverage()` exists in `directorApi.ts` and nothing calls it. The critic
+currently runs only inside **Redirect Scene**, which re-plans — so after a hand
+edit the Problems drawer describes the plan you *had*, not the one you have.
+
+Two changes:
+
+* A **Re-check** button calling `POST /api/director/critique` with the scene's
+  beats. One LLM call, no re-planning, and the shots you edited are preserved.
+* **Invalidate on edit.** Any successful `POST /api/director/shot/{id}` should
+  grey the warnings and label them stale until re-checked. Silently stale
+  criticism is worse than none, because it reads as current.
+
+`POST /api/director/shot/{id}` (new) is the sanctioned edit path and returns
+`coverage_total`, `beat_duration`, `problems` and `notes` on every call — enough
+to drive both the running tally and the staleness flag without a second request.
+
 ---
 
 ## 5. The division that keeps us in sync
