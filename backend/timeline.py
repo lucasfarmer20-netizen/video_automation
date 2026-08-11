@@ -192,11 +192,33 @@ def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
             missing.append(shot.scene_id)
             V.append(_gap(dur))
 
-        # A1 — narration for this beat
+        # A1 — narration, at the offset the studio set for it.
+        #
+        # This butted every VO to the head of its beat and ignored
+        # offset_narration entirely, while build_preview honours it (and the
+        # fades) at timeline.py's _place call. So the reviewer approved a cut at
+        # Gate 2 and Resolve received a different one, with the voice shifted by
+        # whatever offset had been dialled in. Same disagreement the SFX branch
+        # below already had, and the same fix.
+        #
+        # Fades are deliberately NOT emitted: OTIO expresses them as effects that
+        # the fcpx adapter does not round-trip, and inventing a representation
+        # here would be a third opinion about the mix. build_preview remains the
+        # authority on levels and fades; this track carries position and length.
         nf = narr_dir / f"{shot.scene_id}.mp3"
         if nf.exists():
-            nd = min(_probe_seconds(nf), dur)
-            _fill(A_narr, nd, dur, _clip(f"{shot.scene_id}_vo", nf, nd))
+            head = max(0.0, float(getattr(shot, "offset_narration", 0.0) or 0.0))
+            head = min(head, dur)
+            nd = min(_probe_seconds(nf), max(0.0, dur - head))
+            if nd <= 0.02:
+                _fill(A_narr, 0, dur, None)
+            else:
+                if head > 0.02:
+                    A_narr.append(_gap(head))
+                A_narr.append(_clip(f"{shot.scene_id}_vo", nf, nd))
+                tail = dur - head - nd
+                if tail > 0.02:
+                    A_narr.append(_gap(tail))
         else:
             _fill(A_narr, 0, dur, None)
 

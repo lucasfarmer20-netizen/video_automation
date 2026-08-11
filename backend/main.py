@@ -2016,17 +2016,45 @@ async def patch_director_shot(shot_id: str, request: Request):
             if "move" in camera_in and "camera_move" not in data:
                 data["camera_move"] = camera_in["move"]
 
-        # Reject what we cannot apply. Ignoring unknown keys is what let two
-        # separate client bugs report success for edits that never happened.
+        # Fields the SERVER owns. A client may echo them back in a round-tripped
+        # shot object; they are dropped, not rejected, because the server
+        # recomputes each one below and a 400 here would reject an otherwise
+        # valid edit.
+        #
+        # This is the correction to a regression I introduced: rejecting every
+        # unrecognised key without first grepping the callers 400'd the Motion
+        # Technique buttons (which send estimated_cost beside motion_type) and
+        # take selection (chosen_variation). That killed the Tier-C budget
+        # control -- the Gate-1 allocator -- in the name of a stricter contract.
+        for derived in ("estimated_cost", "backend", "constrained_by", "clip",
+                        "error", "id", "beat_id", "reason", "draft_variations"):
+            data.pop(derived, None)
+
+        # Reject what is genuinely unknown. Silently ignoring unrecognised keys is
+        # what let two separate client bugs report success for edits that never
+        # happened, so the check stays -- it just no longer fires on fields the
+        # server itself produced.
         known = {"shot_size", "angle", "purpose", "composition", "subject",
                  "prompt", "motion_prompt", "face_visibility", "gestural",
-                 "identity_critical", "camera_move", "duration", "motion_type"}
+                 "identity_critical", "camera_move", "duration", "motion_type",
+                 "chosen_variation"}
         unknown = sorted(set(data) - known)
         if unknown:
             raise HTTPException(
                 status_code=400,
                 detail=f"unknown field(s) {unknown} — this endpoint accepts "
                        f"{sorted(known)}. Nothing was changed.")
+
+        if "chosen_variation" in data:
+            v = data["chosen_variation"]
+            if v is not None:
+                v = int(v)
+                if not (0 <= v < max(1, len(ds.draft_variations or []))):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"take {v} does not exist for {shot_id} "
+                               f"({len(ds.draft_variations or [])} take(s) generated)")
+            ds.chosen_variation = v
 
         for f in ("shot_size", "angle", "purpose", "composition", "subject",
                   "prompt", "motion_prompt", "face_visibility"):

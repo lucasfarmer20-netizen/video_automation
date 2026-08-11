@@ -260,10 +260,11 @@ export default function ShotInspectorDrawer({
                   key={t.type}
                   onClick={() => {
                     setMotionType(t.type as any);
-                    onUpdateShot(shot.id, {
-                      motion_type: t.type as any,
-                      estimated_cost: t.type === "ai_video" ? 1.25 : 0.0,
-                    });
+                    // No estimated_cost. The server recomputes it from the
+                    // routed model and the shot's duration; a 1.25 literal here
+                    // was a second source of truth for a price, and the backend
+                    // owns prices.
+                    onUpdateShot(shot.id, { motion_type: t.type as any });
                   }}
                   className={`py-1.5 text-[11px] font-mono rounded border transition-colors ${
                     motionType === t.type
