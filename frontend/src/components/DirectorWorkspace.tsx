@@ -18,6 +18,9 @@ import DirectorShotCard from "./DirectorShotCard";
 import ShotInspectorDrawer from "./ShotInspectorDrawer";
 import ProblemQueueDrawer from "./ProblemQueueDrawer";
 import TakeSelectorModal from "./TakeSelectorModal";
+import CinemaScrubberPlayer from "./CinemaScrubberPlayer";
+import CompactMontageMatrix from "./CompactMontageMatrix";
+import { MOCK_SCENES } from "../lib/directorApi";
 
 import {
   Clapperboard,
@@ -34,6 +37,9 @@ import {
   CheckCircle2,
   ChevronRight,
   RotateCcw,
+  LayoutGrid,
+  Play,
+  Grid,
 } from "lucide-react";
 
 interface DirectorWorkspaceProps {
@@ -66,7 +72,8 @@ export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUr
     economicalVsQuality: 75,
   });
 
-  // Drawer & Modal State
+  // Drawer, Modal & Review Mode State
+  const [reviewMode, setReviewMode] = useState<"grid" | "scrubber" | "matrix">("grid");
   const [selectedShot, setSelectedShot] = useState<DirectorShot | null>(null);
   const [problemDrawerOpen, setProblemDrawerOpen] = useState<boolean>(false);
   const [takeModalShot, setTakeModalShot] = useState<DirectorShot | null>(null);
@@ -422,24 +429,83 @@ export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUr
         </div>
       )}
 
-      {/* SECTION 4: Coverage Storyboard Rail / Grid */}
-      <div className="flex flex-col gap-2">
+      {/* SECTION 4: Review Modes & Storyboard Coverage */}
+      <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between text-xs font-mono font-bold text-zinc-400 px-1">
-          <span>COVERAGE STORYBOARD ({coveragePlan.coverage.length} SHOTS)</span>
-          <span>Click any card to inspect or alter</span>
+          <div className="flex items-center gap-2">
+            <span>COVERAGE REVIEW MODE</span>
+            <span className="text-[10px] text-zinc-500">({coveragePlan.coverage.length} Shots)</span>
+          </div>
+
+          {/* Mode Switcher Buttons */}
+          <div className="flex items-center bg-zinc-950 p-1 rounded-lg border border-zinc-800 gap-1">
+            <button
+              onClick={() => setReviewMode("grid")}
+              className={`px-2.5 py-1 rounded transition flex items-center gap-1.5 text-xs font-mono font-bold ${
+                reviewMode === "grid"
+                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                  : "text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              <span>Storyboard Grid</span>
+            </button>
+            <button
+              onClick={() => setReviewMode("scrubber")}
+              className={`px-2.5 py-1 rounded transition flex items-center gap-1.5 text-xs font-mono font-bold ${
+                reviewMode === "scrubber"
+                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                  : "text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              <Play className="w-3.5 h-3.5" />
+              <span>Cinema Scrubber</span>
+            </button>
+            <button
+              onClick={() => setReviewMode("matrix")}
+              className={`px-2.5 py-1 rounded transition flex items-center gap-1.5 text-xs font-mono font-bold ${
+                reviewMode === "matrix"
+                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                  : "text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              <Grid className="w-3.5 h-3.5" />
+              <span>Montage Matrix</span>
+            </button>
+          </div>
         </div>
 
-        <div className="flex items-stretch gap-3 overflow-x-auto pb-3 pt-1 scrollbar-thin">
-          {coveragePlan.coverage.map((shot) => (
-            <DirectorShotCard
-              key={shot.id}
-              shot={shot}
-              isSelected={selectedShot?.id === shot.id}
-              onSelectShot={(s) => setSelectedShot(s)}
-              mediaUrl={mediaUrl}
-            />
-          ))}
-        </div>
+        {/* View Mode Rendering */}
+        {reviewMode === "scrubber" ? (
+          <CinemaScrubberPlayer
+            shots={coveragePlan.coverage}
+            onSelectShot={(s) => setSelectedShot(s)}
+            onQuickAction={(action, shot) => handleShotAction(action, shot)}
+            mediaUrl={mediaUrl}
+          />
+        ) : reviewMode === "matrix" ? (
+          <CompactMontageMatrix
+            scenes={MOCK_SCENES}
+            activeSceneId={sceneId}
+            allShots={coveragePlan.coverage}
+            onSelectScene={() => {}}
+            onSelectShot={(s) => setSelectedShot(s)}
+            mediaUrl={mediaUrl}
+          />
+        ) : (
+          /* Storyboard Rail Grid */
+          <div className="flex items-stretch gap-3 overflow-x-auto pb-3 pt-1 scrollbar-thin">
+            {coveragePlan.coverage.map((shot) => (
+              <DirectorShotCard
+                key={shot.id}
+                shot={shot}
+                isSelected={selectedShot?.id === shot.id}
+                onSelectShot={(s) => setSelectedShot(s)}
+                mediaUrl={mediaUrl}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Slide-over Inspector Drawer */}
