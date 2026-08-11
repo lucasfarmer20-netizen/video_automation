@@ -80,7 +80,10 @@ class SpikeConfig:
     strategies: list[str] = field(default_factory=lambda: [STRATEGIES[0]])
     cells: list[str] = field(default_factory=lambda: ["cu", "mcu", "m", "profile", "ots"])
     takes: int = 4                       # "could I pick a good one?" is the real question
-    stop_after_failed_cells: int = 3     # aggressive stopping (Round 4)
+    # There was a stop_after_failed_cells knob and a consecutive_skips counter
+    # here. Neither was ever read, so the documented "aggressive stopping"
+    # simply did not exist -- a config field that reads as a safety limit and
+    # does nothing is worse than no field, because it is budgeted for.
 
 
 def _cell(key: str) -> dict | None:
@@ -132,7 +135,6 @@ def run(cfg: SpikeConfig, log=print) -> dict:
 
     results: list[dict] = []
     spent = 0.0
-    consecutive_skips = 0
 
     unknown = [s for s in cfg.strategies if s not in STRATEGIES]
     if unknown:
