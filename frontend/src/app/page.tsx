@@ -35,6 +35,7 @@ import VoiceStudioModal from "../components/VoiceStudioModal";
 import FilmOverviewPanel from "../components/FilmOverviewPanel";
 import DirectorWorkspace from "../components/DirectorWorkspace";
 import LockedCoverageModal from "../components/LockedCoverageModal";
+import CoverageSurveyPanel from "../components/CoverageSurveyPanel";
 import { MOCK_SCENES } from "../lib/directorApi";
 
 // Setup API URL mapping
@@ -1021,6 +1022,11 @@ Moved to: ${res.moved_to}`);
             </div>
           ) : activeStep === 1 && activeView === "director" ? (
             <div className="flex flex-col gap-4 w-full">
+              <CoverageSurveyPanel
+                onSelectBeats={(beatList) => {
+                  if (beatList.length > 0) setSelectedSceneId(beatList[0]);
+                }}
+              />
               <FilmOverviewPanel
                 scenes={MOCK_SCENES}
                 activeSceneId={selectedSceneId}

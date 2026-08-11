@@ -1,11 +1,12 @@
 "use client";
 
 import React from "react";
-import { DirectorShot } from "../types/director";
-import { UserCheck, ShieldAlert, Sparkles, Video, Image as ImageIcon, Layers, DollarSign, HelpCircle } from "lucide-react";
+import { DirectorShot, DirectorWarning } from "../types/director";
+import { Video, Layers, Image as ImageIcon, UserCheck, ShieldAlert, AlertTriangle } from "lucide-react";
 
 interface DirectorShotCardProps {
   shot: DirectorShot;
+  warnings?: DirectorWarning[];
   isSelected?: boolean;
   onSelectShot: (shot: DirectorShot) => void;
   mediaUrl: (path: string) => string;
@@ -13,6 +14,7 @@ interface DirectorShotCardProps {
 
 export default function DirectorShotCard({
   shot,
+  warnings = [],
   isSelected = false,
   onSelectShot,
   mediaUrl,
@@ -126,6 +128,20 @@ export default function DirectorShotCard({
           <p className="text-[11px] text-zinc-400 line-clamp-2 mt-1 leading-snug font-sans">
             {shot.purpose}
           </p>
+
+          {/* In-line Shot Warning per Addendum 5.2 */}
+          {warnings.length > 0 && (
+            <div className="mt-1.5 p-1.5 rounded bg-amber-500/15 border border-amber-500/40 text-[10px] font-mono text-amber-300 flex flex-col gap-0.5">
+              {warnings.map((w, idx) => (
+                <div key={idx} className="flex items-start gap-1">
+                  <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0 mt-0.5" />
+                  <span className="leading-tight truncate font-semibold" title={w.detail}>
+                    {w.stale ? "⚠️ [STALE] " : ""}{w.detail}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Bottom Tier & Action Pill */}

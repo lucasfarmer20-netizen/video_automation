@@ -80,6 +80,7 @@ export interface DirectorWarning {
   type?: string;
   message?: string; // Fallback for backwards compatibility
   severity?: "warning" | "error";
+  stale?: boolean; // Set true when shot is edited prior to re-critique
 }
 
 export interface DirectorTriageTier {
@@ -120,6 +121,25 @@ export interface DirectorCoveragePlan {
   coverage: DirectorShot[];
   warnings: DirectorWarning[];
   estimated_cost: number;
+}
+
+export interface SurveyBeat {
+  beat_id: string;
+  seconds: number;
+  motion_type: string;
+  frozen_if_left: number;
+  recommend: 1 | 2 | 3;
+  reason: string;
+  narration?: string;
+}
+
+export interface CoverageSurvey {
+  episode_seconds: number;
+  frozen_if_nothing_covered: number;
+  frozen_pct: number;
+  recommended: string[];
+  scenes: string[][];
+  beats: SurveyBeat[];
 }
 
 export interface VideoCapability {

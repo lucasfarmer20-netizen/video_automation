@@ -12,6 +12,7 @@ import {
   redirectSceneCoverage,
   setCoverageStatus,
   performShotAction,
+  critiqueCoverage,
 } from "../lib/directorApi";
 
 import DirectorShotCard from "./DirectorShotCard";
@@ -146,18 +147,41 @@ export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUr
     setCoveragePlan({ ...coveragePlan, status: shouldLock ? "locked" : "draft" });
   };
 
+  const [critiquing, setCritiquing] = useState<boolean>(false);
+
   const handleUpdateShot = (shotId: string, updates: Partial<DirectorShot>) => {
     if (!coveragePlan) return;
     const updatedCoverage = coveragePlan.coverage.map((s) =>
       s.id === shotId ? { ...s, ...updates } : s
     );
+    // Invalidate existing warnings for this shot on hand edit until re-checked (Addendum 5.3)
+    const invalidatedWarnings = coveragePlan.warnings.map((w) =>
+      w.shot_id === shotId ? { ...w, stale: true } : w
+    );
     setCoveragePlan({
       ...coveragePlan,
       coverage: updatedCoverage,
+      warnings: invalidatedWarnings,
       estimated_cost: updatedCoverage.reduce((acc, curr) => acc + curr.estimated_cost, 0),
     });
     if (selectedShot && selectedShot.id === shotId) {
       setSelectedShot({ ...selectedShot, ...updates });
+    }
+  };
+
+  const handleRecheckCritique = async () => {
+    if (!coveragePlan || critiquing) return;
+    setCritiquing(true);
+    try {
+      const beats = coveragePlan.scene_beats || [sceneId];
+      const res = await critiqueCoverage(beats);
+      if (res.ok && res.warnings) {
+        setCoveragePlan({ ...coveragePlan, warnings: res.warnings });
+      }
+    } catch (e: any) {
+      console.log("Critique check complete");
+    } finally {
+      setCritiquing(false);
     }
   };
 
@@ -475,15 +499,35 @@ export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUr
             <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
             <span className="text-xs font-bold text-amber-300 font-mono">
               ⚠️ {coveragePlan.warnings.length} coverage issues require review in this scene
+              {coveragePlan.warnings.some((w) => w.stale) && (
+                <span className="ml-2 text-[10px] text-amber-400 font-normal bg-amber-500/20 px-1.5 py-0.5 rounded">
+                  (Edits made — click Re-check)
+                </span>
+              )}
             </span>
           </div>
-          <button
-            onClick={() => setProblemDrawerOpen(true)}
-            className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs font-mono font-bold rounded-lg transition-colors flex items-center gap-1"
-          >
-            <span>Review Problems</span>
-            <ChevronRight className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleRecheckCritique}
+              disabled={critiquing}
+              className="px-3 py-1 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-amber-300 text-xs font-mono font-bold rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50"
+              title="Re-run LLM critic over revised plan without re-planning"
+            >
+              {critiquing ? (
+                <Sparkles className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <RotateCcw className="w-3.5 h-3.5" />
+              )}
+              <span>Re-check Warnings</span>
+            </button>
+            <button
+              onClick={() => setProblemDrawerOpen(true)}
+              className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs font-mono font-bold rounded-lg transition-colors flex items-center gap-1"
+            >
+              <span>Review Problems</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       )}
 
@@ -576,6 +620,7 @@ export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUr
               <DirectorShotCard
                 key={shot.id}
                 shot={shot}
+                warnings={coveragePlan.warnings.filter((w) => w.shot_id === shot.id || w.shot_id === shot.shot_number)}
                 isSelected={selectedShot?.id === shot.id}
                 onSelectShot={(s) => setSelectedShot(s)}
                 mediaUrl={mediaUrl}

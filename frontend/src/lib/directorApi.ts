@@ -5,6 +5,7 @@ import {
   SceneSummary,
   CreativePreferences,
   DirectorProfilesResponse,
+  CoverageSurvey,
 } from "../types/director";
 
 const API_BASE =
@@ -199,6 +200,22 @@ export async function performShotAction(
     throw new Error(data.error || `Shot action ${action} failed with status ${res.status}`);
   }
 
+  return data;
+}
+
+/**
+ * GET /api/director/survey
+ * Answers which beats are worth covering before planning
+ */
+export async function fetchCoverageSurvey(): Promise<CoverageSurvey> {
+  const res = await fetch(`${API_BASE}/api/director/survey`);
+  if (!res.ok) {
+    throw new Error(`Survey endpoint returned ${res.status} ${res.statusText}`);
+  }
+  const data = await res.json();
+  if (!data.ok) {
+    throw new Error(data.error || "Failed to fetch coverage survey");
+  }
   return data;
 }
 
