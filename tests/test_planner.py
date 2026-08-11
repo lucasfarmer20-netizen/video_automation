@@ -26,10 +26,18 @@ def test_veo_only_accepts_4_6_8():
 
 
 def test_clamp_respects_each_model_not_a_global_ceiling():
-    """`max(3, min(10, ...))` was applied to every model regardless of its limits."""
-    assert cap.clamp_duration("wan_2_7", 30) == 5           # real max is 5s
-    assert cap.clamp_duration("veo_3_1", 30) == 8
-    assert cap.clamp_duration("seedance_2_0", 30) == 10
+    """`max(3, min(10, ...))` was applied to every model regardless of its limits.
+
+    Asserts against each model's OWN declared ceiling rather than literals. The
+    previous version hardcoded 5s for wan_2_7 and 10s for seedance -- numbers I
+    had guessed -- so it passed while the table was wrong and failed the moment
+    the real schema was read. A test that encodes an assumption cannot catch it.
+    """
+    for key in cap.VIDEO_CAPS:
+        ceiling = cap.spec(key)["max_seconds"]
+        assert cap.clamp_duration(key, 999) == int(ceiling)
+    # The global ceiling really is gone: these two genuinely differ.
+    assert cap.clamp_duration("veo_3_1", 999) != cap.clamp_duration("kling_2_1_standard", 999)
 
 
 def test_resolver_never_returns_an_illegal_duration():
