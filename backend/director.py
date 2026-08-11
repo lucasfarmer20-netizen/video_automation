@@ -531,15 +531,13 @@ def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
     if f"{dur_int}s" not in prompt and "second" not in prompt:
         prompt = f"{prompt} (duration: ~{dur_int} seconds)"
 
-    arguments: dict = {"prompt": prompt, "duration": str(dur_int), "generate_audio": False}
-    if "veo" in endpoint:
-        # Veo takes only 4s/6s/8s. A 3-5s coverage shot therefore cannot be had
-        # exactly; round up and let fit_clip trim, which is safe here only because
-        # ambient shots are trimmable (see fit_clip and `gestural`).
-        arguments["duration"] = "4s" if dur_int <= 5 else ("6s" if dur_int <= 7 else "8s")
-    elif "seedance" not in endpoint:
-        arguments.pop("duration", None)
-        arguments.pop("generate_audio", None)
+    # Each endpoint spells duration its own way; capabilities knows which.
+    dur_arg = capabilities.duration_argument(key, want)
+    arguments: dict = {"prompt": prompt, "generate_audio": False}
+    if dur_arg is not None:
+        arguments["duration"] = dur_arg
+    # The per-endpoint special-casing that used to live here (a veo branch, a
+    # seedance check) is exactly what the schema-derived table replaces.
 
     still = synth.draft_image or (synth.draft_variations or [None])[0]
     local_still = config.resolve_media(still, synth.scene_id) if still else None

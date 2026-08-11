@@ -34,6 +34,7 @@ callers of the registries are unaffected.
 from __future__ import annotations
 
 import os
+import re
 
 from . import assets
 
@@ -60,47 +61,64 @@ CONTINUOUS: dict = {
 
 VIDEO_CAPS: dict[str, dict] = {
     "seedance_2_0": {
-        "allowed_durations": None,
-        "min_seconds": 3, "max_seconds": 10,
-        "cost_per_second": 0.10,
+        # From fal's OpenAPI schema. Duration of the video in seconds. Supports 4 to 15 seconds, or auto to let the model decide based on the prompt.
+        "allowed_durations": [4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0],
+        "duration_values": ['auto', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15'],
+        "min_seconds": 4.0, "max_seconds": 15.0,
+        "duration_wire_type": 'string',
+        "duration_default": 'auto',
+        "cost_per_second": 0.1,
         "needs_start_image": True,
         "supports_reference_image": False,
         "supports_character_reference": False,
+        "verified": True,
     },
     "veo_3_1": {
-        # The constraint that broke coverage planning: a 3.2s Director Shot is
-        # simply illegal here, and its 4s floor puts it out of reach for most
-        # coverage, which runs 2-5s.
-        "allowed_durations": [4, 6, 8],
-        "min_seconds": 4, "max_seconds": 8,
-        "cost_per_second": 0.40,
+        # From fal's OpenAPI schema. The duration of the generated video.
+        "allowed_durations": [4.0, 6.0, 8.0],
+        "duration_values": ['4s', '6s', '8s'],
+        "min_seconds": 4.0, "max_seconds": 8.0,
+        "duration_wire_type": 'string',
+        "duration_default": '8s',
+        "cost_per_second": 0.4,
         "needs_start_image": True,
         "supports_reference_image": True,
         "supports_character_reference": False,
+        "verified": True,
     },
     "kling_2_1_standard": {
-        "allowed_durations": [5, 10],
-        "min_seconds": 5, "max_seconds": 10,
+        # From fal's OpenAPI schema. The duration of the generated video in seconds
+        "allowed_durations": [5.0, 10.0],
+        "duration_values": ['5', '10'],
+        "min_seconds": 5.0, "max_seconds": 10.0,
+        "duration_wire_type": 'string',
+        "duration_default": '5',
         "cost_per_second": 0.05,
         "needs_start_image": True,
         "supports_reference_image": False,
         "supports_character_reference": False,
+        "verified": True,
     },
     "kling_2_master": {
-        "allowed_durations": [5, 10],
-        "min_seconds": 5, "max_seconds": 10,
+        # From fal's OpenAPI schema. The duration of the generated video in seconds
+        "allowed_durations": [5.0, 10.0],
+        "duration_values": ['5', '10'],
+        "min_seconds": 5.0, "max_seconds": 10.0,
+        "duration_wire_type": 'string',
+        "duration_default": '5',
         "cost_per_second": 0.28,
         "needs_start_image": True,
         "supports_reference_image": True,
         "supports_character_reference": True,
+        "verified": True,
     },
     "wan_2_7": {
-        # MEASURED: asked for 3s, got exactly 5.00s. This entry previously claimed
-        # continuous 3-5s, which was a guess, and the router duly picked it for a
-        # 3.34s gestural shot that then could not be trimmed. Treat as fixed 5s
-        # until something contradicts that.
-        "allowed_durations": [5],
-        "min_seconds": 5, "max_seconds": 5,
+        # From fal's OpenAPI schema. Output video duration in seconds (2-15).
+        "allowed_durations": [2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0],
+        "duration_values": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        "min_seconds": 2.0, "max_seconds": 15.0,
+        "duration_wire_type": 'integer',
+        "duration_default": 5,
         "cost_per_second": 0.06,
         "needs_start_image": True,
         "supports_reference_image": False,
@@ -108,12 +126,17 @@ VIDEO_CAPS: dict[str, dict] = {
         "verified": True,
     },
     "luma_dream_machine": {
-        "allowed_durations": None,
-        "min_seconds": 3, "max_seconds": 9,
+        # From fal's OpenAPI schema. The duration of the generated video
+        "allowed_durations": [5.0, 9.0],
+        "duration_values": ['5s', '9s'],
+        "min_seconds": 5.0, "max_seconds": 9.0,
+        "duration_wire_type": 'string',
+        "duration_default": '5s',
         "cost_per_second": 0.14,
         "needs_start_image": True,
         "supports_reference_image": True,
         "supports_character_reference": False,
+        "verified": True,
     },
 }
 
@@ -164,6 +187,28 @@ def legal_durations(key: str, seconds: float) -> tuple[int | None, str]:
         return lo, f"raised {seconds:.2f}s to the {caps['label']} minimum of {lo}s"
     return int(round(seconds)), ""
 
+
+
+def duration_argument(key: str, seconds: float):
+    """The value this endpoint wants for ``duration``, in its own spelling.
+
+    The wire type differs per model and is not interchangeable: wan_2_7 declares
+    `integer`, veo wants "4s", kling wants "5", seedance wants "5". Sending "3" as
+    a string to wan_2_7's integer field was silently ignored, the model used its
+    default of 5, and a 3.34s gestural shot came back 5.00s and could not be
+    trimmed. Nothing about that is visible without the schema.
+    """
+    caps = spec(key)
+    picked, _ = legal_durations(key, seconds)
+    if picked is None:
+        return None
+    values = caps.get("duration_values") or []
+    # Match on the leading number so "4s", "4" and 4 all resolve from one place.
+    for v in values:
+        m = re.match(r"^(\d+(?:\.\d+)?)", str(v))
+        if m and abs(float(m.group(1)) - picked) < 0.01:
+            return v
+    return int(picked) if caps.get("duration_wire_type") == "integer" else str(int(picked))
 
 def clamp_duration(key: str, seconds: float) -> int:
     """Legal length, falling back to the model's own ceiling.

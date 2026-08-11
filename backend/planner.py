@@ -364,6 +364,60 @@ def _fit_to_beat(shots: list[dict], seconds: float) -> list[float]:
     return durs
 
 
+
+def _snap_paid_durations(shots: list, durs: list[float]) -> list[float]:
+    """Move paid shots onto a duration some model can actually generate.
+
+    Generated video comes in fixed lengths -- 4s, 5s, "4s"/"6s"/"8s" depending on
+    the endpoint -- while editorial durations are whatever the weights produced.
+    A 3.34s paid shot is not merely awkward, it is unservable: the shortest legal
+    duration anywhere is 4s, and a gestural shot cannot be trimmed back down.
+
+    So the paid shot is snapped to the nearest legal length and the difference is
+    absorbed by the FREE shots around it, which can be any duration at all. The
+    beat total is preserved, which is what compilation requires.
+
+    This is Round 4's option 3, deferred until the router existed. Without it the
+    planner emits plans that only fail at generation time, after the human has
+    already reviewed and locked them.
+    """
+    from . import capabilities
+
+    out = list(durs)
+    free = [i for i, s in enumerate(shots[:len(out)])
+            if (s.get("motion_type") or "parallax") != "ai_video"]
+    if not free:
+        return out
+
+    for i, s in enumerate(shots[:len(out)]):
+        if (s.get("motion_type") or "parallax") != "ai_video":
+            continue
+        want = out[i]
+        best, best_gap = None, None
+        for key in capabilities.VIDEO_CAPS:
+            picked, _ = capabilities.legal_durations(key, want)
+            if picked is None:
+                continue
+            gap = abs(picked - want)
+            if best is None or gap < best_gap:
+                best, best_gap = float(picked), gap
+        if best is None or abs(best - want) < 0.01:
+            continue
+        delta = best - want                      # usually positive: models round up
+        # Take it off the free shots, largest first, never below the floor.
+        room = sum(max(0.0, out[j] - MIN_SHOT_SECONDS) for j in free)
+        if delta > room:
+            continue                             # cannot pay for it; leave as planned
+        out[i] = round(best, 2)
+        remaining = delta
+        for j in sorted(free, key=lambda k: -out[k]):
+            if remaining <= 0.001:
+                break
+            take = min(remaining, out[j] - MIN_SHOT_SECONDS)
+            out[j] = round(out[j] - take, 2)
+            remaining = round(remaining - take, 2)
+    return out
+
 def _beat_context(sb: Storyboard, beat_ids: list[str]) -> list[dict]:
     out = []
     for bid in beat_ids:
@@ -448,6 +502,9 @@ def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = No
         seconds = float(beat.camera.duration)
         shots = entry.get("shots") or []
         durs = _fit_to_beat(shots, seconds)
+        # Paid shots must land on a length a model can generate, or the plan
+        # cannot compile no matter how good it reads.
+        durs = _snap_paid_durations(shots, durs)
         if len(durs) < len(shots):
             log(f"  {bid}: asked for {len(shots)} shots in {seconds:.1f}s — only "
                 f"{len(durs)} fit above {MIN_SHOT_SECONDS}s; the rest were dropped")
