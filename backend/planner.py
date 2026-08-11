@@ -587,6 +587,84 @@ def raw_plan_id(beat_ids: list[str]) -> str:
     return f"scene-{beat_ids[0]}-{beat_ids[-1]}" if beat_ids else "scene"
 
 
+
+def survey(sb, profile_key: str | None = None) -> dict:
+    """Which beats would benefit from coverage, and by how much.
+
+    The planner covers whatever beats it is handed; nothing was answering the
+    question that comes first -- WHICH beats are worth covering. That is the
+    decision that follows narration, and it is arithmetic rather than judgement,
+    so it is computed here instead of being asked of a model: a Tier-C beat longer
+    than a generated clip will freeze for the remainder, and how many seconds that
+    is can simply be worked out.
+
+    Deliberately not an LLM call. It is free, instant, and the numbers are
+    checkable -- and a model asked to rank 25 beats would produce a plausible
+    ordering nobody could verify.
+    """
+    prof = profile(profile_key)
+    lo, hi = prof["shot_seconds"]
+    rows = []
+    for shot in getattr(sb, "shots", []):
+        dur = float(shot.camera.duration) if shot.camera else 0.0
+        mt = getattr(shot.motion_type, "value", str(shot.motion_type or "parallax"))
+        # A paid beat can only generate ~10s; the rest is a held frame.
+        frozen = max(0.0, dur - 10.0) if mt == "ai_video" else 0.0
+        # A beat far longer than the profile's shot length is one image held for
+        # several shots' worth of screen time.
+        shots_worth = dur / max(1.0, (lo + hi) / 2)
+
+        if frozen >= 5.0:
+            score, why = 3, (f"{frozen:.0f}s of this paid beat would be a frozen "
+                             f"frame ({frozen/dur*100:.0f}% of it)")
+        elif shots_worth >= 5:
+            score, why = 2, (f"{dur:.0f}s on one image — about {shots_worth:.0f} "
+                             f"shots' worth of screen time")
+        elif shots_worth >= 3:
+            score, why = 1, f"{dur:.0f}s on one image"
+        else:
+            score, why = 0, "short enough to hold as a single image"
+
+        rows.append({
+            "beat_id": shot.scene_id, "seconds": round(dur, 2), "motion_type": mt,
+            "frozen_if_left": round(frozen, 1),
+            "recommend": score, "reason": why,
+            "narration": (shot.narration or "")[:110],
+        })
+
+    total = sum(r["seconds"] for r in rows) or 1.0
+    frozen_total = sum(r["frozen_if_left"] for r in rows)
+    strong = [r["beat_id"] for r in rows if r["recommend"] == 3]
+    return {
+        "beats": rows,
+        "episode_seconds": round(total, 1),
+        "frozen_if_nothing_covered": round(frozen_total, 1),
+        "frozen_pct": round(frozen_total / total * 100),
+        "recommended": strong,
+        "scenes": _contiguous(strong),
+        "note": ("Beats scored 3 would be mostly frozen frame if rendered normally. "
+                 "Coverage there costs about the same and removes the freeze. "
+                 "Score 0 beats are fine as single images."),
+    }
+
+
+def _contiguous(ids: list[str]) -> list[list[str]]:
+    """Group recommended beats into scenes, since planning is scene-level."""
+    def num(b):
+        digits = "".join(c for c in b if c.isdigit())
+        return int(digits) if digits else -1
+    out, run = [], []
+    for b in sorted(ids, key=num):
+        if run and num(b) == num(run[-1]) + 1:
+            run.append(b)
+        else:
+            if run:
+                out.append(run)
+            run = [b]
+    if run:
+        out.append(run)
+    return out
+
 def critique(sb: Storyboard, beat_ids: list[str], log=print) -> list[dict]:
     """Independent review of the coverage, without the planner's rationale.
 

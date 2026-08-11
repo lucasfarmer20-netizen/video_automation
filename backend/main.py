@@ -1679,6 +1679,18 @@ def get_director_profiles():
     }
 
 
+@app.get("/api/director/survey")
+def get_director_survey(profile: str = ""):
+    """Which beats are worth covering, with the cost of not covering them.
+
+    Answers the question that comes before planning. Free, instant, and
+    arithmetic — no model is asked to rank beats, because a plausible ordering
+    nobody can check is worse than none.
+    """
+    sb = get_current_project()
+    return {"ok": True, **planner.survey(sb, profile or None)}
+
+
 @app.post("/api/director/plan")
 async def plan_director_scene(request: Request):
     """Plan coverage for a scene. Writes drafts; generates nothing.
