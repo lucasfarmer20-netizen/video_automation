@@ -1,0 +1,480 @@
+"use client";
+
+import React, { useState, useEffect } from "react";
+import {
+  DirectorCoveragePlan,
+  DirectorShot,
+  DirectorWarning,
+  CreativePreferences,
+} from "../types/director";
+import {
+  fetchCoveragePlan,
+  redirectSceneCoverage,
+  setCoverageStatus,
+  performShotAction,
+} from "../lib/directorApi";
+
+import DirectorShotCard from "./DirectorShotCard";
+import ShotInspectorDrawer from "./ShotInspectorDrawer";
+import ProblemQueueDrawer from "./ProblemQueueDrawer";
+import TakeSelectorModal from "./TakeSelectorModal";
+
+import {
+  Clapperboard,
+  Sparkles,
+  Lock,
+  Unlock,
+  AlertTriangle,
+  Send,
+  Sliders,
+  DollarSign,
+  Layers,
+  Clock,
+  Film,
+  CheckCircle2,
+  ChevronRight,
+  RotateCcw,
+} from "lucide-react";
+
+interface DirectorWorkspaceProps {
+  sceneId: string;
+  activeProjectTitle?: string;
+  mediaUrl: (path: string) => string;
+}
+
+const QUICK_SHORTCUTS = [
+  "+ More documentary",
+  "+ More cinematic",
+  "+ More environment",
+  "+ More character",
+  "+ Fewer cuts",
+  "+ Slower pacing",
+  "+ Less dramatic",
+  "+ Reduce generation cost",
+];
+
+export default function DirectorWorkspace({ sceneId, activeProjectTitle, mediaUrl }: DirectorWorkspaceProps) {
+  const [coveragePlan, setCoveragePlan] = useState<DirectorCoveragePlan | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+
+  // Directing Controls State
+  const [redirectInput, setRedirectInput] = useState<string>("");
+  const [selectedShortcuts, setSelectedShortcuts] = useState<string[]>([]);
+  const [preferences, setPreferences] = useState<CreativePreferences>({
+    documentaryVsCinematic: 60,
+    restrainedVsDramatic: 35,
+    economicalVsQuality: 75,
+  });
+
+  // Drawer & Modal State
+  const [selectedShot, setSelectedShot] = useState<DirectorShot | null>(null);
+  const [problemDrawerOpen, setProblemDrawerOpen] = useState<boolean>(false);
+  const [takeModalShot, setTakeModalShot] = useState<DirectorShot | null>(null);
+  const [redirecting, setRedirecting] = useState<boolean>(false);
+
+  // Load coverage plan on scene switch
+  useEffect(() => {
+    let isMounted = true;
+    setLoading(true);
+    fetchCoveragePlan(sceneId).then((plan) => {
+      if (isMounted) {
+        setCoveragePlan(plan);
+        setLoading(false);
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [sceneId]);
+
+  const toggleShortcut = (shortcut: string) => {
+    setSelectedShortcuts((prev) =>
+      prev.includes(shortcut) ? prev.filter((s) => s !== shortcut) : [...prev, shortcut]
+    );
+  };
+
+  const handleRedirectScene = async () => {
+    if (!coveragePlan || redirecting) return;
+    setRedirecting(true);
+
+    const res = await redirectSceneCoverage(
+      sceneId,
+      redirectInput,
+      selectedShortcuts,
+      preferences
+    );
+
+    if (res.ok && res.plan) {
+      setCoveragePlan(res.plan);
+    }
+    setRedirecting(false);
+  };
+
+  const handleToggleLock = async () => {
+    if (!coveragePlan) return;
+    const nextStatus = coveragePlan.status === "locked" ? "draft" : "locked";
+    await setCoverageStatus(sceneId, nextStatus);
+    setCoveragePlan({ ...coveragePlan, status: nextStatus });
+  };
+
+  const handleUpdateShot = (shotId: string, updates: Partial<DirectorShot>) => {
+    if (!coveragePlan) return;
+    const updatedCoverage = coveragePlan.coverage.map((s) =>
+      s.id === shotId ? { ...s, ...updates } : s
+    );
+    setCoveragePlan({
+      ...coveragePlan,
+      coverage: updatedCoverage,
+      estimated_cost: updatedCoverage.reduce((acc, curr) => acc + curr.estimated_cost, 0),
+    });
+    if (selectedShot && selectedShot.id === shotId) {
+      setSelectedShot({ ...selectedShot, ...updates });
+    }
+  };
+
+  const handleShotAction = async (action: string, shot: DirectorShot) => {
+    await performShotAction(shot.id, action);
+    if (action === "delete") {
+      if (!coveragePlan) return;
+      setCoveragePlan({
+        ...coveragePlan,
+        coverage: coveragePlan.coverage.filter((s) => s.id !== shot.id),
+      });
+      setSelectedShot(null);
+    }
+  };
+
+  const handleSelectTake = (shotId: string, variationIndex: number) => {
+    handleUpdateShot(shotId, { chosen_variation: variationIndex });
+  };
+
+  const handleResolveWarning = (warningId: string) => {
+    if (!coveragePlan) return;
+    setCoveragePlan({
+      ...coveragePlan,
+      warnings: coveragePlan.warnings.filter((w) => w.id !== warningId),
+    });
+  };
+
+  if (loading || !coveragePlan) {
+    return (
+      <div className="w-full h-96 flex items-center justify-center text-amber-500 gap-3">
+        <Sparkles className="w-6 h-6 animate-spin" />
+        <span className="font-mono text-sm">Loading Director Coverage Plan...</span>
+      </div>
+    );
+  }
+
+  const isLocked = coveragePlan.status === "locked" || coveragePlan.status === "compiled";
+  const coverageTotalSum = coveragePlan.coverage.reduce((acc, s) => acc + s.camera.duration, 0);
+  const targetDuration = coveragePlan.beat_duration || coveragePlan.total_duration;
+  const isDurationMatched = Math.abs(coverageTotalSum - targetDuration) <= 0.1;
+  const isSnapshotStale = Boolean(
+    coveragePlan.live_beat_duration &&
+      Math.abs(coveragePlan.live_beat_duration - targetDuration) > 0.1
+  );
+
+  return (
+    <div className="w-full flex flex-col gap-4 p-4 max-w-[1600px] mx-auto animate-in fade-in duration-300">
+      {/* Stale Plan Snapshot Divergence Alert */}
+      {isSnapshotStale && (
+        <div className="glass-panel p-3.5 rounded-xl border border-amber-500/50 bg-amber-500/10 flex items-center justify-between text-amber-300 font-mono text-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>
+              ⚠️ <strong>Stale Plan Snapshot:</strong> Live narration duration ({coveragePlan.live_beat_duration?.toFixed(1)}s) differs from plan snapshot ({targetDuration.toFixed(1)}s). Re-planning recommended.
+            </span>
+          </div>
+          <button
+            onClick={handleRedirectScene}
+            className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 rounded text-[11px] font-bold transition-colors"
+          >
+            Re-plan Scene
+          </button>
+        </div>
+      )}
+
+      {/* SECTION 1: Scene Director Header Bar */}
+      <div className="glass-surface p-4 rounded-2xl flex flex-wrap items-center justify-between gap-4 border border-zinc-800">
+        <div className="flex items-center gap-3">
+          <div className="p-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400">
+            <Clapperboard className="w-6 h-6" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-bold text-zinc-100">{coveragePlan.scene_title}</h2>
+              <span className="text-[10px] font-mono font-bold text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded capitalize">
+                Profile: {coveragePlan.profile.replace("_", " ")}
+              </span>
+            </div>
+            <div className="flex items-center gap-3 text-xs font-mono text-zinc-400 mt-1">
+              <span>{targetDuration.toFixed(1)}s Narration</span>
+              <span>•</span>
+              <span>{coveragePlan.coverage.length} Director Shots</span>
+              <span>•</span>
+              <span
+                className={`font-bold px-1.5 py-0.5 rounded border text-[11px] ${
+                  isDurationMatched
+                    ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                    : "bg-amber-500/10 text-amber-400 border-amber-500/30"
+                }`}
+                title="Coverage total must match narration timing to lock"
+              >
+                Coverage: {coverageTotalSum.toFixed(1)}s / {targetDuration.toFixed(1)}s {isDurationMatched ? "✓" : "⚠️ Mismatch"}
+              </span>
+              <span>•</span>
+              <span className="text-emerald-400 font-bold">
+                Est. Cost: ${coveragePlan.estimated_cost.toFixed(2)}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Lock / Coverage Status Action + Active Project Safety Badge */}
+        <div className="flex items-center gap-3">
+          {activeProjectTitle && (
+            <span className="text-[11px] font-mono text-zinc-400 bg-zinc-900 border border-zinc-800 px-2.5 py-1 rounded-lg flex items-center gap-1.5" title="Active Project Rule §5 Safety Badge">
+              <span className="w-2 h-2 rounded-full bg-amber-500" />
+              <span>Project: <strong>{activeProjectTitle}</strong></span>
+            </span>
+          )}
+
+          <div className="flex items-center gap-2">
+            <span
+              className={`text-xs font-mono font-bold px-3 py-1 rounded-full border capitalize ${
+                isLocked
+                  ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/40"
+                  : "bg-amber-500/15 text-amber-400 border-amber-500/40"
+              }`}
+            >
+              Status: {coveragePlan.status}
+            </span>
+          </div>
+
+          <button
+            onClick={handleToggleLock}
+            className={`px-5 py-2.5 rounded-xl font-mono text-xs font-bold transition-all duration-200 flex items-center gap-2 shadow-lg ${
+              isLocked
+                ? "bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700"
+                : "bg-emerald-600 hover:bg-emerald-500 text-zinc-950 neon-glow-emerald"
+            }`}
+          >
+            {isLocked ? (
+              <>
+                <Unlock className="w-4 h-4 text-amber-400" />
+                <span>UNLOCK TO EDIT</span>
+              </>
+            ) : (
+              <>
+                <Lock className="w-4 h-4 text-zinc-950" />
+                <span>LOCK & GENERATE COVERAGE ({activeProjectTitle || "Active"})</span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* SECTION 1B: Visual Strategy & Blocking (if present) */}
+      {coveragePlan.visual_strategy && (
+        <div className="glass-panel p-4 rounded-xl border border-amber-500/30 bg-amber-500/5 flex flex-col gap-1.5">
+          <div className="flex items-center gap-2 text-xs font-bold font-mono text-amber-400">
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>DIRECTOR VISUAL STRATEGY</span>
+          </div>
+          <p className="text-xs text-zinc-200 leading-relaxed font-sans italic">
+            "{coveragePlan.visual_strategy}"
+          </p>
+        </div>
+      )}
+
+      {/* SECTION 2: Scene-Level Natural Language Direction Bar */}
+      <div className="glass-panel p-5 rounded-2xl flex flex-col gap-4 border border-zinc-800/80">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm font-bold text-amber-400">
+            <Sparkles className="w-4 h-4 text-amber-400" />
+            <span>Scene-Level Director Intent</span>
+          </div>
+          <span className="text-[11px] font-mono text-zinc-500">
+            Redirect scene without editing individual shots
+          </span>
+        </div>
+
+        {/* Command Input Box */}
+        <div className="relative w-full">
+          <textarea
+            value={redirectInput}
+            onChange={(e) => setRedirectInput(e.target.value)}
+            disabled={isLocked}
+            placeholder="e.g. This feels too dramatic. Show Heney less and spend more time on the workers, weather, and working conditions..."
+            rows={2}
+            className="w-full bg-zinc-950/80 border border-zinc-800 rounded-xl p-3.5 text-xs text-zinc-100 placeholder-zinc-600 focus:border-amber-500 outline-none resize-none font-sans leading-relaxed disabled:opacity-50"
+          />
+          <button
+            onClick={handleRedirectScene}
+            disabled={isLocked || redirecting}
+            className="absolute bottom-3 right-3 px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold font-mono rounded-lg transition-all flex items-center gap-1.5 shadow-lg disabled:opacity-50"
+          >
+            {redirecting ? (
+              <Sparkles className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Send className="w-3.5 h-3.5" />
+            )}
+            <span>REDIRECT SCENE</span>
+          </button>
+        </div>
+
+        {/* Quick Shortcuts Pills */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] font-mono text-zinc-400 mr-1">Quick Direction:</span>
+          {QUICK_SHORTCUTS.map((pill) => {
+            const isSelected = selectedShortcuts.includes(pill);
+            return (
+              <button
+                key={pill}
+                disabled={isLocked}
+                onClick={() => toggleShortcut(pill)}
+                className={`text-[11px] font-mono px-2.5 py-1 rounded-full border transition-all ${
+                  isSelected
+                    ? "bg-amber-500/20 border-amber-500 text-amber-300 font-bold"
+                    : "bg-zinc-900/60 border-zinc-800 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                }`}
+              >
+                {pill}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* High-Level Creative Sliders */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-3 border-t border-zinc-800/60">
+          <div className="flex flex-col gap-1.5">
+            <div className="flex justify-between text-[11px] font-mono text-zinc-400">
+              <span>Documentary</span>
+              <span>Cinematic</span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              disabled={isLocked}
+              value={preferences.documentaryVsCinematic}
+              onChange={(e) =>
+                setPreferences({ ...preferences, documentaryVsCinematic: parseInt(e.target.value) })
+              }
+              className="w-full accent-amber-500 bg-zinc-800 h-1.5 rounded-lg cursor-pointer"
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <div className="flex justify-between text-[11px] font-mono text-zinc-400">
+              <span>Restrained</span>
+              <span>Dramatic</span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              disabled={isLocked}
+              value={preferences.restrainedVsDramatic}
+              onChange={(e) =>
+                setPreferences({ ...preferences, restrainedVsDramatic: parseInt(e.target.value) })
+              }
+              className="w-full accent-amber-500 bg-zinc-800 h-1.5 rounded-lg cursor-pointer"
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <div className="flex justify-between text-[11px] font-mono text-zinc-400">
+              <span>Economical</span>
+              <span>Max Quality</span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              disabled={isLocked}
+              value={preferences.economicalVsQuality}
+              onChange={(e) =>
+                setPreferences({ ...preferences, economicalVsQuality: parseInt(e.target.value) })
+              }
+              className="w-full accent-amber-500 bg-zinc-800 h-1.5 rounded-lg cursor-pointer"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* SECTION 3: Problem Queue Alert Banner */}
+      {coveragePlan.warnings.length > 0 && (
+        <div className="glass-panel p-3.5 rounded-xl border border-amber-500/40 bg-amber-500/10 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+            <span className="text-xs font-bold text-amber-300 font-mono">
+              ⚠️ {coveragePlan.warnings.length} coverage issues require review in this scene
+            </span>
+          </div>
+          <button
+            onClick={() => setProblemDrawerOpen(true)}
+            className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs font-mono font-bold rounded-lg transition-colors flex items-center gap-1"
+          >
+            <span>Review Problems</span>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* SECTION 4: Coverage Storyboard Rail / Grid */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between text-xs font-mono font-bold text-zinc-400 px-1">
+          <span>COVERAGE STORYBOARD ({coveragePlan.coverage.length} SHOTS)</span>
+          <span>Click any card to inspect or alter</span>
+        </div>
+
+        <div className="flex items-stretch gap-3 overflow-x-auto pb-3 pt-1 scrollbar-thin">
+          {coveragePlan.coverage.map((shot) => (
+            <DirectorShotCard
+              key={shot.id}
+              shot={shot}
+              isSelected={selectedShot?.id === shot.id}
+              onSelectShot={(s) => setSelectedShot(s)}
+              mediaUrl={mediaUrl}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* Slide-over Inspector Drawer */}
+      {selectedShot && (
+        <ShotInspectorDrawer
+          shot={selectedShot}
+          onClose={() => setSelectedShot(null)}
+          onUpdateShot={handleUpdateShot}
+          onOpenTakeSelector={(s) => setTakeModalShot(s)}
+          onAction={handleShotAction}
+          mediaUrl={mediaUrl}
+        />
+      )}
+
+      {/* Problem Queue Drawer */}
+      <ProblemQueueDrawer
+        warnings={coveragePlan.warnings}
+        shots={coveragePlan.coverage}
+        isOpen={problemDrawerOpen}
+        onClose={() => setProblemDrawerOpen(false)}
+        onSelectShot={(shotId) => {
+          const s = coveragePlan.coverage.find((c) => c.id === shotId);
+          if (s) setSelectedShot(s);
+        }}
+        onResolveWarning={handleResolveWarning}
+      />
+
+      {/* Take Selector Modal */}
+      <TakeSelectorModal
+        shot={takeModalShot}
+        isOpen={!!takeModalShot}
+        onClose={() => setTakeModalShot(null)}
+        onSelectTake={handleSelectTake}
+        mediaUrl={mediaUrl}
+      />
+    </div>
+  );
+}

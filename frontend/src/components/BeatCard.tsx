@@ -68,6 +68,7 @@ interface BeatCardProps {
   onSelectVideoVariation: (sceneId: string, idx: number) => void;
   onSendShotChat: (sceneId: string, text: string, chatHistory: Message[]) => Promise<{ reply: string, refined_prompt?: string, refined_motion_prompt?: string } | null>;
   onApplyRefinedPrompts: (sceneId: string, refinedPrompt: string | null, refinedMotionPrompt: string | null) => void;
+  onOpenDirectorWorkspace?: (sceneId: string) => void;
   mediaUrl: (path: string) => string;
 }
 
@@ -90,6 +91,7 @@ export default function BeatCard({
   onSelectVideoVariation,
   onSendShotChat,
   onApplyRefinedPrompts,
+  onOpenDirectorWorkspace,
   mediaUrl
 }: BeatCardProps) {
   const [shotChatHistory, setShotChatHistory] = useState<Message[]>([]);
@@ -176,6 +178,16 @@ export default function BeatCard({
               {shot.camera.duration_locked ? "🔒" : "🔓"}
             </button>
           </div>
+          {onOpenDirectorWorkspace && (
+            <button
+              onClick={() => onOpenDirectorWorkspace(shot.scene_id)}
+              className="mt-2 px-2.5 py-1 text-[10px] font-mono font-bold text-amber-400 bg-amber-500/15 border border-amber-500/30 hover:bg-amber-500/25 rounded-md transition-colors flex items-center gap-1 shadow"
+              title="Open Director Workspace for this scene"
+            >
+              <Sparkles className="w-3 h-3 text-amber-400" />
+              <span>DIRECT</span>
+            </button>
+          )}
         </div>
 
         {/* Center Inputs Column */}

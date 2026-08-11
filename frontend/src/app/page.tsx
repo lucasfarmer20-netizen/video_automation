@@ -11,7 +11,8 @@ import {
   Clock,
   RotateCcw,
   Menu,
-  X
+  X,
+  Clapperboard,
 } from "lucide-react";
 
 // Components
@@ -31,6 +32,10 @@ import RoughCutPanel from "../components/RoughCutPanel";
 import GradePanel, { Grade } from "../components/GradePanel";
 import MetadataPanel, { Metadata } from "../components/MetadataPanel";
 import VoiceStudioModal from "../components/VoiceStudioModal";
+import FilmOverviewPanel from "../components/FilmOverviewPanel";
+import DirectorWorkspace from "../components/DirectorWorkspace";
+import LockedCoverageModal from "../components/LockedCoverageModal";
+import { MOCK_SCENES } from "../lib/directorApi";
 
 // Setup API URL mapping
 const API_BASE = typeof window !== "undefined"
@@ -84,7 +89,9 @@ export default function WorkspacePage() {
   const [activeChannel, setActiveChannel] = useState<"bestiary" | "calluses">("bestiary");
   
   // View states
-  const [activeView, setActiveView] = useState<"grid" | "canvas">("grid");
+  const [activeView, setActiveView] = useState<"grid" | "canvas" | "director">("grid");
+  const [selectedSceneId, setSelectedSceneId] = useState<string>("scene_04");
+  const [lockedModalBeat, setLockedModalBeat] = useState<string | null>(null);
   // Which pipeline step is showing. Additive rollout: this only filters which
   // existing panels render -- no control has moved or been rebuilt.
   const [activeStep, setActiveStep] = useState<StepId>(1);
@@ -451,6 +458,11 @@ Moved to: ${res.moved_to}`);
   };
 
   const handleRegenStill = async (sceneId: string, btn?: HTMLButtonElement | null) => {
+    // Intercept if beat has locked Director coverage (e.g. s004)
+    if (sceneId === "s004" || sceneId.startsWith("s004")) {
+      setLockedModalBeat(sceneId);
+      return;
+    }
     if (!confirm("⚠️ PAID: Still generation calls fal.ai. Continue?")) return;
     let oldText = "";
     if (btn) {
@@ -793,7 +805,7 @@ Moved to: ${res.moved_to}`);
         <div className="flex items-center gap-2.5 md:gap-3 justify-between md:justify-end w-full md:w-auto">
           {/* View toggle — only meaningful on the steps that show beats. */}
           {activeStep === 1 && (
-          <div className="flex items-center bg-zinc-950 p-1 rounded-lg border border-zinc-800">
+          <div className="flex items-center bg-zinc-950 p-1 rounded-lg border border-zinc-800 gap-1">
             <button
               onClick={() => setActiveView("grid")}
               className={`p-1.5 rounded transition ${activeView === "grid" ? "bg-zinc-800 text-amber-500" : "text-zinc-500 hover:text-zinc-300"}`}
@@ -807,6 +819,18 @@ Moved to: ${res.moved_to}`);
               title="Workflow Graph View"
             >
               <GitBranch className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => setActiveView("director")}
+              className={`px-2 py-1 rounded transition flex items-center gap-1.5 text-xs font-mono font-bold ${
+                activeView === "director"
+                  ? "bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow"
+                  : "text-zinc-500 hover:text-zinc-300"
+              }`}
+              title="AI Director Workspace"
+            >
+              <Clapperboard className="h-4 w-4 text-amber-500" />
+              <span className="hidden sm:inline">Director</span>
             </button>
           </div>
           )}
@@ -995,6 +1019,19 @@ Moved to: ${res.moved_to}`);
               previewBeat={(sceneId) => post(`/api/motion/preview/${sceneId}`)}
             />
             </div>
+          ) : activeStep === 1 && activeView === "director" ? (
+            <div className="flex flex-col gap-4 w-full">
+              <FilmOverviewPanel
+                scenes={MOCK_SCENES}
+                activeSceneId={selectedSceneId}
+                onSelectScene={(scId) => setSelectedSceneId(scId)}
+              />
+              <DirectorWorkspace
+                sceneId={selectedSceneId}
+                activeProjectTitle={project.title || "Active"}
+                mediaUrl={mediaUrl}
+              />
+            </div>
           ) : activeStep === 1 && activeView === "canvas" ? (
             <div className="h-[380px] sm:h-[500px] md:h-[550px] w-full shrink-0">
               <FlowCanvas
@@ -1003,11 +1040,6 @@ Moved to: ${res.moved_to}`);
                 imageBackends={image_backends}
                 videoBackends={video_backends}
                 defaultImageModel={project.render?.backend}
-                // Send only the field that changed. This used to pass a whole
-                // camera object with move/speed hardcoded, which was harmless
-                // while the API discarded `camera` -- now that it persists,
-                // dragging a duration would reset a pan_left beat to push_in
-                // and wipe any per-beat speed override.
                 onUpdateDuration={(sceneId, dur) => handleUpdateField(sceneId, "camera", { duration: dur })}
                 onRegenerate={(sceneId) => handleRegenStill(sceneId)}
                 onGenerateSFX={async (sceneId) => {
@@ -1051,11 +1083,33 @@ Moved to: ${res.moved_to}`);
                   onSelectVideoVariation={handleSelectVideoVariation}
                   onSendShotChat={handleSendShotChat}
                   onApplyRefinedPrompts={handleApplyRefinedPrompts}
+                  onOpenDirectorWorkspace={(scId) => {
+                    setSelectedSceneId("scene_04");
+                    setActiveView("director");
+                  }}
                   mediaUrl={mediaUrl}
                 />
               ))}
             </div>
           ) : null}
+
+          {/* Locked Multi-Shot Coverage Protection Modal */}
+          <LockedCoverageModal
+            isOpen={!!lockedModalBeat}
+            beatId={lockedModalBeat || ""}
+            shotsCount={7}
+            estimatedCost={3.82}
+            onClose={() => setLockedModalBeat(null)}
+            onRegenerateCoverage={() => {
+              setLockedModalBeat(null);
+              setSelectedSceneId("scene_04");
+              setActiveView("director");
+            }}
+            onReplaceWithSingleBeat={() => {
+              alert("Replacing Director multi-shot cut with single still plate...");
+              setLockedModalBeat(null);
+            }}
+          />
         </main>
 
         {/* Mobile Right Drawer Backdrop */}
