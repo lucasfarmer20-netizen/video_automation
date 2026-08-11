@@ -1357,6 +1357,119 @@ def _takes(sb) -> int:
 # These run server-side because that is where the API keys, the ML dependencies,
 # ffmpeg and the project data on /gcs all are. Nothing here writes the manifest.
 
+_RESET_SCOPES = ("stills", "video", "narration", "sfx", "renders", "director")
+
+
+@app.post("/api/project/reset")
+async def reset_project_assets(request: Request):
+    """Clear generated media for the active project, keeping the script.
+
+    Body: {"scopes": ["stills","video"], "confirm": "<project title>",
+           "dry_run": true}
+
+    Moves media to ``_trash/<project>__reset_<n>/`` rather than unlinking, for
+    the same reason project deletion does: a mistake here costs whatever those
+    assets cost to generate, and every one of them is paid for.
+
+    Scopes are explicit and additive. There is no "everything" shorthand, because
+    the difference between clearing stills and clearing paid video is the
+    difference between five dollars and fifty, and a single flag that does both
+    invites the expensive mistake.
+
+    The script, the beats, their narration TEXT and the manifest structure are
+    never touched — only generated artefacts and the manifest fields that point
+    at them.
+    """
+    try:
+        data = await request.json()
+        scopes = [s for s in (data.get("scopes") or []) if s in _RESET_SCOPES]
+        unknown = set(data.get("scopes") or []) - set(_RESET_SCOPES)
+        if unknown:
+            raise HTTPException(status_code=400,
+                                detail=f"unknown scope(s): {sorted(unknown)}; "
+                                       f"valid: {list(_RESET_SCOPES)}")
+        if not scopes:
+            raise HTTPException(status_code=400,
+                                detail=f"scopes[] is required; valid: {list(_RESET_SCOPES)}")
+
+        sb = get_current_project()
+        dry = bool(data.get("dry_run", False))
+        confirm = (data.get("confirm") or "").strip().lower()
+        if not dry and confirm not in {(sb.title or "").strip().lower(),
+                                       config.MANIFEST_PATH.parent.name.lower()}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Type the project name to confirm. Expected {sb.title!r}.")
+
+        ep = config.episode_paths(sb.title)
+        project_dir = config.MANIFEST_PATH.parent
+        targets: list[Path] = []
+        if "stills" in scopes:
+            targets.append(config.ASSETS)
+        if "renders" in scopes or "video" in scopes:
+            targets.append(ep["render"])
+        if "narration" in scopes:
+            targets.append(ep["narration"])
+        if "sfx" in scopes:
+            targets.append(ep["sfx"])
+        if "director" in scopes:
+            targets.append(project_dir / "director")
+
+        counted = {}
+        for t in targets:
+            try:
+                counted[t.name] = sum(1 for _ in t.rglob("*") if _.is_file()) if t.is_dir() else 0
+            except OSError:
+                counted[t.name] = 0
+
+        if dry:
+            return {"ok": True, "dry_run": True, "scopes": scopes,
+                    "would_move": {str(t): counted.get(t.name, 0) for t in targets},
+                    "note": "Re-send with confirm=<project title> to perform it."}
+
+        trash = project_dir.parent / "_trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        stamp = len(list(trash.glob(f"{project_dir.name}__reset_*")))
+        bucket = trash / f"{project_dir.name}__reset_{stamp}"
+        bucket.mkdir(parents=True, exist_ok=True)
+
+        moved = []
+        for t in targets:
+            if not t.is_dir():
+                continue
+            try:
+                shutil.move(str(t), str(bucket / t.name))
+                moved.append(str(t))
+            except Exception as exc:  # noqa: BLE001
+                log_job("reset", f"could not move {t}: {exc}")
+
+        # Clear the manifest fields that point at what just moved, so the
+        # storyboard does not reference media that is no longer there.
+        for shot in sb.shots:
+            if "stills" in scopes:
+                shot.draft_variations = []
+                shot.draft_image = None
+                shot.chosen_variation = None
+            if "video" in scopes:
+                shot.video_variations = []
+                shot.video_clip = None
+                shot.hero_clip = False
+        if "video" in scopes or "stills" in scopes:
+            # Approval allocated budget against assets that no longer exist.
+            sb.storyboard_approved = False
+        save_current_project(sb)
+
+        return {"ok": True, "scopes": scopes, "moved_to": str(bucket),
+                "moved": moved, "files": counted,
+                "storyboard_approved": sb.storyboard_approved,
+                "note": "Media was moved to _trash, not deleted. The script, beats "
+                        "and narration text are untouched."}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
 @app.get("/api/characters")
 def get_characters():
     """The active project's character sheet, with anchor status.
