@@ -131,6 +131,56 @@ def record_generation(
     _append(row)
 
 
+def record_failure(
+    *,
+    scene_id: str,
+    strategy: str,
+    backend: str,
+    batch: str,
+    slot: int,
+    error: str,
+    prompt: str = "",
+    style_medium: str = "",
+) -> None:
+    """One row per generation call that raised, so a shortfall leaves evidence.
+
+    The ledger recorded only successes, which made a partial run indistinguishable
+    from a complete one after the fact. MichaelHeney drafted 19 of 25 beats with a
+    single take instead of three; the per-variant handler logged each failure and
+    continued -- correct, one bad strategy must not cost a beat its other takes --
+    but that log was in-memory and the container had restarted by the time anyone
+    looked. 78 generations recorded, not one failure, and no way left to answer
+    which strategy or which endpoint was rejecting the call.
+
+    A failure row is the cheap half of that fix: same batch and slot as the image
+    that was not made, so the gap is attributable to a strategy and a backend
+    rather than merely visible as an absence.
+    """
+    _append({
+        "event": "generate_failed",
+        "ts": time.time(),
+        "project": _project(),
+        "scene_id": scene_id,
+        "strategy": strategy,
+        "backend": backend,
+        "batch": batch,
+        "slot": slot,
+        "style_medium": style_medium,
+        "prompt": prompt or None,
+        "error": (error or "")[:600],
+    })
+
+
+def failures(project: str | None = None, batch: str | None = None) -> list[dict]:
+    """Failure rows, newest last. Filterable to one run."""
+    rows = [r for r in read_rows() if r.get("event") == "generate_failed"]
+    if project:
+        rows = [r for r in rows if r.get("project") == project]
+    if batch:
+        rows = [r for r in rows if r.get("batch") == batch]
+    return rows
+
+
 def record_choice(*, scene_id: str, path: str, source: str = "human",
                   scores: dict | None = None, reason: str = "",
                   extra: dict | None = None) -> None:

@@ -875,7 +875,17 @@ def generate_for_shot(
                     subject_url=subject_url)
             except Exception as exc:  # noqa: BLE001
                 # One strategy failing must not cost the beat its other takes.
+                # But `continue` alone made the shortfall invisible: the job went
+                # on to report success, and this line was the only record that
+                # anything had gone wrong -- in memory, gone with the container.
                 log(f"  !! variant {slot} ({name}) failed: {exc}")
+                try:
+                    ledger.record_failure(
+                        scene_id=shot.scene_id, strategy=name, backend=backend,
+                        batch=batch, slot=slot, error=f"{type(exc).__name__}: {exc}",
+                        prompt=prompt, style_medium=(shot.style_medium or ""))
+                except Exception as lexc:  # noqa: BLE001 — telemetry never fails a beat
+                    log(f"  (could not record the failure to the ledger: {lexc})")
                 continue
             for url in urls:
                 made.append((name, sent, softened, url))
@@ -885,6 +895,10 @@ def generate_for_shot(
             subject_url=subject_url)
         for url in urls:
             made.append(("baseline", sent, softened, url))
+
+    if n > 1 and len(made) < n:
+        log(f"  {shot.scene_id}: {len(made)} of {n} takes — the rest failed or were "
+            f"not returned.")
 
     rel_paths: list[str] = []
     for i, (name, sent, softened, url) in enumerate(made):
@@ -1009,6 +1023,7 @@ def generate_drafts(
     log(f"{len(pending)} beat(s) to generate, {len(shots) - len(pending)} already drafted.")
 
     failures: list[str] = []
+    short: list[tuple[str, int]] = []          # beats that came back with fewer takes
     for i, shot in enumerate(shots, start=1):
         if skip_existing and shot.draft_variations:
             log(f"{shot.scene_id}: already has {len(shot.draft_variations)} drafts — skipping.")
@@ -1023,6 +1038,8 @@ def generate_drafts(
             log(f"[{i}/{len(shots)}] Generating {n} drafts for {shot.scene_id} ({tag}) ...")
             paths = generate_for_shot(shot, n, backend=shot_backend, render=render, log=log)
             log(f"  -> {len(paths)} image(s) for {shot.scene_id}")
+            if len(paths) < n:
+                short.append((shot.scene_id, len(paths)))
         except Exception as exc:
             log(f"  !! {shot.scene_id} FAILED: {exc}")
             failures.append(shot.scene_id)
@@ -1031,6 +1048,20 @@ def generate_drafts(
 
     if failures:
         log(f"Failed beats ({len(failures)}): {failures} — re-run to retry just these.")
+
+    # A beat that returns one take out of three is not a failure by any check this
+    # loop makes -- it has drafts, it did not raise, and `skip_existing` will pass
+    # over it on the next run. So the batch reported success and 19 of 25 beats
+    # silently carried a third of the takes that were asked for. Say it here, at
+    # the end, where the number is visible without reading 200 log lines.
+    if short:
+        got = sum(c for _, c in short)
+        log(f"SHORT: {len(short)} of {len(shots)} beat(s) returned fewer than {n} "
+            f"takes ({got} images where {len(short) * n} were asked for).")
+        for sid, c in short:
+            log(f"  {sid}: {c}/{n}")
+        log("  Failure rows are in the prompt ledger (event=generate_failed) — "
+            "GET /api/prompts/ledger, or ledger.failures().")
     return storyboard
 
 

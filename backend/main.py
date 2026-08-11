@@ -2340,11 +2340,26 @@ def get_prompt_ledger(scope: str = "all", exemplars: int = 10):
     because learning that does not accumulate across episodes is not learning.
     """
     project = config.MANIFEST_PATH.parent.name if scope == "project" else None
+    # Failures belong beside the successes. Reading "generated: 78" and nothing
+    # else is how a run that produced one take on 19 of 25 beats read as healthy.
+    fails = ledger.failures(project=project)
+    by_strategy: dict[str, int] = {}
+    by_backend: dict[str, int] = {}
+    for r in fails:
+        by_strategy[r.get("strategy") or "?"] = by_strategy.get(r.get("strategy") or "?", 0) + 1
+        by_backend[r.get("backend") or "?"] = by_backend.get(r.get("backend") or "?", 0) + 1
     return {
         "ok": True,
         "strategies_available": list(assets.PROMPT_STRATEGIES),
         "variants_enabled": assets.PROMPT_VARIANTS,
         **ledger.summary(project=project),
+        "failed": len(fails),
+        "failed_by_strategy": by_strategy,
+        "failed_by_backend": by_backend,
+        "recent_failures": [
+            {k: r.get(k) for k in ("scene_id", "strategy", "backend", "slot", "error")}
+            for r in fails[-10:]
+        ],
         "exemplars": ledger.top_exemplars(limit=max(0, min(exemplars, 50)), project=project),
     }
 
