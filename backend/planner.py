@@ -563,6 +563,13 @@ def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = No
         except director.PlanError as exc:
             plan.warnings.append(f"internal: {exc}")
         director.save_plan(plan)
+        # What the planner proposed, before anyone judges it.
+        try:
+            from . import ledger
+            ledger.record_plan(beat_id=bid, plan_id=plan.plan_id,
+                               profile=prof["key"], shots=coverage)
+        except Exception as exc:  # noqa: BLE001 — telemetry must not fail a plan
+            log(f"  (could not record plan to the ledger: {exc})")
         plans[bid] = plan
         log(f"  {bid}: {len(coverage)} shots, "
             f"{sum(1 for c in coverage if c.motion_type == 'ai_video')} paid, "

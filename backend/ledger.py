@@ -174,6 +174,124 @@ def record_rejection(*, scene_id: str, path: str, reason: str = "other",
     _append(row)
 
 
+
+# --- planner outcomes ----------------------------------------------------------
+#
+# The planner's prompt has now been tuned three times by reading one scene and
+# guessing what to change. Two of those rounds failed silently -- paid-shot
+# allocation stayed at zero, duration variety never moved -- and were only caught
+# by measuring the next output by hand.
+#
+# The same argument that produced this module in the first place applies to the
+# planner: record what it proposed and what the human did about it, and prompt
+# questions become answerable instead of arguable. A shot that survives to
+# `locked` unchanged is an accepted proposal; one edited first, or dropped, is a
+# rejected one, and the difference is the whole signal.
+
+def record_plan(*, beat_id: str, plan_id: str, profile: str, shots: list) -> None:
+    """One row per planned shot, at plan time. Nothing is judged yet."""
+    for ds in shots:
+        _append({
+            "event": "plan",
+            "ts": time.time(),
+            "project": _project(),
+            "plan_id": plan_id,
+            "beat_id": beat_id,
+            "shot_id": getattr(ds, "id", ""),
+            "profile": profile,
+            "purpose": getattr(ds, "purpose", ""),
+            "shot_size": getattr(ds, "shot_size", ""),
+            "angle": getattr(ds, "angle", ""),
+            "camera_move": getattr(ds.camera, "move", "") if getattr(ds, "camera", None) else "",
+            "seconds": round(float(getattr(ds, "duration", 0) or 0), 2),
+            "motion_type": getattr(ds, "motion_type", ""),
+            "face_visibility": getattr(ds, "face_visibility", ""),
+            "gestural": bool(getattr(ds, "gestural", False)),
+            "identity_critical": bool(getattr(ds, "identity_critical", False)),
+            "constrained_by": list(getattr(ds, "constrained_by", []) or []),
+            "estimated_cost": round(float(getattr(ds, "estimated_cost", 0) or 0), 3),
+        })
+
+
+def record_plan_outcome(*, beat_id: str, plan_id: str, outcome: str,
+                        shots: list, edited: list[str] | None = None) -> None:
+    """What a human did with a plan: locked, replanned, or discarded.
+
+    ``edited`` names shots changed before locking. An edited shot that still
+    reaches production is not the same signal as one accepted as written, and
+    collapsing the two would make every plan look good.
+    """
+    changed = set(edited or [])
+    for ds in shots:
+        sid = getattr(ds, "id", "")
+        _append({
+            "event": "plan_outcome",
+            "ts": time.time(),
+            "project": _project(),
+            "plan_id": plan_id,
+            "beat_id": beat_id,
+            "shot_id": sid,
+            "outcome": outcome,                 # locked | replanned | discarded
+            "edited": sid in changed,
+            "shot_size": getattr(ds, "shot_size", ""),
+            "purpose": getattr(ds, "purpose", ""),
+            "motion_type": getattr(ds, "motion_type", ""),
+            "camera_move": getattr(ds.camera, "move", "") if getattr(ds, "camera", None) else "",
+        })
+
+
+def planner_report(project: str | None = None) -> dict:
+    """Which planner tendencies survive review, and which get changed.
+
+    Deliberately reports acceptance per ATTRIBUTE rather than an overall score.
+    "The planner is 82% good" is not actionable; "every ecu it proposes gets
+    edited" is a prompt change.
+    """
+    rows = read_rows()
+    if project:
+        rows = [r for r in rows if r.get("project") == project]
+    # Keyed by (plan_id, shot_id), not shot_id alone. Re-planning a beat produces
+    # the same shot ids again, so keying on the id would let the second attempt
+    # overwrite the first -- discarding precisely the rejection that prompted the
+    # re-plan, which is the signal worth having.
+    def key(r):
+        return (r.get("plan_id") or "", r.get("shot_id") or "")
+
+    planned = {key(r): r for r in rows if r.get("event") == "plan" and r.get("shot_id")}
+    outcomes = {}
+    for r in rows:
+        if r.get("event") == "plan_outcome" and r.get("shot_id"):
+            outcomes[key(r)] = r        # last outcome for THIS plan wins
+
+    from collections import defaultdict
+    stats = defaultdict(lambda: defaultdict(lambda: {"seen": 0, "accepted": 0}))
+    locked = edited = 0
+    for k, o in outcomes.items():
+        p = planned.get(k)
+        if not p or o.get("outcome") != "locked":
+            continue
+        locked += 1
+        ok = not o.get("edited")
+        edited += 0 if ok else 1
+        for attr in ("shot_size", "purpose", "motion_type", "camera_move"):
+            v = p.get(attr) or "?"
+            stats[attr][v]["seen"] += 1
+            stats[attr][v]["accepted"] += 1 if ok else 0
+
+    out = {}
+    for attr, values in stats.items():
+        out[attr] = {v: {**c, "rate": round(c["accepted"] / c["seen"], 2) if c["seen"] else None}
+                     for v, c in sorted(values.items())}
+    return {
+        "planned_shots": len(planned),
+        "reviewed_shots": len(outcomes),
+        "locked": locked,
+        "edited_before_lock": edited,
+        "by_attribute": out,
+        # Below this, a per-attribute rate is one or two shots and means nothing.
+        "confident": locked >= 40,
+    }
+
 def read_rows() -> list[dict]:
     """All rows, oldest first. A corrupt line is skipped, not fatal."""
     path = ledger_path()

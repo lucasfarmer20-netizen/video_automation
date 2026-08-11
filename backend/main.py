@@ -1798,6 +1798,11 @@ async def lock_director_scene(request: Request):
         for plan in plans:
             plan.status = "locked"
             director.save_plan(plan)
+            try:
+                ledger.record_plan_outcome(beat_id=plan.beat_id, plan_id=plan.plan_id,
+                                           outcome="locked", shots=plan.coverage)
+            except Exception:  # noqa: BLE001
+                pass
         return {"ok": True, "locked": [p.beat_id for p in plans],
                 "estimated_cost": planner.scene_summary(ids)["estimated_cost"]}
     except HTTPException:
@@ -1878,6 +1883,16 @@ def lock_director_plan(beat_id: str, locked: bool = True):
             return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
     plan.status = "locked" if locked else "draft"
     director.save_plan(plan)
+    # Locking is the human verdict on the planner's proposal, and the only point
+    # where accepted and rejected are distinguishable. Recording it here is what
+    # turns prompt tuning from inspection into measurement.
+    try:
+        ledger.record_plan_outcome(
+            beat_id=beat_id, plan_id=plan.plan_id,
+            outcome="locked" if locked else "replanned",
+            shots=plan.coverage)
+    except Exception:  # noqa: BLE001
+        pass
     return {"ok": True, "beat_id": beat_id, "status": plan.status}
 
 
@@ -2041,6 +2056,17 @@ def get_budget_plan(budget: float | None = None, beats: int | None = None):
     plan = script.plan_for_budget(budget, beats)
     return {"ok": True, "plan": plan,
             "note": None if plan else "No budget given — default scope (15-40 beats, ai_video used sparingly)."}
+
+
+@app.get("/api/director/planner_report")
+def get_planner_report(scope: str = "all"):
+    """Which planner tendencies survive review, per attribute.
+
+    Deliberately not an overall score. "The planner is 82% good" cannot be acted
+    on; "every ecu it proposes gets edited" is a prompt change.
+    """
+    project = config.MANIFEST_PATH.parent.name if scope == "project" else None
+    return {"ok": True, **ledger.planner_report(project=project)}
 
 
 @app.get("/api/prompts/ledger")
