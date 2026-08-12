@@ -93,32 +93,77 @@ def test_paid_video_route_refuses_an_unapproved_storyboard(client):
 
 
 def test_project_switch_is_refused_while_a_job_runs(client, monkeypatch, tmp_path):
-    """config paths are process globals read by worker threads on one instance, so
-    switching mid-render redirects paid output into the other project.
+    """Switching projects while a job runs is refused.
 
-    The switch target must be a REAL manifest inside the workspace, or the request
-    404s on validation before it ever reaches the guard -- which would make this
-    test pass whether the guard exists or not.
+    The switch target must be a REAL manifest inside the workspace root, or the
+    request fails the containment check before it ever reaches the guard --
+    which would make this test pass whether the guard exists or not.
+
+    The workspace root is pointed at tmp_path rather than the checkout. This
+    used to create ``chan/GuardTest`` inside the real repository and rmtree it
+    in a finally, so an interrupted run left directories in the working tree,
+    and a test that writes into the repo it is testing is one bad path
+    expression away from deleting something that matters.
     """
     tc, M = client
-    proj = M.WORKSPACE_ROOT / "chan" / "GuardTest"
-    proj.mkdir(parents=True, exist_ok=True)
-    man = proj / "storyboard_manifest.json"
+    monkeypatch.setattr(M, "WORKSPACE_ROOT", tmp_path)
+    man = tmp_path / "chan" / "GuardTest" / "storyboard_manifest.json"
+    man.parent.mkdir(parents=True)
     man.write_text("{}", encoding="utf-8")
-    try:
-        # Control: with nothing running, this target is accepted.
-        monkeypatch.setattr(M, "get_jobs_status", lambda: {})
-        assert tc.post("/api/project/select", json={"rel": str(man)}).status_code == 200
 
-        # With a job running, the same request must be refused.
-        monkeypatch.setattr(M, "get_jobs_status",
-                            lambda: {"render": {"status": "running", "log": ""}})
-        r = tc.post("/api/project/select", json={"rel": str(man)})
+    # Control: with nothing running, this target is accepted.
+    monkeypatch.setattr(M, "get_jobs_status", lambda *a, **k: {})
+    assert tc.post("/api/project/select", json={"rel": str(man)}).status_code == 200
+
+    # With a job running, the same request must be refused.
+    monkeypatch.setattr(M, "get_jobs_status",
+                        lambda *a, **k: {"render": {"status": "running", "log": ""}})
+    r = tc.post("/api/project/select", json={"rel": str(man)})
+    assert r.status_code == 409, r.status_code
+    assert "still running" in r.json()["detail"]
+
+
+def test_the_switch_guard_reads_the_real_job_registry(client, monkeypatch, tmp_path):
+    """The same guard, without stubbing the thing under test.
+
+    The test above replaces get_jobs_status wholesale, so it proves the endpoint
+    calls the guard but says nothing about whether the guard can actually see a
+    job. Now that the registry is keyed per project, "is anything running?" is a
+    question about a specific project, and a guard that asked it of the wrong one
+    would look identical from outside.
+    """
+    import threading
+    from backend import config, pipeline_worker, projects
+
+    tc, M = client
+    monkeypatch.setattr(M, "WORKSPACE_ROOT", tmp_path)
+
+    source = tmp_path / "chan" / "Source" / "storyboard_manifest.json"
+    source.parent.mkdir(parents=True)
+    source.write_text("{}", encoding="utf-8")
+    target = tmp_path / "chan" / "Target" / "storyboard_manifest.json"
+    target.parent.mkdir(parents=True)
+    target.write_text("{}", encoding="utf-8")
+
+    # The request binds the currently active project, so the job has to belong
+    # to that same project for the guard to be asking about the right one.
+    monkeypatch.setattr(config, "MANIFEST_PATH", source)
+    ctx = projects.ProjectContext.from_manifest(source)
+
+    release = threading.Event()
+    running = threading.Event()
+    try:
+        with projects.use(ctx):
+            pipeline_worker.start_job(
+                "guard-probe",
+                lambda: (running.set(), release.wait(timeout=5)))
+        assert running.wait(timeout=5)
+
+        r = tc.post("/api/project/select", json={"rel": str(target)})
         assert r.status_code == 409, r.status_code
-        assert "still running" in r.json()["detail"]
+        assert "guard-probe" in r.json()["detail"]
     finally:
-        import shutil as _sh
-        _sh.rmtree(proj, ignore_errors=True)
+        release.set()
 
 
 def test_setting_the_active_project_repoints_the_process_config(tmp_path, monkeypatch):
@@ -298,3 +343,42 @@ def test_move_tree_keeps_the_source_when_the_copy_is_short(tmp_path, monkeypatch
     with pytest.raises(RuntimeError, match="refusing to delete"):
         M._move_tree(src, tmp_path / "_trash" / "Ep")
     assert src.exists() and (src / "render" / "s001.mp4").is_file()
+
+
+def test_another_project_s_job_does_not_block_this_switch(client, monkeypatch, tmp_path):
+    """The registry is per project, so the guard asks about THIS one.
+
+    Under the old global registry any film's running stage blocked every other
+    film's project switch. That is not a safety property, it is a collision:
+    the job it was protecting belongs to a different project and now carries its
+    own context, so it cannot be redirected by this switch at all.
+    """
+    import threading
+    from backend import config, pipeline_worker, projects
+
+    tc, M = client
+    monkeypatch.setattr(M, "WORKSPACE_ROOT", tmp_path)
+
+    here = tmp_path / "chan" / "Here" / "storyboard_manifest.json"
+    here.parent.mkdir(parents=True)
+    here.write_text("{}", encoding="utf-8")
+    elsewhere = tmp_path / "chan" / "Elsewhere" / "storyboard_manifest.json"
+    elsewhere.parent.mkdir(parents=True)
+    elsewhere.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(config, "MANIFEST_PATH", here)
+    other = projects.ProjectContext.from_manifest(elsewhere)
+
+    release = threading.Event()
+    running = threading.Event()
+    try:
+        with projects.use(other):
+            pipeline_worker.start_job(
+                "elsewhere-probe",
+                lambda: (running.set(), release.wait(timeout=5)))
+        assert running.wait(timeout=5)
+
+        r = tc.post("/api/project/select", json={"rel": str(elsewhere)})
+        assert r.status_code == 200, r.json()
+    finally:
+        release.set()

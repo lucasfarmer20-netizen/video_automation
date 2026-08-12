@@ -1191,14 +1191,11 @@ async def select_project(request: Request):
         if p.name != "storyboard_manifest.json" or not p.is_file():
             raise HTTPException(status_code=404, detail="Project file not found on disk")
 
-        # config.MANIFEST_PATH and friends are process globals that background
-        # threads read at call time, and this is a single Cloud Run instance. A
-        # switch mid-render sends the paid clips into the other project's assets/
-        # and writes them onto that project's identically-named scene ids, which
-        # is only recoverable by paying for the generation again. Refuse instead.
-        #
-        # The real fix is a job-scoped project context rather than globals; this
-        # is the guard until that refactor lands.
+        # The job-scoped project context this comment used to be waiting for has
+        # landed: jobs capture a ProjectContext at enqueue and rebind it in the
+        # worker thread, so a switch mid-render no longer sends paid clips into
+        # the other project's assets/. The guard stays as belt-and-braces while
+        # that isolation is still being reviewed -- see refuse_if_jobs_running.
         refuse_if_jobs_running("switching projects")
         set_active_manifest_path(str(p))
         return {"ok": True}
