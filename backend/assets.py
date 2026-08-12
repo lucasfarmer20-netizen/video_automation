@@ -250,13 +250,13 @@ STYLE_BLOCK = (
 
 # --- reference registry -----------------------------------------------------
 def load_references() -> dict:
-    if config.REFERENCES_CONFIG.exists():
-        return json.loads(config.REFERENCES_CONFIG.read_text(encoding="utf-8"))
+    if config.references_config().exists():
+        return json.loads(config.references_config().read_text(encoding="utf-8"))
     return {}
 
 
 def _save_references(reg: dict) -> None:
-    config.REFERENCES_CONFIG.write_text(json.dumps(reg, indent=2) + "\n", encoding="utf-8")
+    config.references_config().write_text(json.dumps(reg, indent=2) + "\n", encoding="utf-8")
 
 
 def ref_urls(names: list[str]) -> list[str]:
@@ -271,7 +271,7 @@ def ref_urls(names: list[str]) -> list[str]:
         files = entry.get("files") or ([entry["file"]] if entry.get("file") else [])
         cached = entry.get("urls") or []
         if len(cached) != len(files):  # (re)upload if not cached for all files
-            cached = [fal_client.upload_file(str(config.REFERENCES_DIR / f)) for f in files]
+            cached = [fal_client.upload_file(str(config.references_dir() / f)) for f in files]
             entry["files"], entry["urls"] = files, cached
             changed = True
         urls.extend(cached)
@@ -580,9 +580,9 @@ def _load_character_anchors() -> dict[str, str]:
     Read straight from ``characters.json`` (not via ``characters.py``, to avoid an
     import cycle). Characters without an anchor are omitted.
     """
-    if not config.CHARACTERS_CONFIG.exists():
+    if not config.characters_config().exists():
         return {}
-    data = json.loads(config.CHARACTERS_CONFIG.read_text(encoding="utf-8"))
+    data = json.loads(config.characters_config().read_text(encoding="utf-8"))
     return {
         name: (spec.get("structural_anchor") or "").strip()
         for name, spec in data.items()
@@ -902,7 +902,7 @@ def generate_for_shot(
 
     rel_paths: list[str] = []
     for i, (name, sent, softened, url) in enumerate(made):
-        dest = config.ASSETS / shot.scene_id / f"var_{ts}_{i}.png"
+        dest = config.assets_dir() / shot.scene_id / f"var_{ts}_{i}.png"
         _download(url, dest)
         rel = config.rel_media_path(dest)
         rel_paths.append(rel)

@@ -68,7 +68,7 @@ def build(storyboard: Storyboard | None = None, log=print) -> Path:
     sb = storyboard or load()
     ep = config.episode_paths(sb.title)
     slug = ep["slug"]
-    proj_dir = Path(config.MANIFEST_PATH).parent
+    proj_dir = config.project_dir()
     xml_path = proj_dir / f"{slug}.fcpxml"
     if not xml_path.is_file():
         raise FileNotFoundError(

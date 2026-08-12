@@ -1,0 +1,579 @@
+<title>FilmCraft V1 Implementation Plan</title>
+<style>
+  :root {
+    --bg: #FAF9F7;
+    --surface: #FFFFFF;
+    --surface-2: #F3F1ED;
+    --ink: #1B1917;
+    --ink-2: #57534E;
+    --ink-3: #8A827A;
+    --rule: #E4E0DA;
+    --rule-strong: #CFC9C0;
+    --accent: #B45309;
+    --accent-soft: #FDF1DE;
+    --blocker: #A82A1D;
+    --blocker-soft: #FBE9E6;
+    --major: #96590A;
+    --major-soft: #FBF0DC;
+    --minor: #4F5A66;
+    --minor-soft: #EDF0F3;
+    --good: #2F6B47;
+
+    --display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1A1917;
+      --surface: #232120;
+      --surface-2: #2B2927;
+      --ink: #F1EEE9;
+      --ink-2: #B6AFA6;
+      --ink-3: #8B837A;
+      --rule: #36332F;
+      --rule-strong: #4A4640;
+      --accent: #F0A340;
+      --accent-soft: #382C18;
+      --blocker: #F09287;
+      --blocker-soft: #3A2320;
+      --major: #E2A85E;
+      --major-soft: #362A17;
+      --minor: #9BA6B2;
+      --minor-soft: #23272C;
+      --good: #7FBF97;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #1A1917;
+    --surface: #232120;
+    --surface-2: #2B2927;
+    --ink: #F1EEE9;
+    --ink-2: #B6AFA6;
+    --ink-3: #8B837A;
+    --rule: #36332F;
+    --rule-strong: #4A4640;
+    --accent: #F0A340;
+    --accent-soft: #382C18;
+    --blocker: #F09287;
+    --blocker-soft: #3A2320;
+    --major: #E2A85E;
+    --major-soft: #362A17;
+    --minor: #9BA6B2;
+    --minor-soft: #23272C;
+    --good: #7FBF97;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 60rem;
+    margin: 0 auto;
+    padding: clamp(2rem, 5vw, 4.5rem) clamp(1.1rem, 4vw, 3rem) 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 3.25rem;
+  }
+
+  /* ---- masthead ---- */
+  .masthead { display: flex; flex-direction: column; gap: 1.15rem; }
+
+  .slate {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  h1 {
+    font-family: var(--display);
+    font-size: clamp(2.1rem, 5.5vw, 3.1rem);
+    line-height: 1.08;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .standfirst {
+    font-size: clamp(1.02rem, 1.9vw, 1.14rem);
+    color: var(--ink-2);
+    max-width: 62ch;
+    text-wrap: pretty;
+  }
+
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.75rem;
+    padding-top: 1.15rem;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    color: var(--ink-3);
+  }
+
+  .meta b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---- contents ---- */
+  .contents {
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    padding: 1.25rem 1.4rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem 1.5rem;
+  }
+
+  .contents .slate { width: 100%; color: var(--ink-3); }
+
+  .contents a {
+    font-size: 0.9rem;
+    color: var(--ink-2);
+    text-decoration: none;
+    border-bottom: 1px solid var(--rule-strong);
+    padding-bottom: 1px;
+  }
+
+  .contents a:hover, .contents a:focus-visible { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* ---- sections ---- */
+  section { display: flex; flex-direction: column; gap: 1.15rem; scroll-margin-top: 1.5rem; }
+
+  h2 {
+    font-family: var(--display);
+    font-size: clamp(1.45rem, 3vw, 1.85rem);
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    margin: 0;
+    padding-bottom: 0.6rem;
+    border-bottom: 2px solid var(--ink);
+  }
+
+  h3 {
+    font-family: var(--body);
+    font-size: 1rem;
+    font-weight: 650;
+    line-height: 1.35;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  p { margin: 0; max-width: 68ch; text-wrap: pretty; }
+  section > p + p { margin-top: -0.25rem; }
+
+  strong { font-weight: 650; }
+  em { font-style: italic; color: var(--ink-2); }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.855em;
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    padding: 0.08em 0.34em;
+    color: var(--ink);
+    word-break: break-word;
+  }
+
+  ul { margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: 0.6rem; max-width: 68ch; }
+  li { padding-left: 0.15rem; }
+  li::marker { color: var(--accent); }
+
+  /* ---- tables ---- */
+  .scroller { overflow-x: auto; border: 1px solid var(--rule); background: var(--surface); }
+
+  table { border-collapse: collapse; width: 100%; font-size: 0.885rem; min-width: 34rem; }
+
+  thead th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+    padding: 0.75rem 0.9rem;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--rule-strong);
+    white-space: nowrap;
+  }
+
+  tbody td { padding: 0.75rem 0.9rem; border-bottom: 1px solid var(--rule); vertical-align: top; color: var(--ink-2); }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody td:first-child { color: var(--ink); font-weight: 600; white-space: nowrap; }
+  tbody td strong { color: var(--ink); }
+
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: center; width: 2.5rem; color: var(--accent) !important; }
+
+  /* ---- conflict cards ---- */
+  .conflicts { display: flex; flex-direction: column; gap: 1rem; }
+
+  .conflict { background: var(--surface); border: 1px solid var(--rule); padding: 1.2rem 1.35rem; display: flex; flex-direction: column; gap: 0.75rem; }
+
+  .conflict-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.55rem 0.8rem; }
+
+  .cid { font-family: var(--mono); font-size: 0.82rem; font-weight: 600; color: var(--accent); }
+
+  .chip {
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 0.2rem 0.5rem;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+  }
+
+  .chip.blocker { color: var(--blocker); background: var(--blocker-soft); }
+  .chip.major { color: var(--major); background: var(--major-soft); }
+  .chip.minor { color: var(--minor); background: var(--minor-soft); }
+
+  .conflict h3 { flex: 1 1 18rem; }
+
+  .fix {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    padding: 0.7rem 0.95rem;
+    font-size: 0.93rem;
+    max-width: none;
+  }
+
+  .fix .slate { display: block; margin-bottom: 0.2rem; color: var(--accent); }
+
+  /* ---- callout ---- */
+  .callout { background: var(--surface-2); border: 1px solid var(--rule); border-top: 3px solid var(--accent); padding: 1.15rem 1.35rem; display: flex; flex-direction: column; gap: 0.7rem; }
+  .callout p { max-width: none; }
+
+  /* ---- questions ---- */
+  ol.questions { margin: 0; padding-left: 0; list-style: none; counter-reset: q; display: flex; flex-direction: column; gap: 0.9rem; }
+  ol.questions li { counter-increment: q; display: grid; grid-template-columns: 2rem 1fr; gap: 0.65rem; padding-left: 0; max-width: 68ch; }
+  ol.questions li::before {
+    content: "Q" counter(q);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--accent);
+    padding-top: 0.28em;
+  }
+
+  footer { border-top: 1px solid var(--rule); padding-top: 1.25rem; font-family: var(--mono); font-size: 0.74rem; color: var(--ink-3); }
+
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  @media (max-width: 34rem) {
+    .conflict, .callout, .contents { padding-left: 1rem; padding-right: 1rem; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="slate">Implementation plan &middot; plan only, nothing built</div>
+    <h1>FilmCraft V1 Implementation Plan</h1>
+    <p class="standfirst">
+      The headline: <strong>the contract is closer to this codebase than it reads.</strong>
+      The hard part of §3 (beat&nbsp;≠&nbsp;shot) and most of §11.1 (no double-spend) already
+      exist and work. The real V1 cost is four structural conflicts — a process-global active
+      project, take/lineage ownership, approval versioning, and export snapshots — plus a
+      stage-navigation rewrite. Everything else is assembly.
+    </p>
+    <div class="meta">
+      <span><b>Against</b> FILMCRAFT_V1_CODE_IMPLEMENTATION_CONTRACT.md</span>
+      <span><b>Code at</b> a8003ca</span>
+      <span><b>Suite</b> 117 passed / 0 skipped</span>
+      <span><b>Date</b> 2026-08-11</span>
+    </div>
+  </header>
+
+  <nav class="contents">
+    <div class="slate">Contents</div>
+    <a href="#reuse">1 · What already fits</a>
+    <a href="#conflicts">2 · Conflicts to decide</a>
+    <a href="#stages">3 · Stage navigation</a>
+    <a href="#slices">4 · Slice sequence</a>
+    <a href="#tests">5 · Tests to add</a>
+    <a href="#questions">6 · Open questions</a>
+  </nav>
+
+  <section id="reuse">
+    <h2>1 · What already satisfies the contract</h2>
+    <p>Reuse, do not rebuild. Each row is existing, working code that the contract asks for under a different name.</p>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>Contract clause</th><th>Already implemented</th><th>Where</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>§3 beat → many shots</td>
+            <td><code>CoveragePlan.coverage: list[DirectorShot]</code>; IDs are <code>s003.01</code> style; <code>beat_duration</code> snapshotted at plan time</td>
+            <td><code>director.py:88,167</code></td>
+          </tr>
+          <tr>
+            <td>§5.1 visual unit fields</td>
+            <td><code>purpose</code>, <code>shot_size</code>, <code>angle</code>, <code>composition</code>, <code>camera.duration</code>, <code>reason</code>, <code>reference_dependencies</code>, <code>estimated_cost</code> — a near-exact match to the contract's field list</td>
+            <td><code>director.py:88</code></td>
+          </tr>
+          <tr>
+            <td>§5.2 Critic as separate pass</td>
+            <td><code>planner.critique()</code> behind <code>POST /api/director/critique</code>, writes <code>plan.warnings</code>, read-only otherwise</td>
+            <td><code>main.py:1954</code></td>
+          </tr>
+          <tr>
+            <td>§5.2 issue attachment</td>
+            <td><code>shot_tier()</code> / <code>triage()</code> compute tiers <strong>server-side, once</strong>, with an explicit comment forbidding a client-side copy</td>
+            <td><code>director.py:204,228</code></td>
+          </tr>
+          <tr>
+            <td>§5 no paid gen before approval</td>
+            <td><code>compile_coverage</code> refuses <code>ai_video</code> shots unless <code>storyboard_approved</code>; free tiers stay open</td>
+            <td><code>director.py:729</code></td>
+          </tr>
+          <tr>
+            <td>§11.1 no double-spend</td>
+            <td><code>paid_signature()</code> hashes the inputs a clip was bought for; <code>paid_clip</code> is set <strong>only</strong> when fal was billed, deliberately separate from <code>clip</code></td>
+            <td><code>director.py:698</code></td>
+          </tr>
+          <tr>
+            <td>§6.1 spend visibility</td>
+            <td>Ledger records generation, failure, choice, rejection, plan, plan outcome; <code>summary()</code> / <code>planner_report()</code> aggregate</td>
+            <td><code>ledger.py</code></td>
+          </tr>
+          <tr>
+            <td>§9.2 FCPXML</td>
+            <td><code>timeline.py</code> emits OTIO + FCPXML; <code>bundle.py</code> zips FCPXML plus every asset it references</td>
+            <td><code>timeline.py</code>, <code>bundle.py</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <p><strong><code>paid_signature</code> is the single most valuable thing in the repo for this contract.</strong> It is exactly the pattern §5.4 and §11.5 ask for — approval bound to a content signature, invalidated when inputs change — applied at shot level. Four of the slices below are that same idea lifted to plan, slot, and export level.</p>
+      <p>Do not invent a second mechanism for it.</p>
+    </div>
+  </section>
+
+  <section id="conflicts">
+    <h2>2 · Conflicts the contract forces</h2>
+    <p>The contract says surface conflicts rather than silently preserving old behavior. These are the six that matter, in rough order of cost.</p>
+
+    <div class="conflicts">
+
+      <article class="conflict">
+        <div class="conflict-head">
+          <span class="cid">C1</span>
+          <span class="chip blocker">Blocker</span>
+          <h3>Process-global active project vs §11.3 “no stale project targeting”</h3>
+        </div>
+        <p>There is one active project per <em>process</em>, not per request. <code>config.set_active_manifest()</code> rebinds module globals (<code>MANIFEST_PATH</code>, <code>ASSETS</code>, <code>REFERENCES_DIR</code>, <code>REFERENCES_CONFIG</code>, <code>CHARACTERS_CONFIG</code>) at <code>config.py:44</code>, backed by a <code>.active_project</code> file at <code>main.py:144</code>. Every endpoint resolves its project by calling <code>get_current_project()</code> with no project argument.</p>
+        <p>Consequences today: switching project mid-job retargets in-flight background work, because worker jobs read the same globals. Two browser tabs on two projects share one global. <code>tests/conftest.py</code> exists specifically to undo this leakage between tests, and its docstring records the order-dependent failures it caused.</p>
+        <div class="fix">
+          <span class="slate">Recommended fix</span>
+          Thread an explicit <code>project_id</code> through the API and resolve paths per request, keeping <code>get_current_project()</code> as a deprecated shim during migration. This is the largest refactor in V1 and it gates slices 4–7, so do it first.
+        </div>
+      </article>
+
+      <article class="conflict">
+        <div class="conflict-head">
+          <span class="cid">C2</span>
+          <span class="chip major">Major</span>
+          <h3>Director currently owns takes; §5.3 says Generate owns them</h3>
+        </div>
+        <p><code>DirectorShot</code> carries <code>draft_variations</code>, <code>chosen_variation</code>, <code>clip</code>, <code>paid_clip</code>, <code>paid_signature</code>, <code>error</code> — produced state living on the planning object. §5.3 is explicit that Director's lineage must terminate at “Motion planned • 7 sec • est. $0.42 • no paid generation yet”.</p>
+        <div class="fix">
+          <span class="slate">Recommended fix — smallest safe refactor</span>
+          Do <em>not</em> move those fields; too much of the render path reads them, and <code>paid_clip</code>/<code>paid_signature</code> are load-bearing for the re-bill guard. Add a separate <code>GenerationAttempt</code> record keyed by <code>(project_id, shot_id, attempt_n)</code> that owns attempts, failures, retries and cost, and make the Director <em>view</em> project only up to the plan.
+        </div>
+      </article>
+
+      <article class="conflict">
+        <div class="conflict-head">
+          <span class="cid">C3</span>
+          <span class="chip major">Major</span>
+          <h3><code>CoveragePlan.version</code> is a schema version, not a content version</h3>
+        </div>
+        <p>§5.4 and §11.5 need approval attributable to an exact plan version and invalidated on material change. <code>version: int = PLAN_VERSION</code> is the serialization format. <code>status</code> is a lifecycle string (<code>draft|locked|compiling|compiled|orphaned</code>), not an identity.</p>
+        <div class="fix">
+          <span class="slate">Recommended fix</span>
+          Add <code>plan_signature</code> — a hash over the fields that make a plan materially different: shot IDs, durations, types, prompts, framing — alongside <code>approved_signature</code> and <code>approved_at</code>/<code>approved_by</code>. Approval is valid iff the two signatures match. Same shape as <code>paid_signature</code>.
+        </div>
+      </article>
+
+      <article class="conflict">
+        <div class="conflict-head">
+          <span class="cid">C4</span>
+          <span class="chip major">Major</span>
+          <h3>Export reads live state; §9.1 / §11.7 require a frozen snapshot</h3>
+        </div>
+        <p><code>GET /api/export/{kind}</code> serves whatever <code>&lt;slug&gt;.fcpxml</code> happens to be on disk, and the master renders from the live manifest. Nothing binds the two to the same state, which is precisely the equivalence §11.7 calls critical. There is also no export history and no version identity.</p>
+        <div class="fix">
+          <span class="slate">Recommended fix</span>
+          An export writes an immutable <code>exports/&lt;version&gt;/</code> directory holding the frozen manifest, plan set, selected outputs, timeline, audio and grade state. Master <strong>and</strong> FCPXML both render from that directory, never from live state. Later edits create a new version; prior versions are never overwritten.
+        </div>
+      </article>
+
+      <article class="conflict">
+        <div class="conflict-head">
+          <span class="cid">C5</span>
+          <span class="chip major">Major</span>
+          <h3>“Build Draft 1” with placeholders vs a preview that refuses to build</h3>
+        </div>
+        <p>§6.2 requires Draft 1 to build with explicit placeholders (“3/5 visuals ready • Draft 1 will use 2 placeholders”). Today the two paths disagree: FCPXML leaves missing shots as <strong>gaps</strong> and prints a note (<code>timeline.py:316</code>), while the preview builder <strong>raises and refuses to render</strong> (<code>timeline.py:447-454</code>). Neither is a placeholder.</p>
+        <div class="fix">
+          <span class="slate">Recommended fix</span>
+          A real placeholder clip generated at the shot's intended duration, carrying <code>shot_id</code>, expected media type and slot identity, so a later selected output replaces it in place (§7.1) without disturbing trims.
+        </div>
+      </article>
+
+      <article class="conflict">
+        <div class="conflict-head">
+          <span class="cid">C6</span>
+          <span class="chip minor">Minor · needs your call</span>
+          <h3>Hardcoded “Vesper” vs §4 “voice labels must be data-driven”</h3>
+        </div>
+        <p><code>Vesper</code> is hardcoded in roughly eight UI locations (<code>page.tsx</code>, <code>BeatCard.tsx</code>, <code>AssemblyPanel.tsx</code>, plus the <code>VesperChat</code> component name). <strong>This is a genuine tension with CLAUDE.md</strong>, which names Vesper's narration voice as the channel's deliberate throughline.</p>
+        <p>My read: the contract is about the <em>product</em> not assuming a narrator, while CLAUDE.md is about what <em>this channel</em> configures. Both hold if the name becomes a project setting that defaults to Vesper — but it is the one place the two authorities disagree, so it wants an explicit decision rather than a quiet default.</p>
+      </article>
+
+    </div>
+  </section>
+
+  <section id="stages">
+    <h2>3 · Stage navigation: 5 steps → 6 stages</h2>
+    <p><code>StepHeader.tsx</code> defines <code>StepId = 1 | 2 | 3 | 4 | 5</code> with <code>buildSteps()</code> gating on <code>scriptLocked</code> / <code>storyboardApproved</code>. The contract's spine is six named stages with per-stage CTAs and blocked/completed state.</p>
+    <p>The existing shape is right — a server-derived gate model with reasons for blocking. It is the <em>cardinality and naming</em> that change. Replace the numeric <code>StepId</code> with a named union (<code>script | direct | generate | roughcut | refine | export</code>), and derive stage status from backend state rather than the frontend's local counts, per §11.4: the UI must not claim a stage complete unless authoritative backend state agrees.</p>
+    <p><code>page.tsx</code> is 1,236 lines and already holds most cross-stage state. Splitting it per stage is a prerequisite for slices 5–7, not optional cleanup.</p>
+  </section>
+
+  <section id="slices">
+    <h2>4 · Slice sequence</h2>
+    <p>Vertical slices per §12. Each slice is state + API + frontend + invariant tests. Slices 0–3 are the foundation; nothing after 3 is safe until C1 lands.</p>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th class="num">#</th><th>Slice</th><th>Delivers</th><th>Key files</th><th>Contract</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="num">0</td>
+            <td>Stage model</td>
+            <td>Named six-stage union; server-derived status / blocked / next-action via one <code>GET /api/stages</code></td>
+            <td><code>StepHeader.tsx</code>, <code>page.tsx</code>, <code>main.py</code></td>
+            <td>§2, §11.4</td>
+          </tr>
+          <tr>
+            <td class="num">1</td>
+            <td>Per-request project identity</td>
+            <td><code>project_id</code> threaded through API and worker; globals demoted to a shim; stale-response rejection</td>
+            <td><code>config.py</code>, <code>main.py</code>, <code>pipeline_worker.py</code></td>
+            <td>§11.3 — <strong>C1</strong></td>
+          </tr>
+          <tr>
+            <td class="num">2</td>
+            <td>Plan signature + approval</td>
+            <td><code>plan_signature</code> / <code>approved_signature</code>; beat and scene approval; invalidation on material change; history preserved</td>
+            <td><code>director.py</code>, <code>main.py</code></td>
+            <td>§5.4, §11.5 — <strong>C3</strong></td>
+          </tr>
+          <tr>
+            <td class="num">3</td>
+            <td>Script → Director invalidation</td>
+            <td>Timing or text change marks affected beats stale without remapping unrelated assets</td>
+            <td><code>script.py</code>, <code>director.py</code></td>
+            <td>§4, §10</td>
+          </tr>
+          <tr>
+            <td class="num">4</td>
+            <td>Generate lineage</td>
+            <td><code>GenerationAttempt</code> record; retries branch and never overwrite; failures stay attached; request-level idempotency key on top of <code>paid_signature</code></td>
+            <td>new <code>generation.py</code>, <code>director.py</code>, <code>ledger.py</code></td>
+            <td>§6, §11.1, §11.6 — <strong>C2</strong></td>
+          </tr>
+          <tr>
+            <td class="num">5</td>
+            <td>Slot-based timeline</td>
+            <td>Timeline clip = slot → DirectorShot → selected output; take swap preserves slot, trims and placement; placeholders</td>
+            <td><code>timeline.py</code>, <code>MultitrackTimeline.tsx</code></td>
+            <td>§7.1, §6.2 — <strong>C5</strong></td>
+          </tr>
+          <tr>
+            <td class="num">6</td>
+            <td>Refine routing</td>
+            <td>Issue model with severity and blocking flags, plus authoritative-stage routing; no cross-stage mutation</td>
+            <td><code>ProblemQueueDrawer.tsx</code>, new <code>issues.py</code></td>
+            <td>§8</td>
+          </tr>
+          <tr>
+            <td class="num">7</td>
+            <td>Frozen export</td>
+            <td><code>exports/&lt;version&gt;/</code> snapshot; master and FCPXML both derived from it; export history</td>
+            <td><code>bundle.py</code>, <code>timeline.py</code>, <code>main.py</code></td>
+            <td>§9, §11.7 — <strong>C4</strong></td>
+          </tr>
+          <tr>
+            <td class="num">8</td>
+            <td>Hardening</td>
+            <td>End-to-end §15 walkthrough; mutation-sensitive tests</td>
+            <td><code>tests/</code></td>
+            <td>§13, §15</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <p><strong>Recommended deviation from the contract's own §12 ordering.</strong> The contract lists the shared stage/status model first, then Script → Director. I put per-request project identity at slice 1 instead, ahead of everything else, because C1 makes §11.3 unachievable — every later slice would otherwise be written against globals and need reworking.</p>
+    </div>
+  </section>
+
+  <section id="tests">
+    <h2>5 · Tests to add</h2>
+    <p>The suite is at <strong>117 passed / 0 skipped</strong>, and <code>tests/conftest.py</code> now prints a skip banner so an incomplete run cannot read as a clean one. New coverage, mapped to §13's required categories:</p>
+    <ul>
+      <li>One beat → multiple DirectorShots <em>(partly covered by <code>test_director.py</code>)</em></li>
+      <li>Plan approval versioning; approval invalidation on material change</li>
+      <li>Critic issue attaches to a specific shot or beat gap</li>
+      <li>No paid generation before approval — extend <code>test_paid_rebill.py</code>, the five money-path tests that only started running on this workstation on 2026-08-11</li>
+      <li>Generation idempotency under duplicate clicks, worker retry and network retry</li>
+      <li>Retry preserves prior attempts and ancestry</li>
+      <li>Failed generation → placeholder; placeholder → later output replaces it in slot</li>
+      <li>Take swap preserves timeline slot identity and valid trims</li>
+      <li><strong>Project switch isolation and stale response rejection</strong> — the C1 regression test. Write it first, watch it fail, then land slice 1</li>
+      <li>Export snapshot immutability; master / FCPXML timeline equivalence</li>
+    </ul>
+    <p><code>test_paid_rebill.py</code> and <code>test_director.py</code> are the right models to follow: behavioral, offline, and mutation-sensitive.</p>
+  </section>
+
+  <section id="questions">
+    <h2>6 · Open questions</h2>
+    <ol class="questions">
+      <li><strong>C6 — Vesper.</strong> Project-level setting defaulting to Vesper, or keep it fixed? The only place the contract and CLAUDE.md disagree.</li>
+      <li><strong>C2 — take storage.</strong> Confirm the additive <code>GenerationAttempt</code> record over moving fields off <code>DirectorShot</code>. Moving them means touching the re-bill guard, which I would rather not disturb.</li>
+      <li><strong>Migration.</strong> Existing projects have plans without signatures and exports without snapshots. Migrate on read with defaults, or write a one-shot script?</li>
+      <li><strong>Scope.</strong> Slices 0–4 deliver §15 items 1–8 and are the useful half. Is V1 all eight slices, or do we ship after slice 5 — a watchable Draft 1 — and treat Refine and Export as V1.1?</li>
+    </ol>
+  </section>
+
+  <footer>
+    Plan only — no FilmCraft code written yet. Source: scratch/filmcraft_v1_plan.md
+  </footer>
+
+</div>

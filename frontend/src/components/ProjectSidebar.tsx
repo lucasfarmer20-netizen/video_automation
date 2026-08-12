@@ -6,6 +6,7 @@ import { Folder, Film, CheckCircle, Lock, Plus, ChevronDown, ChevronRight, Eye, 
 interface Project {
   name: string;
   rel: string;
+  project_id?: string;
   rel_display: string;
   active: boolean;
   channel: string;
@@ -17,7 +18,7 @@ interface Project {
 interface ProjectSidebarProps {
   projects: Project[];
   activeProjectId: string | null;
-  onSelectProject: (rel: string) => void;
+  onSelectProject: (rel: string, projectId?: string) => void;
   onCreateProject: (name: string, channel: string) => void;
   activeChannel: "bestiary" | "calluses";
   setActiveChannel: (channel: "bestiary" | "calluses") => void;
@@ -107,7 +108,7 @@ export default function ProjectSidebar({
               {bestiaryProjects.map((p, idx) => (
                 <div
                   key={idx}
-                  onClick={() => onSelectProject(p.rel)}
+                  onClick={() => onSelectProject(p.rel, p.project_id)}
                   className={`p-3 rounded-xl border cursor-pointer transition-all duration-200 hover:scale-[1.01] ${
                     p.active
                       ? "bg-amber-500/10 border-amber-400/60 text-amber-300 font-semibold shadow-[0_0_15px_rgba(245,158,11,0.15)]"
@@ -163,7 +164,7 @@ export default function ProjectSidebar({
               {callusesProjects.map((p, idx) => (
                 <div
                   key={idx}
-                  onClick={() => onSelectProject(p.rel)}
+                  onClick={() => onSelectProject(p.rel, p.project_id)}
                   className={`p-3 rounded-xl border cursor-pointer transition-all duration-200 hover:scale-[1.01] ${
                     p.active
                       ? "bg-blue-500/10 border-blue-400/60 text-blue-300 font-semibold shadow-[0_0_15px_rgba(59,130,246,0.15)]"

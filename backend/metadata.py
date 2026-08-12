@@ -267,7 +267,7 @@ def generate(storyboard: Storyboard | None = None,
 def path_for(sb: Storyboard) -> "os.PathLike":
     """Where this episode's metadata JSON lives — beside its manifest."""
     from pathlib import Path
-    return Path(config.MANIFEST_PATH).parent / "metadata.json"
+    return config.project_dir() / "metadata.json"
 
 
 def save(md: Metadata, sb: Storyboard | None = None) -> "os.PathLike":

@@ -39,25 +39,25 @@ from . import config
 from .assets import NANO_ENDPOINT, _save_references, load_references
 
 DEFAULT_VARIATIONS = 3
-# NOT captured at import. config.CHARACTERS_CONFIG and REFERENCES_DIR are
+# NOT captured at import. config.characters_config() and REFERENCES_DIR are
 # rebound by set_active_manifest on every project switch, so a module-level
 # snapshot pins this module to whichever project happened to be active when it
 # first imported -- on Cloud Run, the container's own /app copy.
 #
 # That is not a cosmetic bug. Heney's structural anchor was written through here,
 # reported as saved to /gcs/calluses/MichaelHeney/characters.json (the endpoint
-# printed config.CHARACTERS_CONFIG, which it was NOT writing to), read back
+# printed config.characters_config(), which it was NOT writing to), read back
 # successfully from the same stale path, and then vanished on the next container
 # restart because /app is ephemeral. Spike A refused to run against a project
 # whose characters.json had never contained the anchor at all.
 
 def characters_config() -> Path:
     """The active project's characters.json, resolved per call."""
-    return config.CHARACTERS_CONFIG
+    return config.characters_config()
 
 
 def sheets_dir() -> Path:
-    return config.REFERENCES_DIR / "sheets"
+    return config.references_dir() / "sheets"
 
 # Claude system prompt for distilling a style-agnostic Structural Feature Anchor.
 ANCHOR_SYSTEM = (
@@ -224,7 +224,7 @@ def lock_sheet(name: str, candidate_index: int) -> str:
     src = sheets_dir() / name / f"cand_{candidate_index}.png"
     if not src.exists():
         raise FileNotFoundError(src)
-    dest = config.REFERENCES_DIR / f"char_{name}.png"
+    dest = config.references_dir() / f"char_{name}.png"
     dest.write_bytes(src.read_bytes())
     reg = load_references()
     reg[name] = {"files": [dest.name]}  # drop stale urls -> forces re-upload

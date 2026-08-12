@@ -13,6 +13,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from . import projects
+
 # Load a local .env if present. A real .env is never committed (it is gitignored);
 # in production the variables may be set in the environment directly.
 load_dotenv()
@@ -41,6 +43,43 @@ REFERENCES_DIR = ROOT / "references"
 REFERENCES_CONFIG = ROOT / "references.json"
 CHARACTERS_CONFIG = ROOT / "characters.json"
 
+def manifest_path() -> Path:
+    """The manifest for the project this call belongs to.
+
+    Prefers the bound per-request/per-job context (see ``backend/projects.py``);
+    falls back to the process global only for CLI runs, where one process really
+    is one project. Every path helper below resolves through here, so a web
+    request can no longer have its target changed underneath it by a concurrent
+    project switch.
+    """
+    ctx = projects.bound()
+    return ctx.manifest_path if ctx is not None else MANIFEST_PATH
+
+
+def project_dir() -> Path:
+    return manifest_path().parent
+
+
+def assets_dir() -> Path:
+    ctx = projects.bound()
+    return ctx.assets if ctx is not None else ASSETS
+
+
+def references_dir() -> Path:
+    ctx = projects.bound()
+    return ctx.references_dir if ctx is not None else REFERENCES_DIR
+
+
+def references_config() -> Path:
+    ctx = projects.bound()
+    return ctx.references_config if ctx is not None else REFERENCES_CONFIG
+
+
+def characters_config() -> Path:
+    ctx = projects.bound()
+    return ctx.characters_config if ctx is not None else CHARACTERS_CONFIG
+
+
 def set_active_manifest(path: Path | str) -> None:
     global MANIFEST_PATH, ASSETS, REFERENCES_DIR, REFERENCES_CONFIG, CHARACTERS_CONFIG
     p = Path(path).resolve()
@@ -64,6 +103,10 @@ def set_active_manifest(path: Path | str) -> None:
     ASSETS.mkdir(parents=True, exist_ok=True)
     REFERENCES_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Mirror the legacy global into the identity module so unbound callers (the
+    # CLI, older tests) resolve the same project through either route.
+    projects.set_fallback(projects.ProjectContext.from_manifest(p))
+
 # Initialize with environment values if set, else defaults
 initial_manifest = os.environ.get("MANIFEST_PATH") or str(ROOT / "storyboard_manifest.json")
 set_active_manifest(initial_manifest)
@@ -71,6 +114,13 @@ set_active_manifest(initial_manifest)
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB")
 ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2")
 VESPER_VOICE_ID = os.environ.get("VESPER_VOICE_ID", "")
+
+# The narrator's display name. A *setting*, not a constant: FilmCraft must never
+# hard-code a narrator into the product UI (contract §4), while this channel's
+# identity really is Vesper (CLAUDE.md). Both hold if the default is Vesper and
+# every label reads the resolved value. Per-project overrides live on the
+# manifest as Storyboard.narrator_name.
+DEFAULT_NARRATOR_NAME = os.environ.get("DEFAULT_NARRATOR_NAME", "Vesper")
 
 # ElevenLabs voice synthesis tuning parameters (overridable via env)
 ELEVENLABS_STABILITY = float(os.environ.get("ELEVENLABS_STABILITY", "0.35"))
@@ -179,15 +229,15 @@ def media_roots() -> list[Path]:
     allowing that would put .env and the service-account key back in reach. Only
     the generated-media subtrees are listed.
     """
-    project_dir = MANIFEST_PATH.parent
+    proj = project_dir()
     roots = [
-        ASSETS,
-        REFERENCES_DIR,
-        project_dir / "assets",
-        project_dir / "references",
-        project_dir / "render",
-        project_dir / "audio",
-        project_dir / "vo_auditions",   # narrator casting: library + designed takes
+        assets_dir(),
+        references_dir(),
+        proj / "assets",
+        proj / "references",
+        proj / "render",
+        proj / "audio",
+        proj / "vo_auditions",   # narrator casting: library + designed takes
         AUDIO_POOL,          # so the UI can audition music beds via /media/
         # Legacy local-run locations, kept so a workstation checkout still serves
         # media generated before episode_paths moved into the project directory.
@@ -231,7 +281,7 @@ def rel_media_path(dest: Path) -> str:
     # directory nor ROOT, so it needs its own base — otherwise a bed resolved to
     # "gcs/audio_pool/x.wav", which is neither project-relative nor absolute and
     # cannot be served.
-    bases = [MANIFEST_PATH.parent, AUDIO_POOL.parent, ROOT]
+    bases = [project_dir(), AUDIO_POOL.parent, ROOT]
     for base in bases:
         try:
             return str(target.relative_to(Path(base).resolve())).replace("\\", "/")
@@ -257,16 +307,17 @@ def resolve_media(path_str: str | None, scene_id: str | None = None) -> Path | N
     parts = clean.split("/")
     filename = parts[-1]
     sid = scene_id or (parts[-2] if len(parts) >= 2 else None)
-    project_dir = MANIFEST_PATH.parent
+    proj = project_dir()
+    assets = assets_dir()
 
     candidates: list[Path] = []
     if sid:
-        candidates.append(ASSETS / sid / filename)
-        candidates.append(project_dir / "assets" / sid / filename)
-        candidates.append(project_dir / sid / filename)
-    candidates.append(project_dir / clean)
-    candidates.append(ASSETS / clean)
-    candidates.append(REFERENCES_DIR / filename)
+        candidates.append(assets / sid / filename)
+        candidates.append(proj / "assets" / sid / filename)
+        candidates.append(proj / sid / filename)
+    candidates.append(proj / clean)
+    candidates.append(assets / clean)
+    candidates.append(references_dir() / filename)
     candidates.append(RENDER_DIR / clean)
     candidates.append(ROOT / clean)
     # Shared music pool: reachable as "audio_pool/<file>" or by bare filename.
@@ -301,7 +352,7 @@ def episode_paths(title: str) -> dict:
     that each project owns a directory, and is kept only in the return value
     because the timeline filenames use it.
     """
-    base = MANIFEST_PATH.parent
+    base = project_dir()
     return {
         "slug": slug(title),
         "narration": base / "audio" / "narration",

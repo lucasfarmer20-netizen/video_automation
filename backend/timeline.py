@@ -30,6 +30,7 @@ from pathlib import Path
 import opentimelineio as otio
 
 from . import audio, config
+from .ffmpeg_bin import ffmpeg_bin, ffprobe_bin
 from .manifest import Storyboard, load
 
 FPS = 24
@@ -41,7 +42,7 @@ FPS = 24
 def _probe_seconds(path: Path) -> float:
     try:
         out = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            [ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
              "-of", "default=nw=1:nk=1", str(path)],
             capture_output=True, text=True, timeout=10
         )
@@ -300,7 +301,7 @@ def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
     # mount. These used to go to config.ROOT — /app inside the container, which
     # is ephemeral in-memory storage: the export was unreachable by any route and
     # evaporated on the next cold start, while the UI reported it as ready.
-    out_dir_root = config.MANIFEST_PATH.parent
+    out_dir_root = config.project_dir()
     out_dir_root.mkdir(parents=True, exist_ok=True)
     otio_path = out_dir_root / f"{slug}.otio"
     fcpxml_path: Path | None = out_dir_root / f"{slug}.fcpxml"
@@ -459,10 +460,10 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
         encoding="utf-8",
     )
     tmpv = scratch / f"_{tag}_v.mp4"
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
+    subprocess.run([ffmpeg_bin(), "-y", "-v", "error", "-f", "concat", "-safe", "0",
                     "-i", str(concat), "-c", "copy", str(tmpv)], check=True)
     out = Path(out) if out else (render_dir / "_preview.mp4")
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(tmpv), "-i", str(wav),
+    subprocess.run([ffmpeg_bin(), "-y", "-v", "error", "-i", str(tmpv), "-i", str(wav),
                     "-vf", f"scale=-2:{height}", "-c:v", "libx264", "-crf", "30",
                     "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k",
                     "-shortest", str(out)], check=True)

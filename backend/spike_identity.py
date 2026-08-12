@@ -180,7 +180,7 @@ def run(cfg: SpikeConfig, log=print) -> dict:
                         import time as _t
                         ts = int(_t.time())
                         for i, u in enumerate(urls):
-                            dest = config.ASSETS / scene_id / f"var_{ts}_{i}.png"
+                            dest = config.assets_dir() / scene_id / f"var_{ts}_{i}.png"
                             assets._download(u, dest)
                             paths.append(config.rel_media_path(dest))
                     else:
@@ -242,7 +242,7 @@ def run(cfg: SpikeConfig, log=print) -> dict:
 
 def spike_dir():
     """Where the spike's manifest lives. Images stay in assets/, served already."""
-    return config.MANIFEST_PATH.parent / "spike_a"
+    return config.project_dir() / "spike_a"
 
 
 def contact_sheet() -> dict:

@@ -43,8 +43,11 @@ def secure_filename(filename: str) -> str:
 # Submodule imports
 from . import config, manifest, script, assets, audio, motion, timeline, sizzle, metadata, bundle, ledger
 from . import director, spike_identity, planner, capabilities, casting, characters
+from . import stages as stagemod
+from . import projects
 from .manifest import Storyboard, Shot, MotionType, Camera, RenderConfig, db
 from .pipeline_worker import start_job, get_jobs_status, log_job
+from .ffmpeg_bin import ffmpeg_bin, ffprobe_bin
 
 # The moves motion._camera() actually implements; anything else renders as a
 # frozen plate, so reject it at the API rather than silently producing a still.
@@ -139,17 +142,77 @@ async def require_studio_key(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def bind_project_context(request: Request, call_next):
+    """Bind this request's project identity for its whole lifetime.
+
+    The target comes from the client when it says which project it means
+    (``X-Project-Id`` header or a ``project_id`` query parameter) and otherwise
+    falls back to the active-project pointer. Either way it is resolved **once,
+    here**, and every path derived downstream comes from that one context.
+
+    Two things this buys, both contract §11.3:
+
+    * a concurrent ``/api/project/select`` can no longer retarget a request that
+      is already in flight -- the switch rebinds the pointer file, not this
+      request's context;
+    * a client that names a project which is not the active one is answered
+      about the project it named, or refused, rather than being quietly served
+      another project's data under the id it asked for.
+    """
+    requested = (request.headers.get("X-Project-Id")
+                 or request.query_params.get("project_id") or "").strip()
+    try:
+        ctx = _context_for(requested)
+    except projects.UnknownProject as exc:
+        return JSONResponse(status_code=404,
+                            content={"ok": False, "error": str(exc),
+                                     "project_id": requested})
+    token = projects.bind(ctx)
+    try:
+        response = await call_next(request)
+    finally:
+        projects.reset(token)
+    # Lets the client discard a reply that arrived after it switched projects.
+    response.headers["X-Project-Id"] = ctx.project_id
+    return response
+
+
+def _context_for(project_id: str = "") -> projects.ProjectContext:
+    """Resolve a client-supplied project id, or the active project when blank.
+
+    "Active" means ``config.manifest_path()``, not the pointer file directly.
+    Startup seeds it from the pointer and ``/api/project/select`` writes both, so
+    the two agree in production -- but reading the process value keeps a single
+    notion of "current project" for unbound callers instead of adding a second
+    one that can disagree with it.
+    """
+    active = projects.ProjectContext.from_manifest(config.manifest_path())
+    if not project_id:
+        return active
+    if active.project_id == project_id:
+        return active
+    for entry in _scan_projects():
+        cand = projects.ProjectContext.from_manifest(entry["rel"])
+        if cand.project_id == project_id:
+            return cand
+    # Never silently serve a different project under the id the client asked
+    # for. Refusing is the only answer that cannot corrupt the wrong project.
+    raise projects.UnknownProject(f"Unknown project id: {project_id}")
+
+
 WORKSPACE_ROOT = Path(config.ROOT).resolve()
 ACTIVE_PROJECT_FILE = Path("/gcs/.active_project") if Path("/gcs").exists() else Path(".active_project")
 IGNORE_DIRS = {".git", ".venv", "__pycache__", "node_modules", "frontend", "backend"}
 
 
 def get_project_id_from_path(path: str | Path) -> str:
-    """Derive a clean, unique Firestore document ID from a manifest path."""
-    path_str = str(path).replace("\\", "/").strip("/")
-    # Replace non-alphanumeric characters with underscores
-    safe_id = "".join([c if c.isalnum() else "_" for c in path_str])
-    return safe_id
+    """Derive a clean, unique Firestore document ID from a manifest path.
+
+    Delegates so the id a request is bound to and the id a document is stored
+    under can never drift apart.
+    """
+    return projects.project_id_for(path)
 
 
 def get_active_manifest_path() -> str:
@@ -186,9 +249,17 @@ def set_active_manifest_path(path: str):
 
 
 def get_current_project() -> Storyboard:
-    """Retrieve the currently active storyboard manifest with robust fallback creation."""
-    active_path = get_active_manifest_path()
-    f_id = get_project_id_from_path(active_path)
+    """The storyboard for THIS request's project, with robust fallback creation.
+
+    Reads the bound context first. Under HTTP a context is always bound by
+    ``bind_project_context``, so this no longer consults the active-project
+    pointer at all -- which is what stops a mid-request project switch from
+    changing the answer. Only unbound callers (the CLI, tests) fall through to
+    the pointer.
+    """
+    ctx = projects.bound()
+    active_path = str(ctx.manifest_path) if ctx else get_active_manifest_path()
+    f_id = ctx.project_id if ctx else get_project_id_from_path(active_path)
     sb = None
     try:
         sb = manifest.load_project(f_id)
@@ -228,20 +299,42 @@ def get_current_project() -> Storyboard:
             print(f"Warning: could not seed new manifest at {p}: {exc}")
 
 
-    config.set_active_manifest(active_path)
+    # Only unbound callers repoint the process globals. Doing this while a
+    # context is bound would let one request's read mutate what a *concurrent*
+    # request resolves -- reintroducing the shared-global race from the other
+    # direction.
+    if ctx is None:
+        config.set_active_manifest(active_path)
     return sb
 
 
 def save_current_project(sb: Storyboard):
-    """Save storyboard manifest state to both Firestore and local disk JSON."""
-    # Save to Firestore
+    """Persist a storyboard to the project THIS request or job belongs to.
+
+    The destination is the bound context, never the active-project pointer.
+
+    This wrapper used to pass ``get_active_manifest_path()`` explicitly, which
+    stepped straight over ``manifest.save``'s bound-aware default -- so a request
+    or background job working on project B wrote B's storyboard over project A's
+    manifest whenever A happened to be the globally active one. A whole film's
+    approvals, selections and timing replaced by another's, reported as success.
+    Hardening the primitive was not enough while its main caller overrode it.
+
+    The Firestore id is taken from the same context for the same reason: the
+    document and the file must not be able to describe different projects.
+    """
+    ctx = projects.bound()
+    if ctx is not None:
+        # Keep the document id and the file in agreement with the bound project.
+        sb.id = ctx.project_id
     try:
         manifest.save_project(sb)
     except Exception as fe:
         print(f"Warning: Firestore save_project failed: {fe}")
-    # Save back to local/GCS JSON file for CLI & local sync
-    active_path = get_active_manifest_path()
-    manifest.save(sb, Path(active_path))
+    # Save back to local/GCS JSON for CLI & local sync. No explicit path: the
+    # default already resolves the bound project, and naming one here is exactly
+    # how this went wrong before.
+    manifest.save(sb)
 
 
 def _scan_projects() -> list[dict]:
@@ -321,6 +414,9 @@ def _scan_projects() -> list[dict]:
 
                 projects.append({
                     "name": name,
+                    # The id the client sends as X-Project-Id to target this
+                    # project explicitly instead of relying on the pointer.
+                    "project_id": get_project_id_from_path(str(resolved)),
                     "rel": str(resolved).replace("\\", "/"),
                     "rel_display": str(rel_display).replace("\\", "/"),
                     "active": resolved == active,
@@ -334,13 +430,13 @@ def _scan_projects() -> list[dict]:
 
 
 def _ref_registry() -> dict:
-    if config.REFERENCES_CONFIG.exists():
-        return json.loads(config.REFERENCES_CONFIG.read_text(encoding="utf-8"))
+    if config.references_config().exists():
+        return json.loads(config.references_config().read_text(encoding="utf-8"))
     return {}
 
 
 def _save_ref_registry(reg: dict) -> None:
-    config.REFERENCES_CONFIG.write_text(json.dumps(reg, indent=2) + "\n", encoding="utf-8")
+    config.references_config().write_text(json.dumps(reg, indent=2) + "\n", encoding="utf-8")
 
 
 def _ref_file(name: str, reg: dict) -> str | None:
@@ -436,7 +532,7 @@ def _pad_clip_to_beat(path: Path, target_seconds: float) -> None:
         trimmed = path.with_name(f"{path.stem}__trim.mp4")
         try:
             subprocess.run(
-                ["ffmpeg", "-y", "-v", "error", "-i", str(path),
+                [ffmpeg_bin(), "-y", "-v", "error", "-i", str(path),
                  "-t", f"{float(target_seconds):.3f}",
                  "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-an",
                  str(trimmed)],
@@ -454,7 +550,7 @@ def _pad_clip_to_beat(path: Path, target_seconds: float) -> None:
     padded = path.with_name(f"{path.stem}__padded.mp4")
     try:
         subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-i", str(path),
+            [ffmpeg_bin(), "-y", "-v", "error", "-i", str(path),
              "-vf", f"tpad=stop_mode=clone:stop_duration={shortfall:.3f}",
              "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-an",
              str(padded)],
@@ -497,7 +593,7 @@ def set_active_video_clip(sb: Storyboard, shot: Shot, video_rel_path: str, out_d
     if shot.camera:
         _pad_clip_to_beat(dest_path, float(shot.camera.duration))
     try:
-        frame_out_path = config.ASSETS / shot.scene_id / f"final_frame_{shot.scene_id}.png"
+        frame_out_path = config.assets_dir() / shot.scene_id / f"final_frame_{shot.scene_id}.png"
         assets.extract_final_frame(dest_path, frame_out_path)
     except Exception as e:
         print(f"Error extracting final frame for {shot.scene_id}: {e}")
@@ -710,7 +806,7 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
                     raise RuntimeError(f"No video URL returned from fal.ai for {shot.scene_id}")
 
                 import time
-                shot_assets_dir = config.ASSETS / shot.scene_id
+                shot_assets_dir = config.assets_dir() / shot.scene_id
                 shot_assets_dir.mkdir(parents=True, exist_ok=True)
 
                 timestamp = int(time.time())
@@ -734,7 +830,7 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
                 log(f"Successfully generated video for {shot.scene_id}")
 
                 try:
-                    frame_out_path = config.ASSETS / shot.scene_id / f"final_frame_{shot.scene_id}.png"
+                    frame_out_path = config.assets_dir() / shot.scene_id / f"final_frame_{shot.scene_id}.png"
                     prev_extracted_frame = assets.extract_final_frame(dest_video_path, frame_out_path)
                 except Exception as exc:
                     log(f"Warning: Failed to extract final frame for continuous chaining on {shot.scene_id}: {exc}")
@@ -980,7 +1076,7 @@ def get_active_project():
             preview_meta["live_runtime"] = round(sum(d for _, d in live), 3)
         
         # Same location timeline.build writes to: the project directory.
-        fcpxml_file = config.MANIFEST_PATH.parent / f"{ep['slug']}.fcpxml"
+        fcpxml_file = config.project_dir() / f"{ep['slug']}.fcpxml"
         fcpxml_ready = fcpxml_file.exists()
         
         # Count paid video shots
@@ -1001,6 +1097,9 @@ def get_active_project():
         
         return {
             "ok": True,
+            # Stale-response rejection: the client compares this to the project
+            # it currently has selected and discards replies that lost the race.
+            "project_id": projects.require().project_id,
             "project": {
                 "id": sb.id,
                 "title": sb.title,
@@ -1014,6 +1113,10 @@ def get_active_project():
                 # third hand-maintained field list this one value had to be added
                 # to (dataclass, from_dict, here).
                 "vo_profile": getattr(sb, "vo_profile", "") or "",
+                # The narrator's display NAME, already resolved. The UI must
+                # never hard-code one (contract §4); it renders this.
+                "narrator_name": manifest.narrator_name(sb),
+                "narrator_name_is_default": not (getattr(sb, "narrator_name", "") or "").strip(),
                 "music_track": sb.music_track or "",
                 "render": asdict(sb.render),
                 "shots": shots_payload,
@@ -1038,6 +1141,33 @@ def get_active_project():
             }
         }
     except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.get("/api/stages")
+def get_stages():
+    """The six-stage spine: status, blocking reasons, hints and the next action.
+
+    The single source for stage gating. The frontend used to assemble this from
+    counts it held locally, which is exactly the "no false success" failure the
+    contract forbids (§11.4) -- a client that computes its own idea of "approved"
+    can disagree with the server about whether money is allowed to be spent.
+    """
+    try:
+        sb = get_current_project()
+        ep = config.episode_paths(sb.title)
+
+        def _plan_status(beat_id: str):
+            p = director.load_plan(beat_id)
+            return p.status if p else None
+
+        data = stagemod.payload(sb, ep, _plan_status)
+        data["ok"] = True
+        data["narrator_name"] = manifest.narrator_name(sb)
+        data["project_id"] = sb.id
+        data["project_title"] = sb.title
+        return data
+    except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 
@@ -1476,16 +1606,16 @@ async def reset_project_assets(request: Request):
         dry = bool(data.get("dry_run", False))
         confirm = (data.get("confirm") or "").strip().lower()
         if not dry and confirm not in {(sb.title or "").strip().lower(),
-                                       config.MANIFEST_PATH.parent.name.lower()}:
+                                       config.project_dir().name.lower()}:
             raise HTTPException(
                 status_code=400,
                 detail=f"Type the project name to confirm. Expected {sb.title!r}.")
 
         ep = config.episode_paths(sb.title)
-        project_dir = config.MANIFEST_PATH.parent
+        project_dir = config.project_dir()
         targets: list[Path] = []
         if "stills" in scopes:
-            targets.append(config.ASSETS)
+            targets.append(config.assets_dir())
         if "renders" in scopes or "video" in scopes:
             targets.append(ep["render"])
         if "narration" in scopes:
@@ -1570,7 +1700,7 @@ def get_characters():
     chars = characters.load_characters()
     return {
         "ok": True,
-        "path": str(config.CHARACTERS_CONFIG),
+        "path": str(config.characters_config()),
         "characters": {
             name: {**spec,
                    "has_anchor": bool((spec.get("structural_anchor") or "").strip())}
@@ -1596,7 +1726,7 @@ async def upload_character_reference(name: str, file: UploadFile = File(...)):
         chars = characters.load_characters()
         if name not in chars:
             chars[name] = {}
-        ref_dir = config.MANIFEST_PATH.parent / "references" / "characters"
+        ref_dir = config.project_dir() / "references" / "characters"
         ref_dir.mkdir(parents=True, exist_ok=True)
         ext = Path(file.filename or "ref.png").suffix.lower() or ".png"
         dest = ref_dir / f"{secure_filename(name)}{ext}"
@@ -1626,7 +1756,7 @@ async def put_character(name: str, request: Request):
         characters.save_characters(chars)
         return {"ok": True, "name": name, "character": spec,
                 "has_anchor": bool((spec.get("structural_anchor") or "").strip()),
-                "written": str(config.CHARACTERS_CONFIG)}
+                "written": str(config.characters_config())}
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
 
@@ -1963,7 +2093,15 @@ async def critique_director_scene(request: Request):
         for bid in beat_ids:
             p = director.load_plan(bid)
             if p:
-                p.warnings = [w for w in warnings if w.get("beat_id") in ("", bid)]
+                p.warnings = director.normalize_warnings(
+                    [w for w in warnings if w.get("beat_id") in ("", bid)])
+                # Drop decisions about findings this re-critique no longer
+                # reports. Keeping them would let a stale "accepted" silently
+                # cover a warning that came back with different wording.
+                live = {w["id"] for w in p.warnings}
+                p.warning_dispositions = {k: v for k, v in
+                                          (p.warning_dispositions or {}).items()
+                                          if k in live}
                 director.save_plan(p)
         return {"ok": True, "warnings": warnings,
                 "summary": planner.scene_summary(beat_ids)}
@@ -2201,6 +2339,45 @@ async def patch_director_shot(shot_id: str, request: Request):
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
 
 
+@app.post("/api/director/warning/{beat_id}/{warning_id}")
+async def decide_director_warning(beat_id: str, warning_id: str, request: Request):
+    """Record a human decision about one critic warning.
+
+    This exists because the studio had no way to say anything durable about a
+    finding: the warning list could be cleared in the browser, which changed
+    React state and nothing else, so the screen reported a clean review while the
+    persisted plan still carried the warning -- and a refresh brought it back. A
+    dismissal the server never hears about is not a decision.
+
+    ``decision`` is "resolved" (the plan was changed to answer the finding) or
+    "accepted" (understood and deliberately kept). Sending "" clears it again.
+    """
+    try:
+        body = await request.body()
+        data = json.loads(body) if body else {}
+    except Exception:  # noqa: BLE001
+        data = {}
+    plan = director.load_plan(beat_id)
+    if not plan:
+        return JSONResponse(status_code=404,
+                            content={"ok": False, "error": f"no plan for {beat_id}"})
+    if plan.status == "compiling":
+        return JSONResponse(status_code=409, content={
+            "ok": False,
+            "error": f"{beat_id} is compiling; cannot change its review state"})
+    try:
+        director.resolve_warning(plan, warning_id,
+                                 str(data.get("decision", "resolved") or ""),
+                                 note=str(data.get("note") or ""))
+    except director.PlanError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    director.save_plan(plan)
+    return {"ok": True, "beat_id": beat_id,
+            "warnings": plan.warnings,
+            "warning_dispositions": plan.warning_dispositions,
+            "unresolved": len(director.unresolved_warnings(plan))}
+
+
 @app.post("/api/director/lock_scene")
 async def lock_director_scene(request: Request):
     """Lock every beat in a scene at once. {"beats": [...]}
@@ -2227,9 +2404,23 @@ async def lock_director_scene(request: Request):
                 continue
             try:
                 director.validate(plan, beat)
-                plans.append(plan)
             except director.PlanError as exc:
                 problems.append(str(exc))
+                continue
+            # Contract 5.4: a bulk action must not silently approve unresolved
+            # critic findings. Validation only checked arithmetic and shape, so
+            # "Approve Scene Plan" used to lock straight past every warning the
+            # critic had raised -- turning "approved" into a state that says
+            # nothing about whether the review was answered.
+            undecided = director.unresolved_warnings(plan)
+            if undecided:
+                ids = ", ".join(w["id"] for w in undecided[:4])
+                more = " and more" if len(undecided) > 4 else ""
+                problems.append(
+                    f"{bid}: {len(undecided)} critic warning(s) awaiting a decision "
+                    f"({ids}{more})")
+                continue
+            plans.append(plan)
         if problems:
             return JSONResponse(status_code=400,
                                 content={"ok": False, "error": "nothing was locked",
@@ -2320,6 +2511,17 @@ def lock_director_plan(beat_id: str, locked: bool = True):
             director.validate(plan, beat)
         except director.PlanError as exc:
             return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    if locked:
+        # Same rule as the scene-level lock. Unlocking back to draft stays
+        # allowed: returning a plan for more work is not an approval.
+        undecided = director.unresolved_warnings(plan)
+        if undecided:
+            return JSONResponse(status_code=400, content={
+                "ok": False,
+                "error": f"{beat_id} has {len(undecided)} critic warning(s) awaiting a "
+                         f"decision; resolve or accept each one before locking.",
+                "warnings": undecided,
+            })
     plan.status = "locked" if locked else "draft"
     director.save_plan(plan)
     # Locking is the human verdict on the planner's proposal, and the only point
@@ -2391,17 +2593,38 @@ async def put_director_plan(beat_id: str, request: Request):
 
 
 @app.post("/api/director/compile/{beat_id}")
-def compile_director_coverage(beat_id: str, force: bool = False):
-    """Render the coverage and assemble the beat clip. Spike B's whole point."""
+def compile_director_coverage(beat_id: str):
+    """Render the coverage and assemble the beat clip. Spike B's whole point.
+
+    There is no force flag. There used to be, and ``force=true`` skipped the
+    draft check entirely -- so any caller could send an unapproved plan into a
+    compile that generates stills and, for ai_video shots, buys paid video.
+    Approval is the whole boundary between a proposal and spending money on it,
+    and a query parameter that steps over it is not a gate.
+
+    Recovery goes the way a human does: lock the plan, then compile.
+    """
     try:
         sb = get_current_project()
         plan = director.load_plan(beat_id)
         if not plan:
             raise HTTPException(status_code=404, detail=f"no director plan for {beat_id}")
-        if plan.status == "draft" and not force:
+        if plan.status == "draft":
             return JSONResponse(status_code=409, content={
                 "ok": False,
-                "error": f"plan for {beat_id} is a draft; lock it first or pass force=true",
+                "error": f"plan for {beat_id} is a draft; lock it first - approval is "
+                         f"what allocates the render budget.",
+            })
+        # Defence in depth. A locked plan should never carry an undecided
+        # warning, because locking now refuses one; asserting it here too means a
+        # plan locked before this rule existed cannot walk into generation.
+        undecided = director.unresolved_warnings(plan)
+        if undecided:
+            return JSONResponse(status_code=409, content={
+                "ok": False,
+                "error": f"{beat_id} has {len(undecided)} critic warning(s) with no "
+                         f"recorded decision; resolve or accept them first.",
+                "warnings": undecided,
             })
         ep = config.episode_paths(sb.title)
         ep["render"].mkdir(parents=True, exist_ok=True)
@@ -2543,7 +2766,7 @@ def get_planner_report(scope: str = "all"):
     Deliberately not an overall score. "The planner is 82% good" cannot be acted
     on; "every ecu it proposes gets edited" is a prompt change.
     """
-    project = config.MANIFEST_PATH.parent.name if scope == "project" else None
+    project = config.project_dir().name if scope == "project" else None
     return {"ok": True, **ledger.planner_report(project=project)}
 
 
@@ -2554,7 +2777,7 @@ def get_prompt_ledger(scope: str = "all", exemplars: int = 10):
     ``scope=project`` narrows to the active episode; the default is every episode,
     because learning that does not accumulate across episodes is not learning.
     """
-    project = config.MANIFEST_PATH.parent.name if scope == "project" else None
+    project = config.project_dir().name if scope == "project" else None
     # Failures belong beside the successes. Reading "generated: 78" and nothing
     # else is how a run that produced one take on 19 of 25 beats read as healthy.
     fails = ledger.failures(project=project)
@@ -2615,9 +2838,9 @@ async def set_global_reference(file: UploadFile = File(...)):
         sb = get_current_project()
         config.require_for("assets")
         
-        config.REFERENCES_DIR.mkdir(parents=True, exist_ok=True)
+        config.references_dir().mkdir(parents=True, exist_ok=True)
         fname = secure_filename(f"global_ref_{file.filename}")
-        dest = config.REFERENCES_DIR / fname
+        dest = config.references_dir() / fname
         
         with open(dest, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -2877,8 +3100,8 @@ async def add_shot_reference(scene_id: str, file: UploadFile = File(...)):
             raise HTTPException(status_code=404, detail="Scene not found")
             
         fname = secure_filename(f"{scene_id}_{file.filename}")
-        config.REFERENCES_DIR.mkdir(parents=True, exist_ok=True)
-        dest = config.REFERENCES_DIR / fname
+        config.references_dir().mkdir(parents=True, exist_ok=True)
+        dest = config.references_dir() / fname
         
         with open(dest, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -2930,7 +3153,7 @@ async def upload_shot_image(scene_id: str, file: UploadFile = File(...)):
         if not shot:
             raise HTTPException(status_code=404, detail="Scene not found")
             
-        dest_dir = config.ASSETS / scene_id
+        dest_dir = config.assets_dir() / scene_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         
         base = secure_filename(file.filename) or "image.png"
@@ -3002,7 +3225,7 @@ async def edit_shot_image(scene_id: str, var_idx: int, request: Request):
         ts = int(time.time())
         rel_paths = []
         for i, url in enumerate(gen_urls):
-            dest = config.ASSETS / scene_id / f"edit_{ts}_{i}.png"
+            dest = config.assets_dir() / scene_id / f"edit_{ts}_{i}.png"
             assets._download(url, dest)
             rel = _safe_rel_path(dest)
             rel_paths.append(rel)
@@ -3043,7 +3266,7 @@ async def upload_shot_clip(scene_id: str, file: UploadFile = File(...)):
         dest = ep["render"] / f"{scene_id}.mp4"
         try:
             subprocess.run(
-                ["ffmpeg", "-y", "-v", "error", "-i", str(tmp),
+                [ffmpeg_bin(), "-y", "-v", "error", "-i", str(tmp),
                  "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,"
                         "pad=1280:720:(ow-iw)/2:(oh-ih)/2",
                  "-r", "24", "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p",
@@ -3125,6 +3348,13 @@ def refuse_if_jobs_running(what: str) -> None:
     and the was_active branch of /api/project/delete rebind the same globals and
     had no check, which is what comes of attaching a guard to one route instead of
     to the thing it protects.
+
+    Since jobs began capturing their ProjectContext at enqueue time
+    (``pipeline_worker.start_job``), a running job no longer follows the process
+    globals, so this should now be belt-and-braces rather than the actual
+    defence. It is deliberately kept until that isolation has been independently
+    reviewed -- removing the old guard in the same change that replaces it would
+    leave nothing to catch a mistake in the replacement.
     """
     running = [k for k, v in get_jobs_status().items() if v.get("status") == "running"]
     if running:
@@ -3230,7 +3460,7 @@ async def generate_shot_video(scene_id: str, request: Request):
             raise RuntimeError("No video URL returned from fal.ai")
 
         import time
-        shot_assets_dir = config.ASSETS / scene_id
+        shot_assets_dir = config.assets_dir() / scene_id
         shot_assets_dir.mkdir(parents=True, exist_ok=True)
 
         timestamp = int(time.time())
@@ -3627,9 +3857,9 @@ def roughcut_plan():
                        else ("out of date" if (ep["render"] / "_preview.mp4").is_file() else ""),
              "blocked": None if rendered else "Render the beats first."},
             {"key": "timeline", "label": "Export timeline",
-             "done": _is_current(config.MANIFEST_PATH.parent / f"{slug}.fcpxml", newest_media),
-             "detail": "" if _is_current(config.MANIFEST_PATH.parent / f"{slug}.fcpxml", newest_media)
-                       else ("out of date" if (config.MANIFEST_PATH.parent / f"{slug}.fcpxml").is_file() else ""),
+             "done": _is_current(config.project_dir() / f"{slug}.fcpxml", newest_media),
+             "detail": "" if _is_current(config.project_dir() / f"{slug}.fcpxml", newest_media)
+                       else ("out of date" if (config.project_dir() / f"{slug}.fcpxml").is_file() else ""),
              "blocked": None if rendered else "Render the beats first."},
         ]
         nxt = next((s for s in steps if not s["done"]), None)
@@ -4338,7 +4568,10 @@ async def upload_layer_audio(scene_id: str, file: UploadFile = File(...)):
 
 @app.get("/api/assemble/status")
 def get_assemble_status():
-    return {"ok": True, "jobs": get_jobs_status()}
+    # Filtered to the bound project by get_jobs_status(); this endpoint has no
+    # way to ask for another project's jobs, which is deliberate.
+    return {"ok": True, "jobs": get_jobs_status(),
+            "project_id": projects.require().project_id}
 
 
 # --- MEDIA SERVING ENDPOINTS ---
@@ -4354,7 +4587,7 @@ def audio_peaks():
     try:
         sb = get_current_project()
         ep = config.episode_paths(sb.title)
-        cache_path = config.MANIFEST_PATH.parent / "_peaks_cache.json"
+        cache_path = config.project_dir() / "_peaks_cache.json"
         try:
             cache = json.loads(cache_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001 — a bad cache must not break the view
@@ -4532,7 +4765,7 @@ def download_export_bundle():
     """
     sb = get_current_project()
     slug = config.episode_paths(sb.title)["slug"]
-    path = (config.MANIFEST_PATH.parent / f"{slug}_bundle.zip").resolve()
+    path = (config.project_dir() / f"{slug}_bundle.zip").resolve()
     if not path.is_file():
         raise HTTPException(
             status_code=404,
@@ -4576,7 +4809,7 @@ def download_timeline_export(kind: str):
 
     sb = get_current_project()
     slug = config.episode_paths(sb.title)["slug"]
-    path = (config.MANIFEST_PATH.parent / f"{slug}.{kind}").resolve()
+    path = (config.project_dir() / f"{slug}.{kind}").resolve()
     if not path.is_file():
         raise HTTPException(
             status_code=404,

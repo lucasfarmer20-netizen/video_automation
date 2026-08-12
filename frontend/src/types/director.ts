@@ -58,8 +58,18 @@ export interface DirectorShot {
   thumbnail_url?: string | null;
 }
 
+export interface WarningDisposition {
+  decision: "resolved" | "accepted";
+  note?: string;
+  by?: string;
+}
+
 export interface DirectorWarning {
+  /** Server-derived, content-based identity. The key for a disposition. */
   id?: string;
+  /** Any id the warning arrived carrying. Kept for tracing only — never the
+   *  disposition key, or a changed finding could inherit an old decision. */
+  source_id?: string;
   beat_id?: string;
   shot_id?: string;
   kind:
@@ -120,6 +130,9 @@ export interface DirectorCoveragePlan {
   version?: number;
   coverage: DirectorShot[];
   warnings: DirectorWarning[];
+  /** Durable human decision per warning id. A warning with no entry
+   *  here is unresolved and blocks locking (contract 5.4). */
+  warning_dispositions?: Record<string, WarningDisposition>;
   estimated_cost: number;
 }
 

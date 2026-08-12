@@ -43,6 +43,7 @@ PROBES: dict[str, object] = {
     "music_prompt": "sparse, no percussion",
     "voice_id": "probeVoiceId",
     "vo_profile": "historical_docudrama",
+    "narrator_name": "Corvid",
 }
 
 

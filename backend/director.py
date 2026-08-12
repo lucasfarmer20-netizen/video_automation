@@ -41,6 +41,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import config, ledger
+from .ffmpeg_bin import ffmpeg_bin, ffprobe_bin
 from .manifest import Camera, MotionType, Shot, Storyboard
 
 # Canonical stream parameters. These mirror `motion.render_shot`'s writer
@@ -176,7 +177,15 @@ class CoveragePlan:
     profile: str = ""
     created_by: str = "manual"     # manual|planner
     coverage: list[DirectorShot] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
+    # Critic findings. Annotated as list[str] for a long time while `critique`
+    # had always written dicts -- which is why nothing type-checked the shape.
+    warnings: list[dict] = field(default_factory=list)
+    # Durable human disposition per warning id: {"decision", "note", "at"}.
+    # A warning is only "handled" when a person recorded a decision about it;
+    # dismissing one in the browser is not a decision the backend can see, and
+    # locking a scene is not an answer to a specific finding. Contract §5.4:
+    # unresolved Critic warnings must not be silently approved by bulk actions.
+    warning_dispositions: dict = field(default_factory=dict)
     compiled: dict = field(default_factory=dict)
     # The scene's stated approach and its physical layout. Held per beat because
     # beats are the unit of storage, even though both are decided per scene.
@@ -186,6 +195,81 @@ class CoveragePlan:
     def total_duration(self) -> float:
         return sum(s.duration for s in self.coverage)
 
+
+
+# --- critic warnings ------------------------------------------------------------
+#
+# A warning needs a stable identity before a human decision about it can be
+# stored. It is derived from the warning's CONTENT, deliberately: re-running the
+# critic on an unchanged plan reproduces the same ids, so a recorded decision
+# survives a re-critique -- while a warning whose text or target changed gets a
+# new id and therefore needs deciding again. Clearing a finding must never clear
+# a different one that merely occupies the same position in a list.
+
+def warning_id(w: dict) -> str:
+    """Stable id for a critic warning, derived from what it says."""
+    import hashlib
+    parts = [str(w.get("beat_id") or ""), str(w.get("shot_id") or ""),
+             str(w.get("kind") or ""), str(w.get("detail") or "")]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:12]
+
+
+def normalize_warnings(raw: list | None) -> list[dict]:
+    """Coerce stored warnings to dicts carrying stable, DERIVED ids.
+
+    The id is always recomputed from the identity-bearing content and an
+    incoming ``id`` is never trusted. Honouring a supplied id would let a
+    changed finding keep the identity of the one it replaced, and therefore
+    inherit the human decision recorded against that older finding -- so a new
+    problem would arrive pre-approved and the scene would lock straight over it.
+    Identity has to be a property of what the warning says, not of who is
+    handing it to us.
+
+    Any supplied id is preserved as ``source_id`` for tracing. It is never the
+    disposition key.
+
+    Migrate-on-read, and idempotent: derived from data that is already there,
+    never invented, so re-loading a plan cannot change it. Legacy plans that
+    stored bare strings keep their text under ``detail``.
+    """
+    out: list[dict] = []
+    for w in (raw or []):
+        d = dict(w) if isinstance(w, dict) else {"kind": "legacy", "detail": str(w)}
+        supplied = str(d.pop("id", "") or "")
+        d["id"] = warning_id(d)
+        if supplied and supplied != d["id"]:
+            d["source_id"] = supplied
+        out.append(d)
+    return out
+
+
+def unresolved_warnings(plan: "CoveragePlan") -> list[dict]:
+    """Warnings with no recorded human decision. These block locking."""
+    disp = plan.warning_dispositions or {}
+    return [w for w in normalize_warnings(plan.warnings)
+            if not (disp.get(w["id"]) or {}).get("decision")]
+
+
+def resolve_warning(plan: "CoveragePlan", wid: str, decision: str,
+                    note: str = "", by: str = "human") -> dict:
+    """Record a human decision about one warning.
+
+    ``decision`` is "resolved" (the plan was changed to answer it) or
+    "accepted" (understood and deliberately kept). Both are decisions; neither
+    is silence. Passing "" clears the disposition again.
+    """
+    known = {w["id"] for w in normalize_warnings(plan.warnings)}
+    if wid not in known:
+        raise PlanError(f"{plan.beat_id}: no warning {wid} on this plan")
+    if decision and decision not in ("resolved", "accepted"):
+        raise PlanError(f"unknown decision {decision!r}; use resolved|accepted")
+    disp = dict(plan.warning_dispositions or {})
+    if decision:
+        disp[wid] = {"decision": decision, "note": note or "", "by": by}
+    else:
+        disp.pop(wid, None)
+    plan.warning_dispositions = disp
+    return disp.get(wid, {})
 
 
 # --- review triage --------------------------------------------------------------
@@ -253,7 +337,7 @@ def triage(plan: "CoveragePlan") -> dict:
 # deletable — which is what makes this whole experiment reversible.
 
 def director_dir() -> Path:
-    return config.MANIFEST_PATH.parent / "director"
+    return config.project_dir() / "director"
 
 
 def plan_path(beat_id: str) -> Path:
@@ -272,6 +356,10 @@ def load_plan(beat_id: str) -> CoveragePlan | None:
         shots.append(DirectorShot(camera=cam, **d))
     raw["coverage"] = shots
     raw.pop("version", None)
+    # Migrate-on-read: stamp ids onto warnings that predate them. Derived from
+    # content that is already present, so this is idempotent and invents nothing.
+    raw["warnings"] = normalize_warnings(raw.get("warnings"))
+    raw["warning_dispositions"] = dict(raw.get("warning_dispositions") or {})
     return CoveragePlan(version=PLAN_VERSION, **raw)
 
 
@@ -340,11 +428,11 @@ def validate(plan: CoveragePlan, beat: Shot) -> None:
 
 def _ffmpeg() -> str:
     """ffmpeg is a system install here, never a pip dependency (see CLAUDE.md)."""
-    return shutil.which("ffmpeg") or "ffmpeg"
+    return ffmpeg_bin()
 
 
 def _ffprobe() -> str:
-    return shutil.which("ffprobe") or "ffprobe"
+    return ffprobe_bin()
 
 
 def probe_seconds(path: Path) -> float:

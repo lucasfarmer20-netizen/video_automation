@@ -15,6 +15,7 @@ import {
   updateShot,
   waitForJob,
   critiqueCoverage,
+  decideDirectorWarning,
 } from "../lib/directorApi";
 
 import DirectorShotCard from "./DirectorShotCard";
@@ -266,13 +267,41 @@ export default function DirectorWorkspace({
     handleUpdateShot(shotId, { chosen_variation: variationIndex });
   };
 
-  const handleResolveWarning = (warningId: string) => {
-    if (!coveragePlan) return;
-    setCoveragePlan({
-      ...coveragePlan,
-      warnings: coveragePlan.warnings.filter((w) => w.id !== warningId),
-    });
+  /**
+   * Record a decision about a critic finding.
+   *
+   * This used to filter the warning out of local state and stop there, so the
+   * header could read "0 issues" while the saved plan still held the finding --
+   * and locking the scene silently approved it. The decision is persisted first
+   * and the server's warning list replaces ours, so what is on screen is what
+   * the backend will enforce at lock time.
+   *
+   * The finding itself is never removed. It stays visible with its decision
+   * attached; that is the record of the review having happened.
+   */
+  const handleResolveWarning = async (
+    warningId: string,
+    // Empty string CLEARS the decision. It must not be defaulted away: 'undo'
+    // sends it, and a default of "resolved" would silently re-resolve the very
+    // finding the user was reopening.
+    decision: "resolved" | "accepted" | "" = "resolved"
+  ) => {
+    if (!coveragePlan || !warningId) return;
+    try {
+      const res = await decideDirectorWarning(sceneId, warningId, decision);
+      setCoveragePlan((prev) =>
+        prev ? { ...prev, warnings: res.warnings,
+                 warning_dispositions: res.warning_dispositions } : prev
+      );
+    } catch (e: any) {
+      setError(e?.message || "Could not record that decision.");
+    }
   };
+
+  /** Findings with no recorded decision — the ones that block locking. */
+  const unresolvedWarnings = (coveragePlan?.warnings || []).filter(
+    (w) => !(w.id && coveragePlan?.warning_dispositions?.[w.id]?.decision)
+  );
 
   if (loading) {
     return (
@@ -591,13 +620,13 @@ export default function DirectorWorkspace({
           </button>
         </div>
       )}
-      {coveragePlan.warnings.length > 0 && (
+      {unresolvedWarnings.length > 0 && (
         <div className="glass-panel p-3.5 rounded-xl border border-amber-500/40 bg-amber-500/10 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
             <span className="text-xs font-bold text-amber-300 font-mono">
-              ⚠️ {coveragePlan.warnings.length} coverage issues require review in this scene
-              {coveragePlan.warnings.some((w) => w.stale) && (
+              ⚠️ {unresolvedWarnings.length} coverage issue{unresolvedWarnings.length === 1 ? "" : "s"} awaiting a decision in this scene
+              {unresolvedWarnings.some((w) => w.stale) && (
                 <span className="ml-2 text-[10px] text-amber-400 font-normal bg-amber-500/20 px-1.5 py-0.5 rounded">
                   (Edits made — click Re-check)
                 </span>
@@ -751,6 +780,7 @@ export default function DirectorWorkspace({
           if (s) setSelectedShot(s);
         }}
         onResolveWarning={handleResolveWarning}
+        dispositions={coveragePlan.warning_dispositions || {}}
       />
 
       {/* Take Selector Modal */}

@@ -22,7 +22,7 @@ import KnobsSidebar from "../components/KnobsSidebar";
 import MotionPanel from "../components/MotionPanel";
 import type { MixConfig } from "../components/MixPanel";
 import AssemblyPanel from "../components/AssemblyPanel";
-import StepHeader, { StepId } from "../components/StepHeader";
+import StageHeader, { StageId, Stage } from "../components/StageHeader";
 import JobBanners from "../components/JobBanners";
 import VesperChat from "../components/VesperChat";
 import BeatCard from "../components/BeatCard";
@@ -37,7 +37,7 @@ import FilmOverviewPanel from "../components/FilmOverviewPanel";
 import DirectorWorkspace from "../components/DirectorWorkspace";
 import LockedCoverageModal from "../components/LockedCoverageModal";
 import CoverageSurveyPanel from "../components/CoverageSurveyPanel";
-import { MOCK_SCENES } from "../lib/directorApi";
+import { MOCK_SCENES , setActiveProjectId } from "../lib/directorApi";
 
 // Setup API URL mapping
 const API_BASE = typeof window !== "undefined"
@@ -91,12 +91,21 @@ export default function WorkspacePage() {
   const [activeChannel, setActiveChannel] = useState<"bestiary" | "calluses">("bestiary");
   
   // View states
-  const [activeView, setActiveView] = useState<"grid" | "canvas" | "director">("grid");
+  const [activeView, setActiveView] = useState<"grid" | "canvas">("grid");
   const [selectedSceneId, setSelectedSceneId] = useState<string>("s004");
   const [lockedModalBeat, setLockedModalBeat] = useState<string | null>(null);
-  // Which pipeline step is showing. Additive rollout: this only filters which
-  // existing panels render -- no control has moved or been rebuilt.
-  const [activeStep, setActiveStep] = useState<StepId>(1);
+  // Which FilmCraft stage is showing. The spine is SCRIPT -> DIRECT -> GENERATE
+  // -> ROUGH CUT -> REFINE -> EXPORT; panel content still lives where it always
+  // did, remapped onto the stage that owns it (contract §2.2). Status, blocking
+  // and the primary CTA all come from the server -- see backend/stages.py.
+  const [activeStage, setActiveStage] = useState<StageId>("script");
+  const [stages, setStages] = useState<Stage[]>([]);
+  // Which project every request targets, and the yardstick for discarding
+  // replies that arrive after a switch (contract §11.3). Held in a ref because
+  // the staleness check runs when a response lands, not when a render closed
+  // over it -- a state variable would compare against the value that was
+  // current when the request was *sent*, which is precisely the wrong one.
+  const projectIdRef = useRef<string>("");
   const [rightPanel, setRightPanel] = useState<"vesper" | "knobs">("vesper");
   
   // Background task state. `dismissedErrors` is tracked separately because
@@ -146,11 +155,27 @@ export default function WorkspacePage() {
   };
 
   // Fetch active project data
+  // Routes a stage's primary CTA. The labels and action strings are the
+  // server's (contract §2.1); this only decides which existing call each one
+  // maps to, so there is never a second, competing primary flow.
+  const handleStagePrimary = async (action: string) => {
+    if (action === "approve:coverage") { setActiveStage("direct"); return; }
+    if (action === "build:draft1") { await post("/api/assemble/rough_cut"); return; }
+    if (action === "export:master") { await post("/api/assemble/timeline"); return; }
+  };
+
   const fetchActiveProject = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/project/active`);
+      const res = await fetch(`${API_BASE}/api/project/active`, { headers: authHeaders() });
+      if (isStaleReply(res)) return;
       const data = await res.json();
       if (data.ok) {
+        // Adopt the server's id for this project; every later request names it
+        // explicitly instead of relying on the shared active-project pointer.
+        if (data.project_id) {
+          projectIdRef.current = data.project_id;
+          setActiveProjectId(data.project_id);  // director calls target it too
+        }
         setActiveProject(data);
         setActiveChannel(data.project.channel);
         if (data.project?.shots && data.project.shots.length > 0) {
@@ -160,19 +185,26 @@ export default function WorkspacePage() {
           }
         }
       }
+      // The stage spine. Fetched every time project state changes, because
+      // status/blocking are derived from that state server-side and a stale
+      // spine would let the UI offer an action the server will refuse.
+      try {
+        const sd = await getJson("/api/stages");
+        if (sd?.ok) setStages(sd.stages || []);
+      } catch { /* leave the spine as-is rather than inventing one */ }
       // Metadata is a sidecar file, not part of the manifest, so it is fetched
       // separately and may simply not exist yet.
       try {
-        const m = await fetch(`${API_BASE}/api/metadata`);
-        const md = await m.json();
-        setMetadata(md.ok ? md.metadata : null);
+        const md = await getJson("/api/metadata");
+        // getJson returns null for a stale reply; keep what is on screen rather
+        // than clearing this film's metadata because another film answered.
+        if (md) setMetadata(md.ok ? md.metadata : null);
       } catch { setMetadata(null); }
       // Waveform envelopes for the timeline. Cached server-side per clip, so
       // this is cheap after the first call.
       try {
-        const pk = await fetch(`${API_BASE}/api/audio/peaks`);
-        const pj = await pk.json();
-        setPeaks(pj.ok ? (pj.peaks || {}) : {});
+        const pj = await getJson("/api/audio/peaks");
+        if (pj) setPeaks(pj.ok ? (pj.peaks || {}) : {});
       } catch { setPeaks({}); }
     } catch (e) {
       console.error("Failed to load active project details", e);
@@ -184,9 +216,12 @@ export default function WorkspacePage() {
   // Poll assembly job status
   const pollJobs = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/assemble/status`);
-      const data = await res.json();
-      if (!data.ok) return;
+      // Identity-scoped: the server filters the registry to this project and
+      // stamps the reply, and getJson drops it if we have since switched. Both
+      // halves matter -- an unscoped poll installed another film's job banners
+      // and let its completion read as this film's.
+      const data = await getJson("/api/assemble/status");
+      if (!data?.ok) return;
 
       const serverJobs = data.jobs || {};
       const prevStatus = scriptDraftStatus.current;
@@ -253,7 +288,30 @@ export default function WorkspacePage() {
 
   const authHeaders = (base: Record<string, string> = {}) => {
     const key = studioKey();
-    return key ? { ...base, "X-Studio-Key": key } : base;
+    const withProject = projectIdRef.current
+      ? { ...base, "X-Project-Id": projectIdRef.current }
+      : base;
+    return key ? { ...withProject, "X-Studio-Key": key } : withProject;
+  };
+
+  /**
+   * True when a reply is about a project we are no longer looking at.
+   *
+   * The server stamps every response with X-Project-Id. Without this check a
+   * slow request issued against the previous project can land after a switch
+   * and repaint the studio with the wrong film's state — the read-side twin of
+   * the write-side bug that sent background renders into the wrong directory.
+   */
+  const isStaleReply = (res: Response) => {
+    const said = res.headers.get("X-Project-Id");
+    return Boolean(said && projectIdRef.current && said !== projectIdRef.current);
+  };
+
+  /** GET that carries project identity and drops stale replies. */
+  const getJson = async (url: string) => {
+    const res = await fetch(`${API_BASE}${url}`, { headers: authHeaders() });
+    if (!res.ok || isStaleReply(res)) return null;
+    return await res.json();
   };
 
   const promptForStudioKey = () => {
@@ -295,6 +353,11 @@ export default function WorkspacePage() {
         res = await fetch(`${API_BASE}${url}`, build(authHeaders()));
       }
       if (!res.ok) return await parseError(res);
+      if (isStaleReply(res)) {
+        // The project changed while this was in flight. Reporting success would
+        // attribute the result to the film now on screen.
+        return { ok: false, stale: true, error: "Project changed while that request was running — nothing was applied to the project you are now viewing." };
+      }
       return await res.json();
     } catch (err: any) {
       return { ok: false, error: err.message || "Network request failed" };
@@ -319,8 +382,14 @@ export default function WorkspacePage() {
   };
 
   // Action handlers
-  const handleSelectProject = async (rel: string) => {
+  const handleSelectProject = async (rel: string, projectId?: string) => {
     setLoading(true);
+    // Retarget first. Any reply still in flight for the previous project now
+    // fails the staleness check instead of repainting the studio.
+    if (projectId) {
+      projectIdRef.current = projectId;
+      setActiveProjectId(projectId);
+    }
     const data = await post("/api/project/select", { rel });
     if (data.ok) {
       await fetchActiveProject();
@@ -614,7 +683,8 @@ Moved to: ${res.moved_to}`);
   const fetchBudgetPlan = useCallback(async (budget: number, beats: number | null) => {
     const q = new URLSearchParams({ budget: String(budget) });
     if (beats) q.set("beats", String(beats));
-    const res = await fetch(`${API_BASE}/api/script/budget_plan?${q}`);
+    const res = await fetch(`${API_BASE}/api/script/budget_plan?${q}`,
+                            { headers: authHeaders() });
     return res.json();
   }, []);
 
@@ -723,8 +793,9 @@ Moved to: ${res.moved_to}`);
   }
 
   const { project, preview_url, fcpxml_ready, ep_slug, paid_count, image_backends, video_backends, tiers } = activeProject;
-  // Backend now reports per-stage asset counts, so the step header gates on
-  // real state instead of guessing. Older payloads may not have them.
+  // Progress numbers for the panels below. The stage header does NOT gate on
+  // these -- it renders /api/stages verbatim -- so a stale count here can never
+  // unlock a stage the server considers blocked.
   const counts = activeProject.counts ?? {
     beats: project.shots?.length ?? 0, stills: 0, narration: 0, sfx: 0, rendered: 0,
   };
@@ -812,7 +883,7 @@ Moved to: ${res.moved_to}`);
 
         <div className="flex items-center gap-2.5 md:gap-3 justify-between md:justify-end w-full md:w-auto">
           {/* View toggle — only meaningful on the steps that show beats. */}
-          {activeStep === 1 && (
+          {activeStage === "script" && (
           <div className="flex items-center bg-zinc-950 p-1 rounded-lg border border-zinc-800 gap-1">
             <button
               onClick={() => setActiveView("grid")}
@@ -827,18 +898,6 @@ Moved to: ${res.moved_to}`);
               title="Workflow Graph View"
             >
               <GitBranch className="h-4 w-4" />
-            </button>
-            <button
-              onClick={() => setActiveView("director")}
-              className={`px-2 py-1 rounded transition flex items-center gap-1.5 text-xs font-mono font-bold ${
-                activeView === "director"
-                  ? "bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow"
-                  : "text-zinc-500 hover:text-zinc-300"
-              }`}
-              title="AI Director Workspace"
-            >
-              <Clapperboard className="h-4 w-4 text-amber-500" />
-              <span className="hidden sm:inline">Director</span>
             </button>
           </div>
           )}
@@ -917,24 +976,24 @@ Moved to: ${res.moved_to}`);
             refreshKey={`${counts.stills}-${counts.narration}-${counts.rendered}-${project.storyboard_approved}`}
             fetchPlan={async () => {
               try {
-                const r = await fetch(`${API_BASE}/api/roughcut/plan`);
-                return r.ok ? await r.json() : null;
+                // Identity-scoped: a rough-cut plan for another film would
+                // otherwise be rendered as this one's next steps.
+                return await getJson("/api/roughcut/plan");
               } catch { return null; }
             }}
             onBuild={async () => { await post("/api/assemble/rough_cut"); }}
-            onGoApprove={() => setActiveStep(1)}
+            onGoApprove={() => setActiveStage("direct")}
           />
 
-          <StepHeader
-            active={activeStep}
-            onChange={setActiveStep}
-            counts={counts}
-            scriptLocked={Boolean(project.script_locked)}
-            storyboardApproved={Boolean(project.storyboard_approved)}
+          <StageHeader
+            stages={stages}
+            active={activeStage}
+            onChange={setActiveStage}
+            onPrimaryAction={handleStagePrimary}
           />
           
           <AssemblyPanel
-            activeStep={activeStep}
+            stage={activeStage}
             project={project}
             jobs={jobs}
             canAssemble={canAssemble}
@@ -963,10 +1022,12 @@ Moved to: ${res.moved_to}`);
             }
           />
 
-          {/* Step 1 is storyboard work (cards or node graph), Step 3 is timing,
-              Step 4 is motion. Steps 2 and 5 are driven entirely by the panels
-              above, so nothing renders here. */}
-          {activeStep === 5 ? (
+          {/* Panels are routed to the stage that OWNS them (contract §2.2), not
+              to where they used to sit: Export owns metadata and deliverables,
+              Rough Cut owns the timeline, Generate owns motion/render config,
+              Refine owns grade, Direct owns the coverage workspace, and Script
+              owns the beats. Moving the panels themselves is slices 4-7. */}
+          {activeStage === "export" ? (
             <MetadataPanel
               metadata={metadata}
               busy={jobs["metadata"]?.status === "running"}
@@ -979,7 +1040,7 @@ Moved to: ${res.moved_to}`);
               fcpxmlUrl={`${API_BASE}/api/export/fcpxml`}
               fcpxmlReady={Boolean(fcpxml_ready)}
             />
-          ) : activeStep === 3 ? (
+          ) : activeStage === "roughcut" ? (
             <MultitrackTimeline
               shots={project.shots || []}
               peaks={peaks}
@@ -1005,21 +1066,21 @@ Moved to: ${res.moved_to}`);
               onDeleteLayer={deleteLayer}
               onGenerateLayer={generateLayer}
             />
-          ) : activeStep === 4 ? (
-            <div className="flex flex-col gap-5">
+          ) : activeStage === "refine" ? (
+            /* Grade is non-destructive polish, which Refine owns (§2.2, §8). */
             <GradePanel
               grade={activeProject.grade ?? null}
               channel={project.channel}
               onSave={async (gr: Partial<Grade>) => { const r = await post("/api/grade", gr); fetchActiveProject(); return r; }}
             />
+          ) : activeStage === "generate" ? (
+            <div className="flex flex-col gap-5">
             <MotionPanel
               mediaUrl={mediaUrl}
               epSlug={ep_slug}
               fetchMotion={async () => {
                 try {
-                  const r = await fetch(`${API_BASE}/api/motion`);
-                  if (!r.ok) return null;
-                  return await r.json();
+                  return await getJson("/api/motion");
                 } catch { return null; }
               }}
               saveMotion={(cfg) => post("/api/motion", cfg)}
@@ -1027,20 +1088,20 @@ Moved to: ${res.moved_to}`);
               previewBeat={(sceneId) => post(`/api/motion/preview/${sceneId}`)}
             />
             </div>
-          ) : activeStep === 1 && activeView === "director" ? (
+          ) : activeStage === "direct" ? (
             <div className="flex flex-col gap-4 w-full">
               {/* Back to Storyboard Navigation Bar */}
               <div className="glass-surface px-4 py-2.5 rounded-xl border border-amber-500/30 flex items-center justify-between bg-amber-500/5">
                 <div className="flex items-center gap-2 font-mono text-xs font-bold text-amber-400">
                   <Clapperboard className="w-4 h-4 text-amber-400" />
-                  <span>AI Director Coverage Mode</span>
+                  <span>Direct · beat coverage</span>
                 </div>
                 <button
-                  onClick={() => setActiveView("grid")}
+                  onClick={() => setActiveStage("script")}
                   className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-mono font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow neon-glow-amber"
                 >
                   <ArrowLeft className="w-3.5 h-3.5" />
-                  <span>Return to Storyboard Grid</span>
+                  <span>Back to Script</span>
                 </button>
               </div>
 
@@ -1058,10 +1119,10 @@ Moved to: ${res.moved_to}`);
                 sceneId={selectedSceneId}
                 activeProjectTitle={project.title || "Active"}
                 mediaUrl={mediaUrl}
-                onBackToStoryboard={() => setActiveView("grid")}
+                onBackToStoryboard={() => setActiveStage("script")}
               />
             </div>
-          ) : activeStep === 1 && activeView === "canvas" ? (
+          ) : activeStage === "script" && activeView === "canvas" ? (
             <div className="h-[380px] sm:h-[500px] md:h-[550px] w-full shrink-0">
               <FlowCanvas
                 shots={project.shots}
@@ -1088,7 +1149,7 @@ Moved to: ${res.moved_to}`);
                 onUploadLayer={uploadLayer}
               />
             </div>
-          ) : activeStep === 1 ? (
+          ) : activeStage === "script" ? (
             /* Storyboard Timeline Cards Grid */
             <div className="flex flex-col gap-6 relative">
               {project.shots?.map((shot: any) => (
@@ -1114,7 +1175,7 @@ Moved to: ${res.moved_to}`);
                   onApplyRefinedPrompts={handleApplyRefinedPrompts}
                   onOpenDirectorWorkspace={(scId) => {
                     if (scId) setSelectedSceneId(scId);
-                    setActiveView("director");
+                    setActiveStage("direct");
                   }}
                   mediaUrl={mediaUrl}
                 />
@@ -1132,7 +1193,7 @@ Moved to: ${res.moved_to}`);
             onRegenerateCoverage={() => {
               if (lockedModalBeat) setSelectedSceneId(lockedModalBeat);
               setLockedModalBeat(null);
-              setActiveView("director");
+              setActiveStage("direct");
             }}
             onReplaceWithSingleBeat={() => {
               alert("Replacing Director multi-shot cut with single still plate...");

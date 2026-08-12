@@ -60,7 +60,7 @@ def ledger_path() -> Path:
 
 def _project() -> str:
     try:
-        return config.MANIFEST_PATH.parent.name
+        return config.project_dir().name
     except Exception:  # noqa: BLE001
         return ""
 

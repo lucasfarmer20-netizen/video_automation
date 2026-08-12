@@ -228,6 +228,11 @@ class Storyboard:
     # silently lost on the next cold start and narration fell back to the stock
     # default. Empty means "use VESPER_VOICE_ID / ELEVENLABS_VOICE_ID".
     voice_id: str = ""
+    # Display name for the narrator, shown wherever the UI names the voice.
+    # Empty means "use config.DEFAULT_NARRATOR_NAME" (Vesper), so existing
+    # projects need no migration and adding this changes nothing for them.
+    # Resolve it through narrator_name() rather than reading the field directly.
+    narrator_name: str = ""
     # Narrator profile key (see backend/casting.py). Empty means "use whatever
     # this episode already does" -- voice_id, then the env defaults -- so adding
     # profiles changes nothing for existing projects.
@@ -315,6 +320,7 @@ class Storyboard:
             music_track=data.get("music_track"),
             music_prompt=data.get("music_prompt", "") or "",
             voice_id=data.get("voice_id", "") or "",
+            narrator_name=data.get("narrator_name", "") or "",
             vo_profile=data.get("vo_profile", "") or "",
             render=render,
             motion=motion_cfg,
@@ -322,6 +328,18 @@ class Storyboard:
             mix=mix,
             shots=shots,
         )
+
+
+def narrator_name(sb: Optional[Storyboard]) -> str:
+    """The narrator's display name for this project.
+
+    Never inline a narrator into UI copy or a prompt -- call this. The product
+    must not assume a narrator (contract §4); this channel happens to configure
+    one (CLAUDE.md), and the difference lives entirely in this function.
+    """
+    from . import config
+    name = (getattr(sb, "narrator_name", "") or "").strip() if sb else ""
+    return name or config.DEFAULT_NARRATOR_NAME
 
 
 def load_project(project_id: str) -> Optional[Storyboard]:
@@ -397,14 +415,15 @@ def list_projects(channel: Optional[str] = None) -> List[dict]:
 def load(path: Path | None = None) -> Storyboard:
     """Load the manifest from a local JSON path.
 
-    ``path`` defaults to the active manifest (``config.MANIFEST_PATH``) so the
+    ``path`` defaults to the manifest of the project this call belongs to --
+    the bound context under HTTP, the process global for CLI runs -- so the
     module CLIs and every ``load()`` call site keep working. An empty or absent
     file yields a fresh Storyboard.
     """
     import json
     from . import config
 
-    path = Path(path) if path is not None else config.MANIFEST_PATH
+    path = Path(path) if path is not None else config.manifest_path()
     if not path.exists():
         return Storyboard()
     text = path.read_text(encoding="utf-8").strip()
@@ -425,12 +444,15 @@ def load(path: Path | None = None) -> Storyboard:
 def save(storyboard: Storyboard, path: Path | None = None) -> None:
     """Persist the manifest atomically as pretty JSON on local disk.
 
-    ``path`` defaults to the active manifest (``config.MANIFEST_PATH``).
+    ``path`` defaults to the manifest of the project this call belongs to.
+    Reading the process global here instead would let a bound request write one
+    project's storyboard into another's directory -- a silent whole-file
+    overwrite, and the worst version of the §11.3 failure.
     """
     import json
     from . import config
 
-    path = Path(path) if path is not None else config.MANIFEST_PATH
+    path = Path(path) if path is not None else config.manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     

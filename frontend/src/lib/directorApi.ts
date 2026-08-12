@@ -6,6 +6,7 @@ import {
   CreativePreferences,
   DirectorProfilesResponse,
   CoverageSurvey,
+  WarningDisposition,
 } from "../types/director";
 
 const API_BASE =
@@ -27,7 +28,30 @@ export function getAuthHeaders(base: Record<string, string> = {}): Record<string
       headers["X-Studio-Key"] = key;
     }
   }
+  if (activeProjectId) {
+    headers["X-Project-Id"] = activeProjectId;
+  }
   return headers;
+}
+
+/**
+ * The project every director call targets (contract §11.3).
+ *
+ * Director endpoints read and write coverage plans, which live inside one
+ * project's directory. Sending the id makes each request name its target rather
+ * than inheriting whatever the shared active-project pointer happens to say —
+ * so a project switch mid-flight cannot land a plan in the wrong film.
+ */
+let activeProjectId = "";
+
+export function setActiveProjectId(id: string): void {
+  activeProjectId = id || "";
+}
+
+/** Whether a reply describes a project we have since navigated away from. */
+export function isStaleReply(res: Response): boolean {
+  const said = res.headers.get("X-Project-Id");
+  return Boolean(said && activeProjectId && said !== activeProjectId);
 }
 
 /**
@@ -35,7 +59,7 @@ export function getAuthHeaders(base: Record<string, string> = {}): Record<string
  * Authoritative profiles, vocabulary, and video_capabilities
  */
 export async function fetchDirectorProfiles(): Promise<DirectorProfilesResponse> {
-  const res = await fetch(`${API_BASE}/api/director/profiles`);
+  const res = await fetch(`${API_BASE}/api/director/profiles`, { headers: getAuthHeaders() });
   if (!res.ok) {
     throw new Error(`Failed to fetch director profiles: ${res.status} ${res.statusText}`);
   }
@@ -60,7 +84,7 @@ export async function fetchCoveragePlan(
     url += `&tier=${tierFilter}`;
   }
 
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: getAuthHeaders() });
   if (!res.ok) {
     throw new Error(`Director scene endpoint returned ${res.status} ${res.statusText} for beats=${beatsParam}`);
   }
@@ -162,7 +186,7 @@ export async function waitForJob(
   const started = Date.now();
   let last = "";
   for (;;) {
-    const res = await fetch(`${API_BASE}/api/assemble/status`);
+    const res = await fetch(`${API_BASE}/api/assemble/status`, { headers: getAuthHeaders() });
     const data = await res.json().catch(() => ({}));
     const job = data?.jobs?.[jobKey];
     if (job) {
@@ -333,7 +357,7 @@ export async function performShotAction(
  * Answers which beats are worth covering before planning
  */
 export async function fetchCoverageSurvey(): Promise<CoverageSurvey> {
-  const res = await fetch(`${API_BASE}/api/director/survey`);
+  const res = await fetch(`${API_BASE}/api/director/survey`, { headers: getAuthHeaders() });
   if (!res.ok) {
     throw new Error(`Survey endpoint returned ${res.status} ${res.statusText}`);
   }
@@ -357,3 +381,43 @@ export const MOCK_SCENES: SceneSummary[] = [
     warnings_count: 2,
   },
 ];
+
+/**
+ * POST /api/director/warning/{beatId}/{warningId}
+ *
+ * Records a durable decision about one critic finding. The studio previously
+ * had no way to do this: "resolve" filtered the warning out of React state and
+ * nothing else, so the screen showed a clean review while the persisted plan
+ * still carried the finding, and a refresh brought it back.
+ *
+ * `decision` is "resolved" (the plan was changed to answer it) or "accepted"
+ * (understood and deliberately kept). Passing "" clears the decision again.
+ * Returns the server's warning list, which callers should use verbatim rather
+ * than editing their local copy.
+ */
+export async function decideDirectorWarning(
+  beatId: string,
+  warningId: string,
+  decision: "resolved" | "accepted" | "",
+  note = ""
+): Promise<{
+  ok: boolean;
+  warnings: DirectorWarning[];
+  warning_dispositions: Record<string, WarningDisposition>;
+  unresolved: number;
+  error?: string;
+}> {
+  const res = await fetch(
+    `${API_BASE}/api/director/warning/${encodeURIComponent(beatId)}/${encodeURIComponent(warningId)}`,
+    {
+      method: "POST",
+      headers: getAuthHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ decision, note }),
+    }
+  );
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    throw new Error(data.error || `Could not record that decision (${res.status})`);
+  }
+  return data;
+}

@@ -1,5 +1,6 @@
 "use client";
 
+import type { StageId } from "./StageHeader";
 import React from "react";
 import { Volume2, Tv, CheckCircle, Play, Sparkles } from "lucide-react";
 import MixPanel, { MixConfig } from "./MixPanel";
@@ -8,7 +9,8 @@ import PreviewPlayer from "./PreviewPlayer";
 interface Job { status: string; log: string }
 
 interface AssemblyPanelProps {
-  activeStep: 1 | 2 | 3 | 4 | 5;
+  /** Which FilmCraft stage is showing. Ownership per contract §2.2. */
+  stage: StageId;
   project: any;
   jobs: Record<string, Job>;
   canAssemble: boolean;
@@ -26,7 +28,7 @@ interface AssemblyPanelProps {
 }
 
 export default function AssemblyPanel({
-  activeStep, project, jobs, canAssemble, missingStills, mix,
+  stage, project, jobs, canAssemble, missingStills, mix,
   previewUrl, fcpxmlReady, epSlug, mediaUrl,
   onAssemble, onGenerateAllStills, onSaveMix, onUploadImage, onUploadClip,
 }: AssemblyPanelProps) {
@@ -70,8 +72,8 @@ export default function AssemblyPanel({
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           <div className="flex flex-col gap-3">
-            {/* Voiceover — Step 2, Audio Studio */}
-            {activeStep === 2 && (
+            {/* Voiceover — Script owns narration text and timing (§2.2). */}
+            {stage === "script" && (
             <div className="flex items-center justify-between bg-zinc-900/60 backdrop-blur-sm p-3.5 rounded-xl border border-zinc-800/80 shadow-sm">
               <button
                 onClick={() => onAssemble("narration")}
@@ -79,7 +81,7 @@ export default function AssemblyPanel({
                 className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-zinc-100 px-4 py-2 rounded-xl text-xs font-bold transition-all hover:scale-[1.02] active:scale-[0.98] flex items-center gap-2 disabled:opacity-50 shadow-sm"
               >
                 <Volume2 className="h-4 w-4 text-amber-400" />
-                <span>1 · Generate voiceover</span>
+                <span>Generate voiceover</span>
               </button>
               <span className={`text-xs font-mono font-bold ${
                 jobs["narration"]?.status === "done" ? "text-emerald-400" : "text-zinc-500"
@@ -89,8 +91,8 @@ export default function AssemblyPanel({
             </div>
             )}
 
-            {/* Build preview — Step 5, Final Review */}
-            {activeStep === 5 && (
+            {/* Build Draft 1 — the Rough Cut primary action (§2.1). */}
+            {stage === "roughcut" && (
             <div className="flex items-center justify-between bg-zinc-900/60 backdrop-blur-sm p-3.5 rounded-xl border border-zinc-800/80 shadow-sm">
               <button
                 onClick={() => onAssemble("preview")}
@@ -98,7 +100,7 @@ export default function AssemblyPanel({
                 className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-zinc-100 px-4 py-2 rounded-xl text-xs font-bold transition-all hover:scale-[1.02] active:scale-[0.98] flex items-center gap-2 disabled:opacity-50 shadow-sm"
               >
                 <Tv className="h-4 w-4 text-amber-400" />
-                <span>3 · Build preview (rough cut)</span>
+                <span>Build Draft 1 (rough cut)</span>
               </button>
               <span className={`text-xs font-mono font-bold ${
                 jobs["preview"]?.status === "done" ? "text-emerald-400" : "text-zinc-500"
@@ -108,8 +110,8 @@ export default function AssemblyPanel({
             </div>
             )}
 
-            {/* Resolve FCPXML export — Step 5, Final Review */}
-            {activeStep === 5 && (
+            {/* FCPXML — an Export deliverable (§9.2). */}
+            {stage === "export" && (
             <div className="flex items-center justify-between bg-zinc-900/60 backdrop-blur-sm p-3.5 rounded-xl border border-zinc-800/80 shadow-sm">
               <button
                 onClick={() => onAssemble("timeline")}
@@ -117,7 +119,7 @@ export default function AssemblyPanel({
                 className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-zinc-100 px-4 py-2 rounded-xl text-xs font-bold transition-all hover:scale-[1.02] active:scale-[0.98] flex items-center gap-2 disabled:opacity-50 shadow-sm"
               >
                 <CheckCircle className="h-4 w-4 text-amber-400" />
-                <span>4 · Export Resolve timeline</span>
+                <span>Export Resolve timeline</span>
               </button>
               <span className={`text-xs font-mono font-bold ${
                 jobs["timeline"]?.status === "done" ? "text-emerald-400" : "text-zinc-500"
@@ -127,8 +129,8 @@ export default function AssemblyPanel({
             </div>
             )}
 
-            {/* Track mixer — Step 2 */}
-            {activeStep === 2 && (
+            {/* Track mixer — Rough Cut owns VO/music/SFX placement (§2.2). */}
+            {stage === "roughcut" && (
               <MixPanel
                 mix={mix}
                 onSave={onSaveMix}
@@ -136,7 +138,7 @@ export default function AssemblyPanel({
             )}
           </div>
 
-          {activeStep === 4 && (
+          {stage === "generate" && (
           <div className="bg-zinc-900/50 backdrop-blur-sm p-4 border border-zinc-800/80 rounded-xl flex flex-col gap-3 shadow-sm">
             <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider font-mono">
               Video Renders &amp; Ingest
@@ -193,7 +195,7 @@ export default function AssemblyPanel({
           )}
         </div>
 
-        {activeStep === 5 && (
+        {stage === "roughcut" && (
         <PreviewPlayer
           previewUrl={previewUrl}
           fcpxmlReady={fcpxmlReady}

@@ -108,7 +108,7 @@ VOICE_DESIGNS: dict[str, str] = {
 
 def auditions_dir() -> Path:
     """Auditions live beside the project, not inside an episode's audio."""
-    return config.MANIFEST_PATH.parent / "vo_auditions"
+    return config.project_dir() / "vo_auditions"
 
 
 # --- the audition passage ------------------------------------------------------

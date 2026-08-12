@@ -2,7 +2,7 @@
 
 import React from "react";
 import { DirectorWarning, DirectorShot } from "../types/director";
-import { AlertTriangle, ShieldAlert, X, CheckCircle2, ArrowRight, Wrench } from "lucide-react";
+import { AlertTriangle, ShieldAlert, X, CheckCircle2, ArrowRight, Wrench, Check } from "lucide-react";
 
 interface ProblemQueueDrawerProps {
   warnings: DirectorWarning[];
@@ -10,7 +10,11 @@ interface ProblemQueueDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   onSelectShot: (shotId: string) => void;
-  onResolveWarning: (warningId: string) => void;
+  /** Records a durable decision about a finding. "resolved" = the plan was
+   *  changed to answer it; "accepted" = understood and deliberately kept. */
+  onResolveWarning: (warningId: string, decision?: "resolved" | "accepted" | "") => void;
+  /** Decisions already recorded, keyed by warning id. */
+  dispositions?: Record<string, { decision: string; note?: string }>;
 }
 
 export default function ProblemQueueDrawer({
@@ -20,6 +24,7 @@ export default function ProblemQueueDrawer({
   onClose,
   onSelectShot,
   onResolveWarning,
+  dispositions = {},
 }: ProblemQueueDrawerProps) {
   if (!isOpen) return null;
 
@@ -80,6 +85,8 @@ export default function ProblemQueueDrawer({
           ) : (
             warnings.map((w) => {
               const relatedShot = shots.find((s) => s.id === w.shot_id);
+
+              const decided = w.id ? dispositions[w.id] : undefined;
               return (
                 <div
                   key={w.id}
@@ -105,20 +112,51 @@ export default function ProblemQueueDrawer({
 
                   <p className="text-xs text-zinc-200 leading-relaxed font-sans">{w.detail || w.message}</p>
 
-                  {(w.suggestion || w.suggested_action) && (
-                    <div className="mt-1 pt-2 border-t border-zinc-800/60 flex items-center justify-between">
+                  <div className="mt-1 pt-2 border-t border-zinc-800/60 flex items-center justify-between gap-3 flex-wrap">
+                    {(w.suggestion || w.suggested_action) ? (
                       <span className="text-[11px] text-zinc-400 flex items-center gap-1 font-mono">
                         <Wrench className="w-3 h-3 text-amber-500" />
                         {w.suggestion || w.suggested_action}
                       </span>
-                      <button
-                        onClick={() => onResolveWarning(w.id || w.shot_id || "")}
-                        className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-[11px] font-mono rounded transition-colors"
-                      >
-                        Auto-Fix
-                      </button>
-                    </div>
-                  )}
+                    ) : (
+                      <span className="text-[11px] text-zinc-500 font-mono">
+                        No suggested fix — decide how to proceed.
+                      </span>
+                    )}
+
+                    {decided ? (
+                      <span className="px-2.5 py-1 bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[11px] font-mono rounded flex items-center gap-1.5">
+                        <Check className="w-3 h-3" />
+                        {decided.decision === "accepted" ? "Kept as-is" : "Marked resolved"}
+                        <button
+                          onClick={() => onResolveWarning(w.id || "", "")}
+                          className="ml-1 text-emerald-400/70 hover:text-emerald-200 underline"
+                          title="Undo this decision — the finding will block locking again"
+                        >
+                          undo
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => onResolveWarning(w.id || "", "resolved")}
+                          disabled={!w.id}
+                          className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-[11px] font-mono rounded transition-colors disabled:opacity-40"
+                          title="The plan has been changed to answer this finding"
+                        >
+                          Mark resolved
+                        </button>
+                        <button
+                          onClick={() => onResolveWarning(w.id || "", "accepted")}
+                          disabled={!w.id}
+                          className="px-2.5 py-1 bg-zinc-800/80 hover:bg-zinc-700/80 border border-zinc-700 text-zinc-300 text-[11px] font-mono rounded transition-colors disabled:opacity-40"
+                          title="Understood and deliberately kept"
+                        >
+                          Keep as-is
+                        </button>
+                      </span>
+                    )}
+                  </div>
                 </div>
               );
             })
