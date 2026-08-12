@@ -30,6 +30,7 @@ from PIL import Image, ImageDraw, ImageFont
 from scipy.io import wavfile
 
 from . import assets, config
+from .ffmpeg_bin import ffmpeg_bin, ffprobe_bin
 from . import depth as depthmod
 from . import motion
 from .manifest import Camera, MotionType, Shot
@@ -153,7 +154,7 @@ def _client():
 
 
 def _probe(path: Path) -> float:
-    o = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+    o = subprocess.run([ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
                         "-of", "default=nw=1:nk=1", str(path)], capture_output=True, text=True)
     return float(o.stdout.strip() or 0.0)
 
@@ -300,10 +301,10 @@ def build_reel(reel: Reel) -> Path:
     listp.write_text("".join(f"file '{(clipdir / (s.sid + '.mp4')).resolve().as_posix()}'\n"
                              for s in reel.shots), encoding="utf-8")
     tmpv = scratch / f"_sizzle_{reel.key}.mp4"
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
+    subprocess.run([ffmpeg_bin(), "-y", "-v", "error", "-f", "concat", "-safe", "0",
                     "-i", str(listp), "-c", "copy", str(tmpv)], check=True)
     out = SIZZLE / f"sizzle_{reel.key}_{reel.name.lower().replace(' ', '_').replace('-', '_')}.mp4"
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(tmpv), "-i", str(mixwav),
+    subprocess.run([ffmpeg_bin(), "-y", "-v", "error", "-i", str(tmpv), "-i", str(mixwav),
                     "-c:v", "libx264", "-crf", "22", "-preset", "medium", "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-b:a", "160k", "-shortest", str(out)], check=True)
     print(f"  -> {out}  ({runtime:.1f}s)")

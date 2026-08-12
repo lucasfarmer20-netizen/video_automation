@@ -7,7 +7,6 @@ complete on the server that has it.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,10 +16,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend import director  # noqa: E402
+from backend.ffmpeg_bin import have_ffmpeg  # noqa: E402
 from backend.director import CoveragePlan, DirectorShot, PlanError  # noqa: E402
 from backend.manifest import Camera, Shot  # noqa: E402
 
-HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+HAS_FFMPEG = have_ffmpeg()
 needs_ffmpeg = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg/ffprobe not installed")
 
 

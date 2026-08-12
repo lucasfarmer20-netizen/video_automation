@@ -23,6 +23,7 @@ import subprocess
 from pathlib import Path
 
 from . import config
+from .ffmpeg_bin import ffmpeg_bin
 
 HEIGHT = 720
 OUT_W = HEIGHT * 16 // 9
@@ -100,7 +101,7 @@ def compose(kind: str) -> Path:
         amix.append("[mus]")
         idx += 1
 
-    cmd = ["ffmpeg", "-y", "-v", "error", *inputs]
+    cmd = [ffmpeg_bin(), "-y", "-v", "error", *inputs]
     maps = ["-map", "[v]"]
     if amix:
         if len(amix) > 1:

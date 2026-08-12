@@ -28,6 +28,7 @@ import os
 from pathlib import Path
 
 from . import config
+from .ffmpeg_bin import ffmpeg_bin
 from .manifest import Storyboard, load, save
 
 NARRATION_DIR = config.AUDIO_DIR / "narration"
@@ -528,20 +529,10 @@ DEFAULT_MUSIC_BACKEND = "elevenlabs_music"
 def _ffmpeg_bin() -> str:
     """System ffmpeg (per CLAUDE.md), falling back to the imageio-bundled one.
 
-    The fallback exists only so local dev works without a PATH install; the
-    deployed image has ffmpeg proper.
+    Thin alias kept for callers in this module; the resolution lives in
+    ``ffmpeg_bin`` so every module answers this question the same way.
     """
-    import shutil
-    exe = shutil.which("ffmpeg")
-    if exe:
-        return exe
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            "ffmpeg not found. It is a system-level install, not a pip package."
-        ) from exc
+    return ffmpeg_bin()
 
 
 def is_mp3(path: Path) -> bool:
