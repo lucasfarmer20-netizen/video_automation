@@ -557,28 +557,87 @@ def load_plan(beat_id: str) -> CoveragePlan | None:
     if changed:
         try:
             save_plan(plan)
-        except OSError as exc:  # a read must not fail because the disk did
-            print(f"director: could not persist approval transition for "
-                  f"{plan.beat_id}: {exc}")
+        except OSError as exc:
+            # A read must not fail because the disk did, and the object returned
+            # here is the SAFE one: an invalidated approval has already been
+            # demoted to draft in memory, so nothing can compile on the stale
+            # approval even though the file still asserts it. Loud, because the
+            # file and the running process now disagree.
+            print(f"director: FAILED to persist approval transition for "
+                  f"{plan.beat_id}; the file still asserts the old state: {exc}")
     return plan
 
 
-def save_plan(plan: CoveragePlan) -> Path:
-    """Write a plan atomically.
+# One lock per plan file, so two writers for the same beat take turns instead of
+# racing. Keyed by resolved path, which is per project: two projects' s001 plans
+# are different files and must not serialise against each other.
+_PLAN_LOCKS: dict[str, threading.Lock] = {}
+_PLAN_LOCKS_GUARD = threading.Lock()
 
-    Atomic because plan writes are no longer rare or serialised: beats compile
-    concurrently, and load_plan now persists approval transitions, so a reader
-    and a writer can meet. A torn plan file is not a degraded plan, it is a lost
-    one -- load_plan would raise on the JSON and the beat would look unplanned.
+
+def _plan_lock(dest: Path) -> threading.Lock:
+    key = str(dest)
+    with _PLAN_LOCKS_GUARD:
+        lock = _PLAN_LOCKS.get(key)
+        if lock is None:
+            lock = _PLAN_LOCKS[key] = threading.Lock()
+        return lock
+
+
+def save_plan(plan: CoveragePlan) -> Path:
+    """Write a plan atomically, and safely against concurrent writers.
+
+    Two properties, and the first alone was not enough. Writing through a
+    temporary file and os.replace stops a reader seeing partial JSON -- a torn
+    plan file is not a degraded plan, it is a lost one, because load_plan would
+    raise on it and the beat would look unplanned.
+
+    But the first version of that used one fixed temp name per beat, so two
+    writers for the same beat shared it: on Windows the second os.replace failed
+    with WinError 32 because the other writer still held that exact path. Seven
+    of eight concurrent writers failed. Atomic replacement protects a single
+    writer from exposing a partial file; it does nothing to make competing
+    writers safe. Hence a unique temp per write, plus a per-file lock so
+    same-beat writes serialise rather than collide.
+
+    Of the two, the LOCK is what fixes the collision: with writes serialised
+    even a shared temp name works. The unique name is defence for the case the
+    lock cannot cover, which is the same limit worth stating plainly --
+
+    NOT provided: cross-process safety. The lock is per process. That is
+    sufficient on Cloud Run today because the studio runs as a single instance
+    over the GCS mount, but two instances sharing that mount would be back to
+    racing, and no in-process lock can fix that.
+
+    NOT provided: protection against lost updates. Two callers that each
+    load_plan, mutate, and save_plan will still have the later write win
+    wholesale. Serialising the writes makes each one complete; it does not make
+    the pair correct. Anything doing read-modify-write on a plan needs its own
+    version check.
     """
     import os
+    import tempfile
     d = director_dir()
     d.mkdir(parents=True, exist_ok=True)
-    p = plan_path(plan.beat_id)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(asdict(plan), indent=2), encoding="utf-8")
-    os.replace(tmp, p)
-    return p
+    dest = plan_path(plan.beat_id)
+    blob = json.dumps(asdict(plan), indent=2)
+
+    with _plan_lock(dest):
+        # Created in the destination directory so the replace stays on one
+        # filesystem, and uniquely named so no other writer can be holding it.
+        fd, tmp_name = tempfile.mkstemp(dir=str(d), prefix=f"{plan.beat_id}.",
+                                        suffix=".json.tmp")
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(blob)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, dest)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+    return dest
 
 
 def has_locked_coverage(beat_id: str) -> bool:

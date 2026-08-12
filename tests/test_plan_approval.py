@@ -404,12 +404,100 @@ def test_history_does_not_grow_on_repeated_reads(studio):
     assert len(director.load_plan("s001").approval_history) == 1
 
 
-def test_a_plan_write_is_atomic(studio):
-    """Reads persist transitions now and beats compile concurrently, so a
-    reader and a writer can meet. A torn file is a lost plan, not a stale one."""
+def test_a_plan_write_leaves_no_temp_file(studio):
     _plan("draft")
     leftovers = list(director.director_dir().glob("*.tmp"))
     assert leftovers == [], f"temp files left behind: {leftovers}"
+
+
+# --- S2-03: concurrent writers to the same beat ---------------------------------
+
+def _concurrent_saves(beat_id: str, writers: int = 8, rounds: int = 25):
+    """Run `writers` threads all saving the same beat, return any exceptions."""
+    import threading
+    errors: list[str] = []
+    start = threading.Barrier(writers, timeout=10)
+
+    def one(i: int):
+        try:
+            start.wait()
+            for _ in range(rounds):
+                p = director.CoveragePlan(beat_id=beat_id, beat_duration=6.0,
+                                          profile=f"w{i}")
+                p.coverage = [director.DirectorShot(
+                    id=f"{beat_id}.01", beat_id=beat_id, prompt=f"w{i}",
+                    camera=Camera(move="static", duration=6.0))]
+                director.save_plan(p)
+        except Exception as exc:  # noqa: BLE001 - the point is to catch any
+            errors.append(f"{type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=one, args=(i,)) for i in range(writers)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(timeout=20)
+    return errors
+
+
+def test_concurrent_writers_to_one_beat_do_not_fail(studio):
+    """S2-03. A single fixed temp name per beat meant competing writers shared
+    it, and os.replace failed with WinError 32 -- 7 of 8 writers lost their
+    write. Atomic replacement protects one writer from exposing a partial file;
+    it does not make competing writers safe."""
+    _plan("draft")
+    errors = _concurrent_saves("s001")
+    assert errors == [], f"concurrent saves raised: {errors[:3]}"
+
+
+def test_a_concurrently_written_plan_is_complete_not_spliced(studio):
+    """Serialising must yield one writer's whole state, not a mixture."""
+    import json as _json
+    _plan("draft")
+    assert _concurrent_saves("s001") == []
+    raw = _json.loads(director.plan_path("s001").read_text(encoding="utf-8"))
+    assert raw["profile"] == raw["coverage"][0]["prompt"],         "the surviving file mixes two writers' states"
+
+
+def test_concurrency_leaves_no_temp_files_behind(studio):
+    _plan("draft")
+    _concurrent_saves("s001", writers=4, rounds=10)
+    leftovers = list(director.director_dir().glob("*.tmp"))
+    assert leftovers == [], f"temp files left behind: {leftovers}"
+
+
+def test_different_beats_do_not_serialise_against_each_other(studio):
+    """The lock is per plan file, so unrelated beats still write in parallel."""
+    _plan("draft")
+    assert _concurrent_saves("s002", writers=4, rounds=5) == []
+    assert _concurrent_saves("s003", writers=4, rounds=5) == []
+    assert director.plan_path("s002").is_file()
+    assert director.plan_path("s003").is_file()
+
+
+def test_a_persisted_transition_survives_concurrent_readers(studio):
+    """load_plan writes now, so readers are writers. They must not collide."""
+    import threading
+    client, _ = studio
+    _plan("locked")
+    errors: list[str] = []
+    start = threading.Barrier(6, timeout=10)
+
+    def read():
+        try:
+            start.wait()
+            for _ in range(10):
+                director.load_plan("s001")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=read) for _ in range(6)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(timeout=20)
+
+    assert errors == [], f"concurrent transitioning reads raised: {errors[:3]}"
+    assert director.approval_is_current(director.load_plan("s001"))
 
 
 # --- the material contract is stated, so new fields must be classified -----------
