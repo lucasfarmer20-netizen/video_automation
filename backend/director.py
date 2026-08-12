@@ -189,6 +189,11 @@ class CoveragePlan:
     # Approval, bound to the exact plan it was given for. `status` says a human
     # acted; these say WHAT they acted on. Without the signature, "locked" is a
     # claim about the past that any later edit silently inherits.
+    # The beat this plan was written against: its narration text and its
+    # duration. beat_duration alone catches re-timing, but a rewritten line at
+    # the same length moves silently past it, and the prompts were written for
+    # the old line. Empty means "no baseline recorded" -- see beat_staleness.
+    beat_signature: str = ""
     approved_signature: str = ""
     approved_at: str = ""
     approved_by: str = ""
@@ -259,6 +264,7 @@ _NON_MATERIAL_PLAN_FIELDS = {
     "coverage": "carried explicitly, shot by shot",
     "warnings": "critic findings, gated separately by warning_dispositions",
     "warning_dispositions": "review record, not instruction",
+    "beat_signature": "identifies the BEAT the plan was written against, not the plan",
     "approved_signature": "cannot be part of what it signs",
     "approved_at": "approval metadata",
     "approved_by": "approval metadata",
@@ -318,8 +324,62 @@ def plan_signature(plan: "CoveragePlan") -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def approve(plan: "CoveragePlan", by: str = "human") -> str:
-    """Bind an approval to the plan as it stands. Returns the signature."""
+def beat_signature(beat) -> str:
+    """Identity of the beat a plan was written against.
+
+    Narration text and duration together. ``validate`` already refuses a plan
+    whose beat has been re-timed, so the duration here is belt-and-braces; the
+    text is the part nothing else can see. A line rewritten to the same length
+    leaves every prompt in the plan describing something that is no longer being
+    said, and the old code would have compiled it without comment.
+    """
+    import hashlib
+    text = " ".join((getattr(beat, "narration", "") or "").split())
+    dur = float(getattr(beat.camera, "duration", 0.0) or 0.0) if getattr(beat, "camera", None) else 0.0
+    return hashlib.sha256(f"{text}|{dur:.3f}".encode("utf-8")).hexdigest()[:16]
+
+
+def beat_staleness(plan: "CoveragePlan", beat) -> dict | None:
+    """Whether the beat moved under a plan. None when it did not.
+
+    Returns ``{"kind", "detail"}`` where kind is narration | timing | both.
+
+    A plan with no recorded baseline reports None rather than "stale": it
+    predates this check, and the original narration is not recoverable, so
+    calling it stale would be a guess. Locking it records a baseline and it
+    behaves normally from then on. Inventing the answer is worse than admitting
+    the plan has none.
+    """
+    if not plan.beat_signature or beat is None:
+        return None
+    if plan.beat_signature == beat_signature(beat):
+        return None
+
+    live_dur = float(getattr(beat.camera, "duration", 0.0) or 0.0) if getattr(beat, "camera", None) else 0.0
+    retimed = abs(float(plan.beat_duration) - live_dur) > DURATION_TOLERANCE
+    # The text is what changed if the duration did not; if both moved, say so.
+    kind = "both" if retimed else "narration"
+    if retimed and plan.beat_signature == "":
+        kind = "timing"
+    detail = {
+        "narration": (f"{plan.beat_id}: the narration was rewritten since this plan "
+                      f"was made; its prompts describe the old line."),
+        "timing": (f"{plan.beat_id}: the beat is now {live_dur:.2f}s, not "
+                   f"{plan.beat_duration:.2f}s."),
+        "both": (f"{plan.beat_id}: the narration was rewritten and the beat is now "
+                 f"{live_dur:.2f}s, not {plan.beat_duration:.2f}s."),
+    }[kind]
+    return {"kind": kind, "detail": detail,
+            "planned_for": plan.beat_signature, "beat_now": beat_signature(beat)}
+
+
+def approve(plan: "CoveragePlan", by: str = "human", beat=None) -> str:
+    """Bind an approval to the plan as it stands. Returns the signature.
+
+    Passing the beat records what the plan was approved *against*, so a later
+    rewrite of that narration is detectable. Re-locking is therefore also how a
+    stale plan is accepted: the human has looked at the new line and said yes.
+    """
     import datetime as _dt
     sig = plan_signature(plan)
     if plan.approved_signature and plan.approved_signature != sig:
@@ -332,6 +392,8 @@ def approve(plan: "CoveragePlan", by: str = "human") -> str:
     plan.approved_signature = sig
     plan.approved_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     plan.approved_by = by
+    if beat is not None:
+        plan.beat_signature = beat_signature(beat)
     return sig
 
 

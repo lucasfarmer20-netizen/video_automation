@@ -2423,7 +2423,9 @@ async def lock_director_scene(request: Request):
                                 content={"ok": False, "error": "nothing was locked",
                                          "problems": problems})
         for plan in plans:
-            director.approve(plan)
+            director.approve(
+                plan,
+                beat=next((x for x in sb.shots if x.scene_id == plan.beat_id), None))
             plan.status = "locked"
             director.save_plan(plan)
             try:
@@ -2523,7 +2525,7 @@ def lock_director_plan(beat_id: str, locked: bool = True):
     if locked:
         # Bind the approval to the plan as it stands. "locked" alone is a claim
         # that a human acted; the signature is what they acted on.
-        director.approve(plan)
+        director.approve(plan, beat=beat)
     else:
         plan.approved_signature = ""
         plan.approved_at = ""
@@ -2558,6 +2560,11 @@ def _plan_payload(plan) -> dict:
     return d
 
 
+def _stale_for(plan, sb) -> dict | None:
+    beat = next((s for s in sb.shots if s.scene_id == plan.beat_id), None)
+    return director.beat_staleness(plan, beat)
+
+
 @app.get("/api/director/plan/{beat_id}")
 def get_director_plan(beat_id: str):
     """The coverage plan for one beat, or null. Never touches the manifest."""
@@ -2582,6 +2589,9 @@ def get_director_plan(beat_id: str):
         # reading status keeps saying yes after the plan has changed underneath.
         "approval_is_current": director.approval_is_current(plan),
         "plan_signature": director.plan_signature(plan),
+        # Stated rather than inferred, same reason as approval: the client
+        # cannot work out that the script moved by looking at the plan.
+        "stale": _stale_for(plan, sb),
     }
 
 
@@ -2653,6 +2663,19 @@ def compile_director_coverage(beat_id: str):
                           f"what allocates the render budget."),
                 "approval_drifted": bool(drifted),
                 "plan_signature": director.plan_signature(plan),
+            })
+        # §4/§10: a script change must not silently corrupt the plan. Re-timing
+        # is already refused by director.validate; a line rewritten to the SAME
+        # length is not, and every prompt in the plan was written for the old
+        # one. Nothing is deleted here -- generated media survives, per §4 --
+        # the beat simply cannot compile until a human re-approves it.
+        beat_now = next((s for s in sb.shots if s.scene_id == beat_id), None)
+        stale = director.beat_staleness(plan, beat_now)
+        if stale:
+            return JSONResponse(status_code=409, content={
+                "ok": False,
+                "error": stale["detail"] + " Review and lock it again.",
+                "stale": stale,
             })
         # Defence in depth. A locked plan should never carry an undecided
         # warning, because locking now refuses one; asserting it here too means a
