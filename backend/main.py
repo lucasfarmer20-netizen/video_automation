@@ -2423,6 +2423,7 @@ async def lock_director_scene(request: Request):
                                 content={"ok": False, "error": "nothing was locked",
                                          "problems": problems})
         for plan in plans:
+            director.approve(plan)
             plan.status = "locked"
             director.save_plan(plan)
             try:
@@ -2519,6 +2520,14 @@ def lock_director_plan(beat_id: str, locked: bool = True):
                          f"decision; resolve or accept each one before locking.",
                 "warnings": undecided,
             })
+    if locked:
+        # Bind the approval to the plan as it stands. "locked" alone is a claim
+        # that a human acted; the signature is what they acted on.
+        director.approve(plan)
+    else:
+        plan.approved_signature = ""
+        plan.approved_at = ""
+        plan.approved_by = ""
     plan.status = "locked" if locked else "draft"
     director.save_plan(plan)
     # Locking is the human verdict on the planner's proposal, and the only point
@@ -2532,6 +2541,21 @@ def lock_director_plan(beat_id: str, locked: bool = True):
     except Exception:  # noqa: BLE001
         pass
     return {"ok": True, "beat_id": beat_id, "status": plan.status}
+
+
+def _plan_payload(plan) -> dict:
+    """Plan as the client sees it, with approval stated rather than inferred.
+
+    The UI must not decide for itself whether a plan is approved by reading
+    `status`: that is exactly the inference which stays true after the plan has
+    materially changed underneath it.
+    """
+    from dataclasses import asdict as _asdict
+    d = _asdict(plan)
+    d["plan_signature"] = director.plan_signature(plan)
+    d["approval_is_current"] = director.approval_is_current(plan)
+    d["unresolved_warnings"] = len(director.unresolved_warnings(plan))
+    return d
 
 
 @app.get("/api/director/plan/{beat_id}")
@@ -2550,10 +2574,14 @@ def get_director_plan(beat_id: str):
             problems.append(str(exc))
     return {
         "ok": True,
-        "plan": asdict(plan),
+        "plan": _plan_payload(plan),
         "beat_duration": float(beat.camera.duration) if beat and beat.camera else None,
         "coverage_total": round(plan.total_duration(), 3),
         "problems": problems,
+        # Stated, not inferred: a client that decides "approved" for itself by
+        # reading status keeps saying yes after the plan has changed underneath.
+        "approval_is_current": director.approval_is_current(plan),
+        "plan_signature": director.plan_signature(plan),
     }
 
 
@@ -2606,11 +2634,25 @@ def compile_director_coverage(beat_id: str):
         plan = director.load_plan(beat_id)
         if not plan:
             raise HTTPException(status_code=404, detail=f"no director plan for {beat_id}")
+        # §11.5: an approved plan must not silently mutate after approval.
+        # Drift is detected once, in director.load_plan, which drops the stale
+        # approval and returns the plan to draft -- so `status` never claims an
+        # approval that no longer exists, and every consumer sees the same
+        # truth. That means the check here is the draft check; what it adds is
+        # saying WHICH kind of unapproved this is, because "lock it first" is
+        # misleading advice for a plan that was locked until someone edited it.
         if plan.status == "draft":
+            drifted = next((h for h in reversed(plan.approval_history or [])
+                            if h.get("invalidated_because")), None)
             return JSONResponse(status_code=409, content={
                 "ok": False,
-                "error": f"plan for {beat_id} is a draft; lock it first - approval is "
-                         f"what allocates the render budget.",
+                "error": (f"plan for {beat_id} changed after it was approved, so the "
+                          f"approval no longer covers it; review and lock it again."
+                          if drifted else
+                          f"plan for {beat_id} is a draft; lock it first - approval is "
+                          f"what allocates the render budget."),
+                "approval_drifted": bool(drifted),
+                "plan_signature": director.plan_signature(plan),
             })
         # Defence in depth. A locked plan should never carry an undecided
         # warning, because locking now refuses one; asserting it here too means a

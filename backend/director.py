@@ -186,6 +186,15 @@ class CoveragePlan:
     # locking a scene is not an answer to a specific finding. Contract §5.4:
     # unresolved Critic warnings must not be silently approved by bulk actions.
     warning_dispositions: dict = field(default_factory=dict)
+    # Approval, bound to the exact plan it was given for. `status` says a human
+    # acted; these say WHAT they acted on. Without the signature, "locked" is a
+    # claim about the past that any later edit silently inherits.
+    approved_signature: str = ""
+    approved_at: str = ""
+    approved_by: str = ""
+    # Signatures of plans this one superseded, oldest first. History is kept so
+    # an invalidated approval can be explained rather than merely lost.
+    approval_history: list = field(default_factory=list)
     compiled: dict = field(default_factory=dict)
     # The scene's stated approach and its physical layout. Held per beat because
     # beats are the unit of storage, even though both are decided per scene.
@@ -195,6 +204,97 @@ class CoveragePlan:
     def total_duration(self) -> float:
         return sum(s.duration for s in self.coverage)
 
+
+
+# --- plan identity and approval -------------------------------------------------
+#
+# `paid_signature` already establishes the pattern one level down: a stored
+# artefact is only reusable while the inputs that determined it are unchanged.
+# Approval needs exactly the same guarantee one level up. `status == "locked"`
+# records that a human acted; on its own it cannot say what they acted on, so
+# any later edit to the plan inherited the approval silently -- which is the
+# approval drift contract §11.5 forbids.
+
+# Fields that make a plan MATERIALLY different, i.e. that change what will be
+# produced or what it costs. Deliberately excludes:
+#   - produced state (clip, paid_clip, draft_variations, chosen_variation,
+#     error): outputs of the plan, not the plan;
+#   - chosen_variation in particular, because selecting a different take is
+#     Generate's business (§10) and must not invalidate Director's approval;
+#   - estimated_cost, which is derived from motion_type/backend/duration and
+#     would double-count them;
+#   - reason and constrained_by, which are rationale, not instruction.
+_MATERIAL_SHOT_FIELDS = (
+    "id", "beat_id", "purpose", "subject", "shot_size", "angle", "composition",
+    "character_motion", "face_visibility", "motion_complexity", "gestural",
+    "identity_critical", "reference_dependencies", "motion_type", "backend",
+    "prompt", "motion_prompt", "source", "source_ref",
+)
+
+
+def plan_signature(plan: "CoveragePlan") -> str:
+    """Identity of a plan as a PLAN: what it will produce, in what order.
+
+    Two plans with the same signature are the same instruction set, so an
+    approval of one is an approval of the other. Any material change produces a
+    different signature and therefore invalidates the approval.
+    """
+    import hashlib
+    parts: list[str] = [plan.beat_id, f"{float(plan.beat_duration):.3f}"]
+    for ds in plan.coverage:
+        for f in _MATERIAL_SHOT_FIELDS:
+            v = getattr(ds, f, "")
+            parts.append(",".join(map(str, v)) if isinstance(v, list) else str(v))
+        cam = ds.camera
+        parts.append(f"{float(getattr(cam, 'duration', 0.0)):.3f}")
+        parts.append(str(getattr(cam, "move", "")))
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def approve(plan: "CoveragePlan", by: str = "human") -> str:
+    """Bind an approval to the plan as it stands. Returns the signature."""
+    import datetime as _dt
+    sig = plan_signature(plan)
+    if plan.approved_signature and plan.approved_signature != sig:
+        plan.approval_history = list(plan.approval_history or []) + [{
+            "signature": plan.approved_signature,
+            "approved_at": plan.approved_at,
+            "approved_by": plan.approved_by,
+            "superseded_by": sig,
+        }]
+    plan.approved_signature = sig
+    plan.approved_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    plan.approved_by = by
+    return sig
+
+
+def approval_is_current(plan: "CoveragePlan") -> bool:
+    """Whether this plan carries an approval for the plan it actually is now."""
+    return bool(plan.approved_signature) and plan.approved_signature == plan_signature(plan)
+
+
+def invalidate_approval(plan: "CoveragePlan", reason: str = "plan changed") -> bool:
+    """Drop an approval the plan has outgrown, keeping the record of it.
+
+    Returns True when an approval was actually invalidated. The plan returns to
+    draft: a materially different plan has not been approved by anyone, and
+    leaving it "locked" is precisely the drift this guards against.
+    """
+    if not plan.approved_signature or approval_is_current(plan):
+        return False
+    plan.approval_history = list(plan.approval_history or []) + [{
+        "signature": plan.approved_signature,
+        "approved_at": plan.approved_at,
+        "approved_by": plan.approved_by,
+        "invalidated_because": reason,
+        "superseded_by": plan_signature(plan),
+    }]
+    plan.approved_signature = ""
+    plan.approved_at = ""
+    plan.approved_by = ""
+    if plan.status in ("locked", "compiled"):
+        plan.status = "draft"
+    return True
 
 
 # --- critic warnings ------------------------------------------------------------
@@ -360,7 +460,23 @@ def load_plan(beat_id: str) -> CoveragePlan | None:
     # content that is already present, so this is idempotent and invents nothing.
     raw["warnings"] = normalize_warnings(raw.get("warnings"))
     raw["warning_dispositions"] = dict(raw.get("warning_dispositions") or {})
-    return CoveragePlan(version=PLAN_VERSION, **raw)
+    plan = CoveragePlan(version=PLAN_VERSION, **raw)
+
+    # Migrate-on-read for plans locked before approvals carried a signature.
+    # Their approval is derivable from authoritative state -- the plan is locked
+    # and this is the plan it was locked on -- so it is adopted rather than
+    # invented, and stamped with provenance saying so. Nothing else gets one:
+    # a draft has never been approved, and inventing a signature for it would
+    # manufacture the approval the signature exists to prove.
+    if plan.status in ("locked", "compiling", "compiled") and not plan.approved_signature:
+        plan.approved_signature = plan_signature(plan)
+        plan.approved_by = "migrated:pre-signature-lock"
+
+    # A plan whose file was edited after approval arrives here already drifted.
+    # Catching it on read means every consumer sees the same truth, rather than
+    # each having to remember to check.
+    invalidate_approval(plan, reason="plan changed after approval")
+    return plan
 
 
 def save_plan(plan: CoveragePlan) -> Path:
