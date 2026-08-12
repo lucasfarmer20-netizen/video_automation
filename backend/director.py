@@ -584,6 +584,39 @@ def _plan_lock(dest: Path) -> threading.Lock:
         return lock
 
 
+# Windows denies a replace transiently even when this process holds the only
+# logical lock: another handle on the destination -- an indexer, a virus
+# scanner, a reader mid-open -- is enough for WinError 5 or 32. Holding the lock
+# stops two of OUR writers meeting; it cannot stop the operating system. Under
+# sustained contention (16 writers x 20 saves) that surfaced in 5 of 20 batches,
+# and a denied replace is a SUBMITTED SAVE SILENTLY LOST: load_plan swallows the
+# OSError, so the process would go on believing a transition it never wrote.
+_REPLACE_RETRY_ERRNOS = frozenset({5, 32})   # ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION
+_REPLACE_ATTEMPTS = 8
+_REPLACE_BACKOFF = 0.008                     # doubles each attempt; ~1s total worst case
+
+
+def _replace_with_retry(tmp: Path, dest: Path) -> None:
+    """os.replace, retrying the transient Windows sharing/access denials.
+
+    Bounded on purpose. A real permissions problem must still fail rather than
+    spin, so the last attempt re-raises, and only the two error codes that are
+    actually transient are retried -- on any other platform or errno the first
+    failure propagates untouched.
+    """
+    import os
+    import time
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(tmp, dest)
+            return
+        except OSError as exc:
+            retryable = getattr(exc, "winerror", None) in _REPLACE_RETRY_ERRNOS
+            if not retryable or attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_BACKOFF * (2 ** attempt))
+
+
 def save_plan(plan: CoveragePlan) -> Path:
     """Write a plan atomically, and safely against concurrent writers.
 
@@ -633,7 +666,7 @@ def save_plan(plan: CoveragePlan) -> Path:
                 fh.write(blob)
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.replace(tmp, dest)
+            _replace_with_retry(tmp, dest)
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise

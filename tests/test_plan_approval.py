@@ -536,3 +536,80 @@ def test_the_signature_is_versioned():
     """A stored signature must never be compared against one computed a
     different way without the change being explicit."""
     assert director.material_plan(_one_shot())["signature_version"] == director.SIGNATURE_VERSION
+
+
+def test_sustained_contention_loses_no_submitted_save(studio):
+    """S2-03 round 2. The per-file lock stops two of OUR writers meeting; it
+    cannot stop Windows transiently denying the replace, which surfaced in 5 of
+    20 batches at this load. A denied replace is a submitted save silently lost:
+    load_plan swallows the OSError, so the process believes a transition it
+    never wrote.
+
+    Repeated batches on purpose -- a single batch passed ten times in a row
+    while the defect was still present.
+    """
+    import json as _json
+    _plan("draft")
+    for batch in range(6):
+        errors = _concurrent_saves("s001", writers=12, rounds=15)
+        assert errors == [], f"batch {batch} lost a save: {errors[:2]}"
+
+    raw = _json.loads(director.plan_path("s001").read_text(encoding="utf-8"))
+    assert raw["profile"] == raw["coverage"][0]["prompt"], "surviving file is spliced"
+    assert list(director.director_dir().glob("*.tmp")) == []
+
+
+def test_a_real_permission_error_is_not_retried_forever(monkeypatch):
+    """Bounded on purpose: a genuine permissions problem must fail, not spin."""
+    import os
+    calls = {"n": 0}
+
+    def always_denied(src, dst):
+        calls["n"] += 1
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "replace", always_denied)
+    with pytest.raises(PermissionError):
+        director._replace_with_retry(Path("a"), Path("b"))
+    assert calls["n"] == 1, "a non-transient errno must not be retried"
+
+
+def test_a_transient_denial_is_retried_and_succeeds(monkeypatch):
+    import os
+    state = {"n": 0}
+    real = os.replace
+
+    def flaky(src, dst):
+        state["n"] += 1
+        if state["n"] < 3:
+            exc = PermissionError(13, "Access is denied")
+            exc.winerror = 5
+            raise exc
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky)
+    import tempfile
+    d = Path(tempfile.mkdtemp())
+    src, dst = d / "src", d / "dst"
+    src.write_text("x", encoding="utf-8")
+    director._replace_with_retry(src, dst)
+    assert dst.read_text(encoding="utf-8") == "x"
+    assert state["n"] == 3, "should have retried twice then succeeded"
+
+
+def test_the_retry_is_bounded(monkeypatch):
+    """It must give up rather than hang a request forever."""
+    import os
+    calls = {"n": 0}
+
+    def always_transient(src, dst):
+        calls["n"] += 1
+        exc = PermissionError(13, "Access is denied")
+        exc.winerror = 32
+        raise exc
+
+    monkeypatch.setattr(os, "replace", always_transient)
+    monkeypatch.setattr(director, "_REPLACE_BACKOFF", 0.0)
+    with pytest.raises(PermissionError):
+        director._replace_with_retry(Path("a"), Path("b"))
+    assert calls["n"] == director._REPLACE_ATTEMPTS
