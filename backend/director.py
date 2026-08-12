@@ -40,7 +40,7 @@ import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import config, ledger
+from . import atomic, config, generation, ledger
 from .ffmpeg_bin import ffmpeg_bin, ffprobe_bin
 from .manifest import Camera, MotionType, Shot, Storyboard
 
@@ -154,6 +154,12 @@ class DirectorShot:
     # ai_video, as though it were the paid one: shipping the wrong footage and
     # never generating at all. That is a worse failure than the re-billing it
     # replaced, because it is silent.
+    # Reference to the authoritative GenerationAttempt (backend/generation.py).
+    # The shot points at its selected output rather than owning attempt history:
+    # one clip and one error per shot means attempt two erases attempt one, and
+    # §11.6 requires prior attempts to survive. paid_clip/paid_signature below
+    # stay for now as the compatibility + re-bill fields, per the migration plan.
+    selected_attempt: str = ""
     paid_clip: str = ""                # set ONLY when fal was billed
     paid_signature: str = ""           # the inputs that clip was bought for
     estimated_cost: float = 0.0
@@ -248,6 +254,7 @@ _NON_MATERIAL_SHOT_FIELDS = {
     "draft_variations": "produced state",
     "chosen_variation": "take selection belongs to Generate (contract §10)",
     "clip": "produced state",
+    "selected_attempt": "reference to produced state, not an instruction",
     "paid_clip": "produced state; guarded by paid_signature",
     "paid_signature": "guards the clip, not the plan",
     "error": "produced state",
@@ -565,6 +572,13 @@ def triage(plan: "CoveragePlan") -> dict:
 # One file per beat, outside the manifest. Small, independently writable, and
 # deletable — which is what makes this whole experiment reversible.
 
+# Kept as the module-level names the approval tests exercise; the behaviour now
+# lives in backend.atomic so plans and generation lineage share one implementation.
+_replace_with_retry = atomic.replace_with_retry
+_REPLACE_ATTEMPTS = atomic._ATTEMPTS
+_REPLACE_BACKOFF = atomic._BACKOFF
+
+
 def director_dir() -> Path:
     return config.project_dir() / "director"
 
@@ -630,109 +644,17 @@ def load_plan(beat_id: str) -> CoveragePlan | None:
     return plan
 
 
-# One lock per plan file, so two writers for the same beat take turns instead of
-# racing. Keyed by resolved path, which is per project: two projects' s001 plans
-# are different files and must not serialise against each other.
-_PLAN_LOCKS: dict[str, threading.Lock] = {}
-_PLAN_LOCKS_GUARD = threading.Lock()
-
-
-def _plan_lock(dest: Path) -> threading.Lock:
-    key = str(dest)
-    with _PLAN_LOCKS_GUARD:
-        lock = _PLAN_LOCKS.get(key)
-        if lock is None:
-            lock = _PLAN_LOCKS[key] = threading.Lock()
-        return lock
-
-
-# Windows denies a replace transiently even when this process holds the only
-# logical lock: another handle on the destination -- an indexer, a virus
-# scanner, a reader mid-open -- is enough for WinError 5 or 32. Holding the lock
-# stops two of OUR writers meeting; it cannot stop the operating system. Under
-# sustained contention (16 writers x 20 saves) that surfaced in 5 of 20 batches,
-# and a denied replace is a SUBMITTED SAVE SILENTLY LOST: load_plan swallows the
-# OSError, so the process would go on believing a transition it never wrote.
-_REPLACE_RETRY_ERRNOS = frozenset({5, 32})   # ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION
-_REPLACE_ATTEMPTS = 8
-_REPLACE_BACKOFF = 0.008                     # doubles each attempt; ~1s total worst case
-
-
-def _replace_with_retry(tmp: Path, dest: Path) -> None:
-    """os.replace, retrying the transient Windows sharing/access denials.
-
-    Bounded on purpose. A real permissions problem must still fail rather than
-    spin, so the last attempt re-raises, and only the two error codes that are
-    actually transient are retried -- on any other platform or errno the first
-    failure propagates untouched.
-    """
-    import os
-    import time
-    for attempt in range(_REPLACE_ATTEMPTS):
-        try:
-            os.replace(tmp, dest)
-            return
-        except OSError as exc:
-            retryable = getattr(exc, "winerror", None) in _REPLACE_RETRY_ERRNOS
-            if not retryable or attempt == _REPLACE_ATTEMPTS - 1:
-                raise
-            time.sleep(_REPLACE_BACKOFF * (2 ** attempt))
-
-
 def save_plan(plan: CoveragePlan) -> Path:
-    """Write a plan atomically, and safely against concurrent writers.
+    """Write a plan durably. The write rules live in backend.atomic.
 
-    Two properties, and the first alone was not enough. Writing through a
-    temporary file and os.replace stops a reader seeing partial JSON -- a torn
-    plan file is not a degraded plan, it is a lost one, because load_plan would
-    raise on it and the beat would look unplanned.
-
-    But the first version of that used one fixed temp name per beat, so two
-    writers for the same beat shared it: on Windows the second os.replace failed
-    with WinError 32 because the other writer still held that exact path. Seven
-    of eight concurrent writers failed. Atomic replacement protects a single
-    writer from exposing a partial file; it does nothing to make competing
-    writers safe. Hence a unique temp per write, plus a per-file lock so
-    same-beat writes serialise rather than collide.
-
-    Of the two, the LOCK is what fixes the collision: with writes serialised
-    even a shared temp name works. The unique name is defence for the case the
-    lock cannot cover, which is the same limit worth stating plainly --
-
-    NOT provided: cross-process safety. The lock is per process. That is
-    sufficient on Cloud Run today because the studio runs as a single instance
-    over the GCS mount, but two instances sharing that mount would be back to
-    racing, and no in-process lock can fix that.
-
-    NOT provided: protection against lost updates. Two callers that each
-    load_plan, mutate, and save_plan will still have the later write win
-    wholesale. Serialising the writes makes each one complete; it does not make
-    the pair correct. Anything doing read-modify-write on a plan needs its own
-    version check.
+    They were here first, learned from S2-03: a unique temp per write, a lock
+    per destination, and bounded retry on the replace because Windows denies it
+    transiently even when this process holds the only logical lock. They moved
+    so generation lineage gets the same guarantees rather than a second copy of
+    them that drifts.
     """
-    import os
-    import tempfile
-    d = director_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    dest = plan_path(plan.beat_id)
-    blob = json.dumps(asdict(plan), indent=2)
-
-    with _plan_lock(dest):
-        # Created in the destination directory so the replace stays on one
-        # filesystem, and uniquely named so no other writer can be holding it.
-        fd, tmp_name = tempfile.mkstemp(dir=str(d), prefix=f"{plan.beat_id}.",
-                                        suffix=".json.tmp")
-        tmp = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(blob)
-                fh.flush()
-                os.fsync(fh.fileno())
-            _replace_with_retry(tmp, dest)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
-    return dest
+    director_dir().mkdir(parents=True, exist_ok=True)
+    return atomic.write_json(plan_path(plan.beat_id), asdict(plan))
 
 
 def has_locked_coverage(beat_id: str) -> bool:
@@ -999,6 +921,22 @@ def resolve_library_ref(ref: str) -> Path | None:
     if series.is_file():
         return series
     return None
+
+
+def _media_present(rel: str) -> bool:
+    """Whether a recorded output is really usable media.
+
+    Existence is not enough: a truncated download leaves a zero-byte file that
+    is_file() happily confirms, and reusing it ships an empty clip while
+    reporting a hit. The re-bill guard has always tested size for this reason,
+    and the attempt-level reuse check has to be exactly as strict or it becomes
+    the weaker of the two and decides first.
+    """
+    try:
+        path = config.resolve_media(rel)
+        return bool(path) and path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
@@ -1319,19 +1257,46 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                         log(f"  {ds.id}: paid clip already downloaded — re-running "
                             f"post-processing only, not re-billing")
                     else:
-                        # Anything at `target` now is either a free render or a
-                        # clip bought for different inputs. Neither is this shot's
-                        # paid clip, so it must not be mistaken for one.
-                        if target.is_file() and not ds.paid_clip:
-                            log(f"  {ds.id}: discarding a non-paid file already at "
-                                f"{target.name} before generating")
-                        target.unlink(missing_ok=True)
-                        generate_paid_clip(ds, synth, sb, out_dir, log=log)
-                        ds.estimated_cost += 0.60  # rough; real figure comes from fal
-                        ds.clip = config.rel_media_path(target)
-                        ds.paid_clip = ds.clip
-                        ds.paid_signature = want
-                        save_plan(plan)
+                        # Every paid generation opens an attempt first. The
+                        # attempt is what decides whether money may be spent:
+                        # only a "created" disposition permits a call to fal, so
+                        # a duplicate request or an unchanged shot cannot reach
+                        # the API however it arrives here (§11.1). The lineage
+                        # is the same record, so a failure below stays attached
+                        # to the shot instead of vanishing (§11.6).
+                        att, how = generation.begin(
+                            beat_id=plan.beat_id, shot_id=ds.id, signature=want,
+                            kind="video", backend=ds.backend, paid=True,
+                            exists=_media_present,
+                        )
+                        if how != "created":
+                            log(f"  {ds.id}: not re-billing — {how} "
+                                f"(attempt {att.attempt})")
+                            ds.selected_attempt = att.id
+                            ds.clip = att.output or ds.clip
+                            ds.paid_clip = att.output or ds.paid_clip
+                            ds.paid_signature = want
+                            save_plan(plan)
+                        else:
+                            # Anything at `target` now is either a free render or
+                            # a clip bought for different inputs. Neither is this
+                            # shot's paid clip, so it must not be mistaken for one.
+                            if target.is_file() and not ds.paid_clip:
+                                log(f"  {ds.id}: discarding a non-paid file already "
+                                    f"at {target.name} before generating")
+                            target.unlink(missing_ok=True)
+                            try:
+                                generate_paid_clip(ds, synth, sb, out_dir, log=log)
+                            except BaseException as exc:
+                                generation.fail(plan.beat_id, att.id, str(exc))
+                                raise
+                            ds.estimated_cost += 0.60  # rough; fal has the real figure
+                            ds.clip = config.rel_media_path(target)
+                            ds.paid_clip = ds.clip
+                            ds.paid_signature = want
+                            ds.selected_attempt = att.id
+                            generation.succeed(plan.beat_id, att.id, ds.clip, cost=0.60)
+                            save_plan(plan)
                 else:
                     motion.render_shot(synth, out_dir=out_dir, storyboard=sb)
 
