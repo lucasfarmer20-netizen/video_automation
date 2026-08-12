@@ -228,8 +228,80 @@ _MATERIAL_SHOT_FIELDS = (
     "id", "beat_id", "purpose", "subject", "shot_size", "angle", "composition",
     "character_motion", "face_visibility", "motion_complexity", "gestural",
     "identity_critical", "reference_dependencies", "motion_type", "backend",
-    "prompt", "motion_prompt", "source", "source_ref",
+    "prompt", "motion_prompt", "source", "source_ref", "library_scope",
 )
+
+# Every DirectorShot field NOT in the material set, with the reason. This exists
+# so the exclusion is a decision on the record rather than an omission: a test
+# asserts the two tuples together account for the whole dataclass, so adding a
+# field to DirectorShot fails until someone classifies it.
+_NON_MATERIAL_SHOT_FIELDS = {
+    "camera": "carried explicitly as camera_duration/camera_move",
+    "reason": "rationale, not instruction",
+    "constrained_by": "provenance for why intent was compromised",
+    "estimated_cost": "derived from motion_type/backend/duration, already covered",
+    "draft_variations": "produced state",
+    "chosen_variation": "take selection belongs to Generate (contract §10)",
+    "clip": "produced state",
+    "paid_clip": "produced state; guarded by paid_signature",
+    "paid_signature": "guards the clip, not the plan",
+    "error": "produced state",
+}
+
+# Plan-level fields outside the signature, same discipline.
+_NON_MATERIAL_PLAN_FIELDS = {
+    "version": "schema version, not content",
+    "plan_id": "groups beats planned together; provenance, not instruction",
+    "scene_beats": "grouping, not instruction",
+    "status": "lifecycle; the signature is what makes it trustworthy",
+    "profile": "which planner produced it; provenance",
+    "created_by": "provenance",
+    "coverage": "carried explicitly, shot by shot",
+    "warnings": "critic findings, gated separately by warning_dispositions",
+    "warning_dispositions": "review record, not instruction",
+    "approved_signature": "cannot be part of what it signs",
+    "approved_at": "approval metadata",
+    "approved_by": "approval metadata",
+    "approval_history": "audit record",
+    "compiled": "produced state",
+    "visual_strategy": "stated approach; prose, does not reach the renderer",
+    "blocking": "scene layout notes; does not reach the renderer today",
+}
+
+
+# Bumped whenever the material-field set or the encoding changes, so a stored
+# signature can never be silently compared against one computed a different way.
+SIGNATURE_VERSION = 2
+
+
+def material_plan(plan: "CoveragePlan") -> dict:
+    """The plan reduced to what determines its output. The signature preimage.
+
+    Structured rather than concatenated, and that is the point. The first
+    version joined stringified fields with "|" and hashed the result, so a field
+    value containing "|" shifted the boundaries: purpose="alpha|beta",
+    subject="gamma" and purpose="alpha", subject="beta|gamma" produced identical
+    signatures, and one plan's approval covered the other. Those are
+    user-controlled strings, so it was reachable by typing. Keying every value
+    to its field name removes the ambiguity entirely -- there are no boundaries
+    left to shift.
+    """
+    return {
+        "signature_version": SIGNATURE_VERSION,
+        "beat_id": plan.beat_id,
+        "beat_duration": round(float(plan.beat_duration), 3),
+        "coverage": [
+            {
+                **{f: (list(getattr(ds, f, []) or [])
+                       if isinstance(getattr(ds, f, None), list)
+                       else getattr(ds, f, None))
+                   for f in _MATERIAL_SHOT_FIELDS},
+                "camera_duration": round(float(getattr(ds.camera, "duration", 0.0) or 0.0), 3),
+                "camera_move": getattr(ds.camera, "move", None),
+            }
+            for ds in plan.coverage
+        ],
+    }
 
 
 def plan_signature(plan: "CoveragePlan") -> str:
@@ -240,15 +312,10 @@ def plan_signature(plan: "CoveragePlan") -> str:
     different signature and therefore invalidates the approval.
     """
     import hashlib
-    parts: list[str] = [plan.beat_id, f"{float(plan.beat_duration):.3f}"]
-    for ds in plan.coverage:
-        for f in _MATERIAL_SHOT_FIELDS:
-            v = getattr(ds, f, "")
-            parts.append(",".join(map(str, v)) if isinstance(v, list) else str(v))
-        cam = ds.camera
-        parts.append(f"{float(getattr(cam, 'duration', 0.0)):.3f}")
-        parts.append(str(getattr(cam, "move", "")))
-    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+    import json as _json
+    blob = _json.dumps(material_plan(plan), sort_keys=True,
+                       separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 def approve(plan: "CoveragePlan", by: str = "human") -> str:
@@ -468,22 +535,49 @@ def load_plan(beat_id: str) -> CoveragePlan | None:
     # invented, and stamped with provenance saying so. Nothing else gets one:
     # a draft has never been approved, and inventing a signature for it would
     # manufacture the approval the signature exists to prove.
+    changed = False
     if plan.status in ("locked", "compiling", "compiled") and not plan.approved_signature:
         plan.approved_signature = plan_signature(plan)
         plan.approved_by = "migrated:pre-signature-lock"
+        changed = True
 
     # A plan whose file was edited after approval arrives here already drifted.
     # Catching it on read means every consumer sees the same truth, rather than
     # each having to remember to check.
-    invalidate_approval(plan, reason="plan changed after approval")
+    if invalidate_approval(plan, reason="plan changed after approval"):
+        changed = True
+
+    # Persist the transition. Doing this only in memory left the FILE asserting
+    # a stale locked status with a signature that no longer matched, so anything
+    # not reading through this function still saw the false approval and the
+    # invalidation history was rebuilt from scratch on every read instead of
+    # being recorded once. The write is conditional, so it happens on the read
+    # that actually transitions and never again -- which is what makes it
+    # idempotent rather than a write on every load.
+    if changed:
+        try:
+            save_plan(plan)
+        except OSError as exc:  # a read must not fail because the disk did
+            print(f"director: could not persist approval transition for "
+                  f"{plan.beat_id}: {exc}")
     return plan
 
 
 def save_plan(plan: CoveragePlan) -> Path:
+    """Write a plan atomically.
+
+    Atomic because plan writes are no longer rare or serialised: beats compile
+    concurrently, and load_plan now persists approval transitions, so a reader
+    and a writer can meet. A torn plan file is not a degraded plan, it is a lost
+    one -- load_plan would raise on the JSON and the beat would look unplanned.
+    """
+    import os
     d = director_dir()
     d.mkdir(parents=True, exist_ok=True)
     p = plan_path(plan.beat_id)
-    p.write_text(json.dumps(asdict(plan), indent=2), encoding="utf-8")
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(asdict(plan), indent=2), encoding="utf-8")
+    os.replace(tmp, p)
     return p
 
 

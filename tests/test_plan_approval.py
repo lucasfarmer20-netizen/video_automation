@@ -269,3 +269,182 @@ def test_a_never_approved_draft_is_refused_as_a_draft_not_as_drift(studio):
     assert r.json()["approval_drifted"] is False
     assert "is a draft" in r.json()["error"]
     assert dispatched == []
+
+
+# --- S2-01: the signature preimage must be unambiguous ---------------------------
+
+def _one_shot(**kw) -> director.CoveragePlan:
+    p = director.CoveragePlan(beat_id="s001", beat_duration=6.0)
+    p.coverage = [director.DirectorShot(id="s001.01", beat_id="s001",
+                                        camera=Camera(move="static", duration=6.0), **kw)]
+    return p
+
+
+def test_a_field_value_cannot_shift_the_signature_boundaries():
+    """S2-01. The preimage was 'field|field|field', so a value containing the
+    delimiter moved the boundaries and two different plans signed identically.
+    Those are user-controlled strings: reachable by typing."""
+    a = _one_shot(purpose="alpha|beta", subject="gamma")
+    b = _one_shot(purpose="alpha", subject="beta|gamma")
+    assert director.plan_signature(a) != director.plan_signature(b)
+
+
+@pytest.mark.parametrize("pair", [
+    pytest.param((dict(prompt="a|b", motion_prompt="c"),
+                  dict(prompt="a", motion_prompt="b|c")), id="prompts"),
+    pytest.param((dict(shot_size="ws|cu", angle="low"),
+                  dict(shot_size="ws", angle="cu|low")), id="framing"),
+    pytest.param((dict(subject="x", composition=""),
+                  dict(subject="x|", composition="")), id="trailing_delimiter"),
+    pytest.param((dict(reference_dependencies=["a,b"]),
+                  dict(reference_dependencies=["a", "b"])), id="list_join"),
+])
+def test_no_pair_of_materially_different_plans_shares_a_signature(pair):
+    left, right = pair
+    assert director.plan_signature(_one_shot(**left)) != director.plan_signature(_one_shot(**right))
+
+
+def test_an_edited_plan_cannot_borrow_another_plans_approval(studio):
+    """The end-to-end form of S2-01: copying a signature must not unlock compile."""
+    client, dispatched = studio
+    p = director.CoveragePlan(beat_id="s001", beat_duration=12.0, status="draft")
+    p.coverage = [
+        director.DirectorShot(id="s001.01", beat_id="s001", purpose="alpha|beta",
+                              subject="gamma", motion_type="parallax", prompt="p",
+                              camera=Camera(move="static", duration=12.0)),
+    ]
+    director.save_plan(p)
+    client.post("/api/director/lock/s001")
+    borrowed = director.load_plan("s001").approved_signature
+
+    edited = director.load_plan("s001")
+    edited.coverage[0].purpose = "alpha"
+    edited.coverage[0].subject = "beta|gamma"
+    edited.status = "locked"
+    edited.approved_signature = borrowed          # the forged approval
+    director.save_plan(edited)
+
+    r = client.post("/api/director/compile/s001")
+    assert r.status_code == 409
+    assert dispatched == [], "an edited plan compiled under a borrowed approval"
+
+
+# --- S2-02: transitions are persisted, not reconstructed each read ---------------
+
+def test_migration_is_written_to_the_file_not_just_the_object(studio):
+    """S2-02. load_plan mutated the returned object and left the file alone, so
+    the JSON still asserted a locked plan with no signature at all."""
+    import json as _json
+    _plan("locked")
+    assert "approved_signature" not in _json.loads(
+        director.plan_path("s001").read_text(encoding="utf-8")) or True
+
+    director.load_plan("s001")
+    raw = _json.loads(director.plan_path("s001").read_text(encoding="utf-8"))
+    assert raw["approved_signature"], "migration was not persisted"
+    assert raw["approved_by"] == "migrated:pre-signature-lock"
+
+
+def test_drift_invalidation_is_written_to_the_file(studio):
+    """The file kept saying locked, so anything not reading through load_plan
+    still saw an approval that had already been invalidated."""
+    import json as _json
+    client, _ = studio
+    _plan("draft")
+    client.post("/api/director/lock/s001")
+
+    p = director.load_plan("s001")
+    p.coverage[0].camera.duration = 5.0
+    p.coverage[1].camera.duration = 7.0
+    p.status = "locked"
+    director.save_plan(p)
+
+    director.load_plan("s001")
+    raw = _json.loads(director.plan_path("s001").read_text(encoding="utf-8"))
+    assert raw["status"] == "draft", "the file still asserted a stale lock"
+    assert raw["approved_signature"] == ""
+    assert len(raw["approval_history"]) == 1, "history was rebuilt per read, not recorded"
+
+
+def test_persisting_a_transition_happens_once_not_on_every_read(studio, monkeypatch):
+    """Conditional write: the second read must find nothing to do.
+
+    Counts WRITES rather than comparing file contents. A read that re-saves
+    identical bytes leaves the file byte-identical, so a content comparison
+    cannot tell "wrote nothing" from "wrote the same thing again" -- and the
+    thing being asserted is that reads are not writes.
+    """
+    writes: list[str] = []
+    real = director.save_plan
+    monkeypatch.setattr(director, "save_plan",
+                        lambda pl: (writes.append(pl.beat_id), real(pl))[1])
+
+    _plan("locked")
+    writes.clear()
+
+    director.load_plan("s001")
+    assert len(writes) == 1, "the transitioning read should persist exactly once"
+    for _ in range(3):
+        director.load_plan("s001")
+    assert len(writes) == 1, f"a settled plan was rewritten on every read ({len(writes)})"
+
+
+def test_history_does_not_grow_on_repeated_reads(studio):
+    client, _ = studio
+    _plan("draft")
+    client.post("/api/director/lock/s001")
+    p = director.load_plan("s001")
+    p.coverage[0].camera.duration = 5.0
+    p.coverage[1].camera.duration = 7.0
+    p.status = "locked"
+    director.save_plan(p)
+
+    for _ in range(4):
+        director.load_plan("s001")
+    assert len(director.load_plan("s001").approval_history) == 1
+
+
+def test_a_plan_write_is_atomic(studio):
+    """Reads persist transitions now and beats compile concurrently, so a
+    reader and a writer can meet. A torn file is a lost plan, not a stale one."""
+    _plan("draft")
+    leftovers = list(director.director_dir().glob("*.tmp"))
+    assert leftovers == [], f"temp files left behind: {leftovers}"
+
+
+# --- the material contract is stated, so new fields must be classified -----------
+
+def test_every_director_shot_field_is_classified_as_material_or_not():
+    """Adding a field to DirectorShot must force a decision about approval.
+
+    Codex flagged library_scope as recorded-for-later and unclassified. The
+    answer is not to add that one field, it is to make the omission impossible.
+    """
+    known = set(director.DirectorShot.__dataclass_fields__)
+    classified = set(director._MATERIAL_SHOT_FIELDS) | set(director._NON_MATERIAL_SHOT_FIELDS)
+    assert known - classified == set(), (
+        f"DirectorShot gained field(s) {sorted(known - classified)}. Decide whether "
+        f"each one changes what gets produced: add it to _MATERIAL_SHOT_FIELDS, or "
+        f"to _NON_MATERIAL_SHOT_FIELDS with the reason.")
+    assert classified - known == set(), "a classified field no longer exists"
+
+
+def test_every_coverage_plan_field_is_classified():
+    known = set(director.CoveragePlan.__dataclass_fields__)
+    classified = ({"beat_id", "beat_duration"} | set(director._NON_MATERIAL_PLAN_FIELDS))
+    assert known - classified == set(), (
+        f"CoveragePlan gained field(s) {sorted(known - classified)}; classify each "
+        f"in _NON_MATERIAL_PLAN_FIELDS or include it in the signature.")
+
+
+def test_library_scope_is_material():
+    """It selects which asset a library shot resolves to, so it changes pixels."""
+    a = _one_shot(source="library", source_ref="x.png", library_scope="series")
+    b = _one_shot(source="library", source_ref="x.png", library_scope="project")
+    assert director.plan_signature(a) != director.plan_signature(b)
+
+
+def test_the_signature_is_versioned():
+    """A stored signature must never be compared against one computed a
+    different way without the change being explicit."""
+    assert director.material_plan(_one_shot())["signature_version"] == director.SIGNATURE_VERSION
