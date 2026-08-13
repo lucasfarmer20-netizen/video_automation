@@ -83,13 +83,23 @@ def _free(scene_id: str, motion_type: MotionType = MotionType.PARALLAX) -> Shot:
 #
 # _MAX_PAID is 6, not 5, and the reason is worth stating because it is easy to
 # get wrong by one. A `shots[:k]` gate is only detectable when some case puts a
-# BROKEN paid beat past position k, so a list of n paid beats catches prefixes
-# up to k = n - 1. Measured, with _MAX_PAID = 5: [:1] 30 failed, [:2] 18, [:3]
-# 18, [:4] 3, and [:5] fully GREEN -- because the longest list was five paid
-# beats plus one free, so [:5] truncated only the free one. The agreed boundary
-# is that [:6] is out of scope (neither a plausible accident nor a plausible
-# regression) and everything below it is in, so the list has to reach six.
-# At 6: [:1] through [:5] all fail, [:6] passes. That is the boundary, exactly.
+# BROKEN paid beat past position k, so a pair (n, i) kills it only when i >= k,
+# and a list of n paid beats therefore catches prefixes up to k = n - 1. Each
+# surviving pair costs 3 collected items: one from the unapproved test, two from
+# the video_model test's [None, ""] cross. Nothing else fails under truncation,
+# because every other gate assertion is `is True` and a shorter list only makes
+# the gate more permissive.
+#
+# So the kill counts are 3x the triangular numbers, and measured they are:
+#
+#   _MAX_PAID = 5:  [:1] 30   [:2] 18   [:3]  9   [:4] 3   [:5] GREEN
+#   _MAX_PAID = 6:  [:1] 45   [:2] 30   [:3] 18   [:4] 9   [:5] 3   [:6] GREEN
+#
+# The five-beat row is why this is 6: its longest list is five paid beats plus
+# one free, so `[:5]` truncates only the free one and passes. The agreed
+# boundary is that `[:6]` is out of scope -- neither a plausible accident nor a
+# plausible regression -- and everything below it is in, so the list has to
+# reach six. At 6 the first green column is exactly `[:6]`.
 _MAX_PAID = 6
 
 # (list length, index broken) for every position of every length in 1.._MAX_PAID.

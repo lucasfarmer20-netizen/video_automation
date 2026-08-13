@@ -141,7 +141,19 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     skipped = stats.get("skipped", [])
     passed = len(stats.get("passed", []))
     line, complete = _coverage_line(stats)
-    clean = complete and not stats.get("failed") and not stats.get("error")
+    # Green means "nothing here needs your attention", and a known gap does.
+    #
+    # `complete` and `clean` are deliberately different questions. A run with
+    # xfails IS complete -- an xfail executes and its assertions run -- so it is
+    # not a PARTIAL RUN and the tail still says "full suite ran". But it is not
+    # clean either: each gap is a hazard someone decided to defer, and this
+    # module exists because a compromised run that reads fine at a glance is how
+    # 12 unrun tests once got recorded as "117/117 passing". Colour is the part
+    # read at a glance, so gaps take it to yellow even though the text already
+    # says "3 known-gap" and the EXPECTED FAILURE(S) block follows.
+    gaps = len(stats.get("xfailed", [])) + len(stats.get("xpassed", []))
+    clean = (complete and not stats.get("failed") and not stats.get("error")
+             and not gaps)
     terminalreporter.write_sep("=", line, green=clean, yellow=not clean)
 
     if not skipped:
