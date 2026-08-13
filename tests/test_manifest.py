@@ -373,11 +373,12 @@ def test_unknown_keys_inside_an_sfx_layer_are_dropped():
 # through: `{}` and a mapping of nothing but unrecognised keys both filter down
 # to no readable field and would rebuild as exactly the same phantom default
 # AudioLayer(). A mapping carrying at least one recognised key is kept, however
-# thin, and that is load-bearing: PATCH /api/scene/{id}/sfx/layer
-# (backend/main.py:4645-4648) appends exactly a fileless, promptless
-# AudioLayer(id=...), because in the studio a layer exists before its audio is
-# generated. A loader that dropped layers for having no file would delete the
-# layer the UI had just created, on the very next read.
+# thin, and that is load-bearing: POST /api/shot/{scene_id}/layers
+# (add_or_update_layer, backend/main.py:4622; the append is at 4645-4648)
+# creates exactly a fileless, promptless AudioLayer(id=...), because in the
+# studio a layer exists before its audio is generated. A loader that dropped
+# layers for having no file would delete the layer the UI had just created, on
+# the very next read.
 
 _UNREADABLE = [
     pytest.param(["wind"], id="truthy"),               # a bare prompt string

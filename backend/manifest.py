@@ -319,10 +319,11 @@ class Storyboard:
                     # but unknown keys -- rebuilds as that same phantom, so it
                     # drops too. A mapping with ANY recognised key is kept,
                     # however thin, and that is load-bearing rather than
-                    # cautious: PATCH /api/scene/{id}/sfx/layer
-                    # (backend/main.py:4645-4648) appends exactly a fileless,
-                    # promptless AudioLayer(id=...), because in the studio a
-                    # layer exists before its audio is generated. A loader that
+                    # cautious: POST /api/shot/{scene_id}/layers
+                    # (add_or_update_layer, backend/main.py:4622; the append is
+                    # at 4645-4648) creates exactly a fileless, promptless
+                    # AudioLayer(id=...), because in the studio a layer exists
+                    # before its audio is generated. A loader that
                     # dropped layers for having no file would delete the layer
                     # the UI had just created, on the very next read.
                     if not readable:
