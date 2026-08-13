@@ -279,12 +279,43 @@ class Storyboard:
                 extra = set(shot) - known
                 if extra:
                     print(f"manifest: ignoring unknown shot field(s) {sorted(extra)} on {shot.get('scene_id')}")
-                fields["sfx_layers"] = [
-                    AudioLayer(**{k: v for k, v in (lay or {}).items()
-                                  if k in AudioLayer.__dataclass_fields__})
-                    for lay in (shot.get("sfx_layers") or [])
-                ]
-                fields["motion_type"] = MotionType(shot.get("motion_type", "parallax"))
+                scene = shot.get("scene_id")
+                # Same rule as the shot keys, applied to the nested layers: an
+                # unreadable one is dropped, loudly, and the rest of the shot
+                # stands. Dropping has to be a real drop. Rebuilding an
+                # unreadable layer as a default AudioLayer() leaves a phantom --
+                # no file, no prompt -- and resolve_sfx_layers only asks whether
+                # the list is non-empty, so the phantom suppresses the legacy
+                # <scene>.mp3 / sfx-prompt fallback beneath it and the beat loses
+                # ambience it already had, with nothing raised and nothing
+                # logged. That is worse than the exception it replaces, so
+                # "cannot be read" must reach an empty list, not a placeholder.
+                raw_layers = shot.get("sfx_layers")
+                if raw_layers and not isinstance(raw_layers, (list, tuple)):
+                    print(f"manifest: dropping sfx_layers on {scene}: expected a "
+                          f"list of layers, got {type(raw_layers).__name__}")
+                    raw_layers = ()
+                layers = []
+                for lay in (raw_layers or ()):
+                    readable = ({k: v for k, v in lay.items()
+                                 if k in AudioLayer.__dataclass_fields__}
+                                if isinstance(lay, dict) else {})
+                    if not readable:
+                        print(f"manifest: dropping unreadable sfx layer {lay!r} on {scene}")
+                        continue
+                    layers.append(AudioLayer(**readable))
+                fields["sfx_layers"] = layers
+                # An unrecognised tier degrades instead of raising, for the same
+                # reason the keys are filtered. PARALLAX is the fallback because
+                # it is the free local tier: a value nobody recognises must move
+                # the beat away from spend, never toward the paid video API.
+                raw_tier = shot.get("motion_type", "parallax")
+                try:
+                    fields["motion_type"] = MotionType(raw_tier)
+                except ValueError:
+                    print(f"manifest: unrecognised motion_type {raw_tier!r} on "
+                          f"{scene}; falling back to parallax")
+                    fields["motion_type"] = MotionType.PARALLAX
                 # Filter camera keys for the same reason as the shot keys above:
                 # one unrecognised field must never cost the whole storyboard.
                 raw_cam = shot.get("camera")

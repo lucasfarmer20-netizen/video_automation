@@ -338,86 +338,147 @@ def test_unknown_keys_inside_an_sfx_layer_are_dropped():
     assert back.shots[0].sfx_layers[0].gain == 0.5
 
 
-# `sfx_layers` is the one nested collection from_dict rebuilds without checking
-# its shape (backend/manifest.py:282-286). `camera` two lines below it gets an
-# isinstance(raw_cam, dict) guard; this does not. A malformed layer therefore
-# fails in one of two ways, and the split is `(lay or {})`:
+# `sfx_layers` is the one nested collection from_dict rebuilds, and it was the
+# one it rebuilt without checking the shape. `camera` two lines below it has an
+# isinstance(raw_cam, dict) guard; this had none, so a malformed layer failed in
+# one of two ways, and the split was `(lay or {})`:
 #
-#   truthy non-mapping ("wind", 1)  -> reaches .items(), AttributeError out of
+#   truthy non-mapping ("wind", 1)  -> reached .items(), AttributeError out of
 #       from_dict, into the same get_current_project "create a fresh project"
-#       fallback the key filtering exists to prevent. Loud, and costs the board.
+#       fallback the key filtering exists to prevent. Loud, and cost the board.
 #   falsy   (None, "", 0, [], {})   -> absorbed by `or {}` and rebuilt as a
-#       DEFAULT AudioLayer(). Silent, and costs the beat's ambience.
+#       DEFAULT AudioLayer(). Silent, and cost the beat's ambience.
 #
-# The falsy half is the dangerous one, which is why it is pinned below rather
-# than left to the "it raises" summary. A phantom default layer is truthy, and
-# resolve_sfx_layers (backend/audio.py:244-246) reads
+# The falsy half was the dangerous one. A phantom default layer is truthy, and
+# resolve_sfx_layers (backend/audio.py:245-247) reads
 # `layers = list(... or []); if layers: return layers` -- so the phantom
-# short-circuits the legacy `<scene>.mp3` / `sfx`-prompt fallback underneath it
-# and the beat loses ambience it already had, with nothing raised and nothing
-# logged. Measured: a beat with a real s001.mp3 resolves to [('legacy',
-# 's001.mp3')] normally and to [('', '')] once one None sits in sfx_layers.
+# short-circuited the legacy `<scene>.mp3` / `sfx`-prompt fallback underneath it
+# and the beat lost ambience it already had, with nothing raised and nothing
+# logged. Measured before the fix: a beat with a real s001.mp3 resolved to
+# [('legacy', 's001.mp3')] normally, and to [('', '')] once one None sat in
+# sfx_layers.
 #
-# Both halves are recorded the same way as the unrecognised motion_type below:
-# what happens today, plus a strict xfail for what should.
+# Both halves are closed now (backend/manifest.py drops what it cannot read and
+# prints what it dropped), and these tests are shaped so that closing only one
+# of them fails. The parametrization is over SHAPES rather than a couple of
+# examples on purpose: the two halves are separated by truthiness, so a guard
+# written as `if lay:` satisfies the loud half and leaves the silent one live,
+# and only a case list that crosses the truthiness boundary can tell them apart.
+#
+# The last two cases are mappings, which the isinstance guard alone lets
+# through: `{}` and a mapping of nothing but unrecognised keys both filter down
+# to no readable field and would rebuild as exactly the same phantom default
+# AudioLayer(). A mapping carrying at least one recognised key is kept, however
+# thin — deciding that a layer with a gain but no file is "not really a layer"
+# would be redefining the shape rather than reading it, and that belongs
+# nowhere near a loader.
 
-@pytest.mark.parametrize("sfx_layers", [
-    {"a": 1},          # a mapping of layers rather than a list
-    ["wind"],          # a list of bare prompt strings
-    "wind",            # a single prompt string
-    [1],               # a list of bare numbers
-])
-def test_a_truthy_misshapen_sfx_layers_currently_raises(sfx_layers):
-    """Current behaviour of the loud half — see the hazard note above."""
-    with pytest.raises(AttributeError):
-        Storyboard.from_dict("p", {}, [{"scene_id": "s001",
-                                        "sfx_layers": sfx_layers}])
-
-
-@pytest.mark.parametrize("layer", [None, "", 0, [], {}])
-def test_a_falsy_sfx_layer_currently_becomes_a_phantom_default(layer):
-    """Current behaviour of the silent half, recorded — not endorsed.
-
-    `or {}` turns each of these into `AudioLayer()`: a layer with no file, no
-    prompt and unity gain, indistinguishable from a real one to anything that
-    only checks whether the list is empty. That is precisely what
-    resolve_sfx_layers checks, so this is the value that quietly deletes a
-    beat's ambience. Pinned so the summary above cannot drift back to "malformed
-    layers raise", which would send a maintainer looking for an exception that
-    never comes."""
-    back = Storyboard.from_dict("p", {}, [{"scene_id": "s001",
-                                           "sfx_layers": [layer]}])
-    assert back.shots[0].sfx_layers == [AudioLayer()]
+_UNREADABLE = [
+    pytest.param(["wind"], id="truthy"),               # a bare prompt string
+    pytest.param([None], id="falsy"),                  # the silent half
+    pytest.param([1], id="truthy-number"),
+    pytest.param([["wind"]], id="truthy-list"),
+    pytest.param([""], id="falsy-string"),
+    pytest.param([0], id="falsy-number"),
+    pytest.param([[]], id="falsy-list"),
+    pytest.param([{}], id="empty-mapping"),
+    pytest.param([{"volume": 3}], id="mapping-of-unknown-keys"),
+]
 
 
-@pytest.mark.parametrize("sfx_layers", [["wind"], [None]], ids=["truthy", "falsy"])
-@pytest.mark.xfail(strict=True, reason=(
-    "KNOWN GAP in backend/manifest.py: from_dict rebuilds sfx_layers without a "
-    "shape check. A truthy non-mapping layer raises AttributeError and costs the "
-    "whole storyboard; a falsy one is absorbed by `(lay or {})` into a phantom "
-    "default AudioLayer(), which is truthy and so suppresses the legacy "
-    "ambience fallback in resolve_sfx_layers -- silently. `camera` guards with "
-    "isinstance; this does not. Deferred - the fix is production code and this "
-    "PR is tests-only. Remove this marker when from_dict drops layers it cannot "
-    "read, BOTH halves: fixing only the truthy one leaves the silent case live."))
+@pytest.mark.parametrize("sfx_layers", _UNREADABLE)
 def test_an_unreadable_sfx_layer_should_be_dropped_not_fatal_and_not_phantom(
         sfx_layers):
-    """The regression test for the fix we owe, kept red until it lands.
+    """Ambience is the most disposable thing in the manifest — losing a layer
+    costs a sound, losing the storyboard costs the episode, and losing it
+    silently costs the sound plus the chance to notice. An unreadable layer
+    drops, leaving the rest of the shot standing and the list *genuinely* empty
+    so the legacy fallback still fires.
 
-    Ambience is the most disposable thing in the manifest — losing a layer costs
-    a sound, losing the storyboard costs the episode, and losing it silently
-    costs the sound plus the chance to notice. An unreadable layer should drop,
-    leaving the rest of the shot standing and the list genuinely empty so the
-    legacy fallback still fires.
-
-    Parametrized over both halves deliberately: implement the drop for truthy
-    layers only and this case XPASSes (strict, so it fails and demands
-    attention) while `[None]` stays red, instead of the whole marker coming off
-    over a half-fix."""
+    Both assertions carry weight. The first is the loud half: `narration` is
+    only reachable if from_dict returned at all. The second is the silent half,
+    and `== []` rather than `!= [AudioLayer()]` because the phantom is not the
+    only wrong answer — anything left in that list suppresses the fallback."""
     back = Storyboard.from_dict("p", {}, [{
         "scene_id": "s001", "narration": "n", "sfx_layers": sfx_layers}])
     assert back.shots[0].narration == "n"
     assert back.shots[0].sfx_layers == []
+
+
+@pytest.mark.parametrize("sfx_layers", _UNREADABLE)
+def test_dropping_an_unreadable_sfx_layer_says_so(sfx_layers, capsys):
+    """Dropped, but never quietly. The whole complaint about the falsy half was
+    that it cost a beat its ambience with nothing raised and nothing logged; a
+    silent drop would be the same defect with a different mechanism. The note
+    names the scene, because a manifest has dozens of beats and "some layer
+    somewhere was unreadable" is not something anyone can act on."""
+    Storyboard.from_dict("p", {}, [{"scene_id": "s001",
+                                    "sfx_layers": sfx_layers}])
+    out = capsys.readouterr().out
+    assert "sfx" in out and "s001" in out, out
+
+
+@pytest.mark.parametrize("sfx_layers", [
+    pytest.param("wind", id="a-single-prompt-string"),
+    pytest.param({"a": 1}, id="a-mapping-of-layers"),
+    pytest.param(7, id="a-number"),
+])
+def test_a_misshapen_sfx_layers_value_costs_only_the_layers(sfx_layers, capsys):
+    """`sfx_layers` itself not being a list is the other way in. Iterating a
+    string yields characters and a mapping yields its keys, so both used to
+    reach `.items()` on a str and take the storyboard down with them. Now the
+    whole value drops, loudly, and the beat survives."""
+    back = Storyboard.from_dict("p", {}, [{
+        "scene_id": "s001", "narration": "n", "sfx_layers": sfx_layers}])
+    assert back.shots[0].narration == "n"
+    assert back.shots[0].sfx_layers == []
+    assert "s001" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("container", [list, tuple], ids=["list", "tuple"])
+def test_readable_sfx_layers_still_survive_beside_an_unreadable_one(container):
+    """The drop is per-layer, not per-shot. A loader that bailed on the whole
+    list at the first bad entry would pass every test above while throwing away
+    ambience that was perfectly readable, and unknown keys inside a layer are
+    filtered rather than fatal, exactly as they are on the shot itself.
+
+    Run over a tuple as well as a list because the shape check has to reject
+    "the value is not a sequence of layers" without rejecting the sequence
+    types JSON does not produce but in-process callers do."""
+    back = Storyboard.from_dict("p", {}, [{"scene_id": "s001", "sfx_layers": container([
+        {"id": "a", "file": "sfx/s001__a.mp3", "gain": 0.5},
+        None,
+        {"id": "b", "prompt": "low wind", "label": "wind", "volume": 3},
+    ])}])
+    assert back.shots[0].sfx_layers == [
+        AudioLayer(id="a", file="sfx/s001__a.mp3", gain=0.5),
+        AudioLayer(id="b", prompt="low wind", label="wind"),
+    ]
+
+
+def test_a_dropped_layer_leaves_the_legacy_ambience_fallback_standing(tmp_path):
+    """The consequence, measured through the code that actually reads layers.
+
+    Everything above asserts on the loader. This asserts on what the loader is
+    *for*: resolve_sfx_layers returns `sfx_layers` whenever the list is
+    non-empty, so a phantom in that list is not a cosmetic wart — it is the beat
+    losing the ambience it already had. Same shot, same s001.mp3 on disk, one
+    unreadable layer in the manifest; the legacy file must still be what
+    resolves. This is the test that would have caught the silent half, and the
+    only one here that fails if from_dict starts substituting some other truthy
+    placeholder for a layer it cannot read."""
+    from backend import audio
+
+    sfx_dir = tmp_path / "sfx"
+    sfx_dir.mkdir()
+    (sfx_dir / "s001.mp3").write_bytes(b"\x00" * 512)
+
+    back = Storyboard.from_dict("p", {}, [{"scene_id": "s001",
+                                           "sfx": "eerie wind",
+                                           "sfx_layers": [None]}])
+    resolved = audio.resolve_sfx_layers(back.shots[0], sfx_dir)
+    assert [(lay.id, Path(lay.file).name) for lay in resolved] == [
+        ("legacy", "s001.mp3")]
 
 
 def test_render_config_survives_a_round_trip():
@@ -435,49 +496,65 @@ def test_camera_survives_a_round_trip():
     assert _roundtrip(sb).shots[0].camera == sb.shots[0].camera
 
 
-# An unknown motion_type *value* is a live hazard, not a settled contract.
-# Unknown *keys* are filtered out precisely so one stray field cannot cost a
-# whole storyboard, but `MotionType(shot.get("motion_type", "parallax"))` still
-# raises ValueError on an unrecognised value — and that lands in the very
+# An unknown motion_type *value* used to be the one place a bad value in a shot
+# was fatal. Unknown *keys* are filtered out precisely so one stray field cannot
+# cost a whole storyboard, but `MotionType(shot.get("motion_type", "parallax"))`
+# raised ValueError on an unrecognised value — and that landed in the very
 # get_current_project fallback the key filtering exists to avoid, discarding a
 # valid storyboard to "create a fresh project".
 #
-# Fixing it means changing backend/manifest.py, and this suite is tests-only, so
-# the two tests below split the job rather than blessing the current behaviour:
-# the first records what the code does today (so a change in the *shape* of the
-# failure is noticed), and the second states what it should do and is expected to
-# fail until someone makes it true. strict=True means the day the production fix
-# lands, the xfail turns into an XPASS failure and forces both of these to be
-# rewritten deliberately, instead of the desired-behaviour test quietly passing
-# unnoticed.
+# It degrades now, and the direction of the degrade is the part worth pinning.
+# PARALLAX is not merely "a" default: it is the free local tier, so a value
+# nobody recognises moves the beat away from spend. AI_VIDEO would be the same
+# code with the same "it no longer raises" behaviour and would push an
+# unreviewed beat at the paid API, which is why needs_paid_video() is asserted
+# below rather than only the enum member — the two assertions fail under
+# different mutations.
 
-def test_an_unrecognised_motion_type_currently_raises():
-    """Current behaviour, recorded — see the hazard note above. Not an
-    endorsement: the companion xfail below is the behaviour we want."""
-    with pytest.raises(ValueError):
-        Storyboard.from_dict("p", {}, [{"scene_id": "s001",
-                                        "motion_type": "claymation"}])
-
-
-@pytest.mark.xfail(strict=True, reason=(
-    "KNOWN GAP in backend/manifest.py: an unrecognised motion_type value raises "
-    "out of from_dict instead of falling back, so one bad value can cost the "
-    "whole storyboard. Deferred - the fix is production code and this PR is "
-    "tests-only. Remove this marker when from_dict degrades gracefully."))
-def test_an_unrecognised_motion_type_should_fall_back_to_parallax():
-    """The regression test for the fix we owe, kept red until it lands.
-
-    An unreadable tier is not a reason to lose an episode. It should degrade the
+@pytest.mark.parametrize("motion_type", [
+    pytest.param("claymation", id="a-typo-or-a-future-tier"),
+    pytest.param("PARALLAX", id="right-tier-wrong-case"),
+    pytest.param("", id="empty"),
+    pytest.param(None, id="null"),
+    pytest.param(3, id="a-number"),
+    pytest.param(["ai_video"], id="unhashable"),
+])
+def test_an_unrecognised_motion_type_should_fall_back_to_parallax(motion_type):
+    """An unreadable tier is not a reason to lose an episode. It degrades the
     way a missing tier already does — to PARALLAX, the free tier — because the
     safe failure for a value nobody recognises is the one that cannot spend
-    money. The rest of the shot must survive intact; that is the whole point of
-    degrading instead of raising."""
+    money. The rest of the shot survives intact; that is the whole point of
+    degrading instead of raising.
+
+    `["ai_video"]` is in the list because an unhashable value takes a different
+    path through Enum.__call__ than a plain miss does, and a guard written
+    against KeyError rather than ValueError would let it through."""
     back = Storyboard.from_dict("p", {}, [{"scene_id": "s001",
                                            "narration": "n",
-                                           "motion_type": "claymation"}])
+                                           "motion_type": motion_type}])
     assert back.shots[0].motion_type is MotionType.PARALLAX
     assert back.shots[0].needs_paid_video() is False
     assert back.shots[0].narration == "n"
+
+
+def test_falling_back_from_an_unrecognised_motion_type_says_so(capsys):
+    """A beat silently demoted to parallax is a beat that renders as a still
+    when someone budgeted it for motion. The tier is where the money is, so the
+    substitution has to be visible in the log — and it must name both the value
+    that was rejected and the beat it came from."""
+    Storyboard.from_dict("p", {}, [{"scene_id": "s001",
+                                    "motion_type": "claymation"}])
+    out = capsys.readouterr().out
+    assert "claymation" in out and "s001" in out and "parallax" in out, out
+
+
+@pytest.mark.parametrize("motion_type", ["static", "parallax", "ai_video"])
+def test_a_recognised_motion_type_is_still_read_as_itself(motion_type):
+    """The fallback must not eat the values it exists to protect. A guard that
+    swallowed everything into PARALLAX would pass every test above."""
+    back = Storyboard.from_dict("p", {}, [{"scene_id": "s001",
+                                           "motion_type": motion_type}])
+    assert back.shots[0].motion_type is MotionType(motion_type)
 
 
 # --- load() / save() on local JSON --------------------------------------------
