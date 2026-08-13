@@ -225,7 +225,11 @@ def begin(*, beat_id: str, shot_id: str, signature: str, idempotency_key: str = 
         parent = mine[-1].id if mine else ""
         n = len(mine) + 1
         att = GenerationAttempt(
-            id=f"{shot_id}#{n}:{uuid.uuid4().hex[:8]}",
+            # URL-safe on purpose: this id appears in a path segment on the
+            # recovery route, and the original "shot#n:uuid" form truncated at
+            # the "#" -- the browser treated the rest as a fragment, so the
+            # abandon endpoint was simply unreachable and answered 405.
+            id=f"{shot_id}.a{n}.{uuid.uuid4().hex[:8]}",
             shot_id=shot_id, beat_id=beat_id, attempt=n, parent_attempt=parent,
             kind=kind, backend=backend, paid=paid, signature=signature,
             idempotency_key=idempotency_key,
@@ -257,11 +261,23 @@ def _finish(beat_id: str, attempt_id: str, *, status: str,
         if target is None:
             return None
         if target.terminal:
-            if target.status == status:
-                return target          # idempotent replay of the same outcome
+            # An exact replay is a no-op. Anything else is a different claim
+            # about what happened, and must be refused rather than dropped.
+            # Comparing status alone was not enough: succeed(first.mp4, $0.60)
+            # followed by succeed(other.mp4, $99) returned successfully and
+            # silently kept the first, so a caller believed a cost was recorded
+            # that never was -- and fail("provider failed") racing
+            # abandon("human abandoned") let both callers think they had written
+            # the reason while only one did.
+            differing = {k: (getattr(target, k, None), v)
+                         for k, v in changes.items() if getattr(target, k, None) != v}
+            if target.status == status and not differing:
+                return target
+            detail = (f" as {status}" if target.status != status
+                      else f" with different {', '.join(sorted(differing))}")
             raise TerminalConflict(
                 f"{attempt_id} already finished as {target.status}; refusing to "
-                f"rewrite it as {status}. The first terminal result stands.")
+                f"rewrite it{detail}. The first terminal result stands.")
         target.status = status
         for k, v in changes.items():
             setattr(target, k, v)

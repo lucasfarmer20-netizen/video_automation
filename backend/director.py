@@ -1296,13 +1296,29 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                             ds.paid_signature = want
                             save_plan(plan)
                         else:
-                            # Anything at `target` now is either a free render or
-                            # a clip bought for different inputs. Neither is this
-                            # shot's paid clip, so it must not be mistaken for one.
-                            if target.is_file() and not ds.paid_clip:
-                                log(f"  {ds.id}: discarding a non-paid file already "
-                                    f"at {target.name} before generating")
-                            target.unlink(missing_ok=True)
+                            # --- before dispatch -------------------------------
+                            # Everything here happens BEFORE the provider is
+                            # called, so a failure in it carries no billing
+                            # uncertainty and must close the attempt as an
+                            # ordinary, retryable failure. Leaving it in doubt
+                            # stranded the beat behind a recovery step that
+                            # exists for a risk that had not been taken: a
+                            # permission error deleting a stale file would
+                            # record a possibly-billed attempt with no reason.
+                            try:
+                                # Anything at `target` now is either a free
+                                # render or a clip bought for different inputs.
+                                # Neither is this shot's paid clip, so it must
+                                # not be mistaken for one.
+                                if target.is_file() and not ds.paid_clip:
+                                    log(f"  {ds.id}: discarding a non-paid file "
+                                        f"already at {target.name} before generating")
+                                target.unlink(missing_ok=True)
+                            except BaseException as exc:
+                                generation.fail(plan.beat_id, att.id,
+                                                f"before dispatch: {exc}")
+                                raise
+                            # --- dispatch --------------------------------------
                             try:
                                 generate_paid_clip(ds, synth, sb, out_dir, log=log)
                             except BaseException as exc:

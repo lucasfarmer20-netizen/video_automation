@@ -487,3 +487,197 @@ def test_repeating_the_same_completion_is_a_no_op():
     again = generation.succeed("s001", att.id, "a.mp4", cost=0.60)
     assert again.status == "succeeded"
     assert generation.spend("s001")["paid_attempts"] == 1
+
+
+# --- S4-R01: recovery must be reachable through the product -----------------------
+
+@pytest.fixture
+def api(scene):
+    """The compile fixture plus an HTTP client bound to the same project."""
+    from fastapi.testclient import TestClient
+    from backend import main as M
+    director, plan, sb, render_dir, calls = scene
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(M, "get_current_project", lambda: sb)
+    monkey.setattr(M.config, "MANIFEST_PATH", director.config.MANIFEST_PATH)
+    monkey.setattr(M, "get_active_manifest_path",
+                   lambda: str(director.config.MANIFEST_PATH))
+    client = TestClient(M.app, raise_server_exceptions=False)
+    yield client, director, sb, render_dir, calls
+    monkey.undo()
+
+
+def _strand(director, sb, render_dir, calls):
+    """Leave a paid attempt stuck in doubt, the way a provider timeout does."""
+    mp = pytest.MonkeyPatch()
+
+    def timeout(*a, **k):
+        calls["paid"] += 1
+        raise RuntimeError("provider timeout after submit")
+
+    mp.setattr(director, "generate_paid_clip", timeout)
+    with pytest.raises(director.PlanError):
+        director.compile_coverage(director.load_plan("s011"), sb, render_dir,
+                                  log=lambda m: None)
+    mp.undo()
+
+
+def test_a_stranded_beat_is_visible_through_the_api(api):
+    client, director, sb, render_dir, calls = api
+    _strand(director, sb, render_dir, calls)
+
+    body = client.get("/api/generation/s011").json()
+    assert body["ok"] is True
+    assert len(body["unresolved"]) == 1
+    assert "provider timeout" in body["unresolved"][0]["error"]
+
+
+def test_a_stranded_beat_can_be_recovered_without_a_python_shell(api):
+    """S4-R01. The only recovery used to be calling generation.abandon() from
+    internal Python, which makes an ordinary provider timeout a permanently
+    uncompilable beat for anyone without repository access."""
+    client, director, sb, render_dir, calls = api
+    _strand(director, sb, render_dir, calls)
+    assert calls["paid"] == 1
+
+    stuck = client.get("/api/generation/s011").json()["unresolved"][0]
+    r = client.post("/api/generation/s011/" + stuck["id"] + "/abandon",
+                    json={"reason": "checked the provider dashboard, no charge"})
+    assert r.status_code == 200
+
+    director.compile_coverage(director.load_plan("s011"), sb, render_dir,
+                              log=lambda m: None, skip_existing=False)
+    assert calls["paid"] == 2
+    rows = generation.for_shot("s011", "s011.01")
+    assert [x.status for x in rows] == ["failed", "succeeded"]
+    assert "no charge" in rows[0].error
+
+
+def test_abandoning_requires_a_stated_reason(api):
+    """It may be writing off a real charge, so the record has to say why."""
+    client, director, sb, render_dir, calls = api
+    _strand(director, sb, render_dir, calls)
+    stuck = client.get("/api/generation/s011").json()["unresolved"][0]
+    assert client.post("/api/generation/s011/" + stuck["id"] + "/abandon",
+                       json={"reason": "   "}).status_code == 400
+    assert generation.for_shot("s011", "s011.01")[0].status == "running"
+
+
+def test_the_plan_payload_reports_a_stuck_attempt(api):
+    """The block belongs where the plan is shown, not only in a separate view."""
+    client, director, sb, render_dir, calls = api
+    _strand(director, sb, render_dir, calls)
+    plan = client.get("/api/director/plan/s011").json()["plan"]
+    assert len(plan["unresolved_attempts"]) == 1
+
+
+def test_an_unreadable_ledger_is_reported_not_shown_as_empty(api):
+    client, director, sb, render_dir, calls = api
+    _strand(director, sb, render_dir, calls)
+    generation.ledger_path("s011").write_text("{not json", encoding="utf-8")
+    r = client.get("/api/generation/s011")
+    assert r.status_code == 409
+    assert r.json()["unreadable"] is True
+
+
+# --- S4-R02: the provider-dispatch boundary ---------------------------------------
+
+def test_a_failure_before_dispatch_is_an_ordinary_retryable_failure(scene):
+    """S4-R02. A permission error deleting a stale file recorded a
+    possibly-billed attempt with no reason, and stranded the beat behind a
+    recovery step for a risk that was never taken."""
+    director, _, sb, render_dir, calls = scene
+    target = render_dir / "s011" / "s011.01.mp4"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"a stale free render")
+
+    real_unlink = Path.unlink
+
+    def deny(self, *a, **k):
+        if self == target:
+            raise PermissionError(13, "storage denied the delete")
+        return real_unlink(self, *a, **k)
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(Path, "unlink", deny)
+    # skip_existing=False: the stale file at the target would otherwise make the
+    # shot look already rendered and skip the paid branch entirely.
+    with pytest.raises(director.PlanError):
+        director.compile_coverage(director.load_plan("s011"), sb, render_dir,
+                                  log=lambda m: None, skip_existing=False)
+    mp.undo()
+
+    assert calls["paid"] == 0, "the provider was called"
+    rows = generation.for_shot("s011", "s011.01")
+    assert rows[0].status == "failed", "a pre-dispatch failure was left in doubt"
+    assert "before dispatch" in rows[0].error
+
+
+def test_a_pre_dispatch_failure_does_not_strand_the_beat(scene):
+    """Because there is no billing uncertainty, the retry must just work."""
+    director, _, sb, render_dir, calls = scene
+    target = render_dir / "s011" / "s011.01.mp4"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"stale")
+
+    real_unlink = Path.unlink
+    state = {"deny": True}
+
+    def deny(self, *a, **k):
+        if self == target and state["deny"]:
+            raise PermissionError(13, "storage denied the delete")
+        return real_unlink(self, *a, **k)
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(Path, "unlink", deny)
+    with pytest.raises(director.PlanError):
+        director.compile_coverage(director.load_plan("s011"), sb, render_dir,
+                                  log=lambda m: None, skip_existing=False)
+    state["deny"] = False
+    director.compile_coverage(director.load_plan("s011"), sb, render_dir,
+                              log=lambda m: None, skip_existing=False)
+    mp.undo()
+    assert calls["paid"] == 1
+
+
+# --- S4-R03: identical means identical FACTS --------------------------------------
+
+def test_the_same_status_with_a_different_output_is_a_conflict():
+    att, _ = _begin(idempotency_key="k1")
+    generation.succeed("s001", att.id, "first.mp4", cost=0.60)
+    with pytest.raises(generation.TerminalConflict):
+        generation.succeed("s001", att.id, "other.mp4", cost=0.60)
+    assert generation.for_shot("s001", "s001.01")[0].output == "first.mp4"
+
+
+def test_the_same_status_with_a_different_cost_is_a_conflict():
+    att, _ = _begin(idempotency_key="k1")
+    generation.succeed("s001", att.id, "first.mp4", cost=0.60)
+    with pytest.raises(generation.TerminalConflict):
+        generation.succeed("s001", att.id, "first.mp4", cost=99.00)
+    assert generation.spend("s001")["spent"] == 0.60
+
+
+def test_a_failure_with_a_different_reason_is_a_conflict():
+    att, _ = _begin(idempotency_key="k1")
+    generation.fail("s001", att.id, "provider failed")
+    with pytest.raises(generation.TerminalConflict):
+        generation.fail("s001", att.id, "something else entirely")
+    assert generation.for_shot("s001", "s001.01")[0].error == "provider failed"
+
+
+def test_abandon_cannot_overwrite_a_recorded_failure():
+    """fail() racing abandon() let both callers believe they wrote the reason."""
+    att, _ = _begin(idempotency_key="k1")
+    generation.fail("s001", att.id, "provider failed")
+    with pytest.raises(generation.TerminalConflict):
+        generation.abandon("s001", att.id, "human abandoned")
+    assert generation.for_shot("s001", "s001.01")[0].error == "provider failed"
+
+
+def test_an_exact_replay_is_still_a_no_op():
+    att, _ = _begin(idempotency_key="k1")
+    generation.succeed("s001", att.id, "first.mp4", cost=0.60)
+    again = generation.succeed("s001", att.id, "first.mp4", cost=0.60)
+    assert again.status == "succeeded"
+    assert generation.spend("s001")["paid_attempts"] == 1

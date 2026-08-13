@@ -44,6 +44,7 @@ def secure_filename(filename: str) -> str:
 from . import config, manifest, script, assets, audio, motion, timeline, sizzle, metadata, bundle, ledger
 from . import director, spike_identity, planner, capabilities, casting, characters
 from . import stages as stagemod
+from . import generation
 from . import projects
 from .manifest import Storyboard, Shot, MotionType, Camera, RenderConfig, db
 from .pipeline_worker import start_job, get_jobs_status, log_job
@@ -2336,6 +2337,65 @@ async def patch_director_shot(shot_id: str, request: Request):
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
 
 
+@app.get("/api/generation/{beat_id}")
+def get_generation_lineage(beat_id: str):
+    """Every attempt made for a beat, plus what has actually been billed.
+
+    Generation lineage was authoritative but invisible: the only way to see an
+    attempt, or the reason one was stuck, was to read the JSON off disk.
+    """
+    try:
+        attempts = [asdict(a) for a in generation.load_attempts(beat_id)]
+    except generation.LedgerUnreadable as exc:
+        # Fail closed and say so, rather than reporting an empty lineage that
+        # would read as "nothing was ever generated here".
+        return JSONResponse(status_code=409,
+                            content={"ok": False, "error": str(exc), "unreadable": True})
+    return {"ok": True, "beat_id": beat_id, "attempts": attempts,
+            "spend": generation.spend(beat_id),
+            "unresolved": [a for a in attempts if a["status"] == "running"]}
+
+
+@app.post("/api/generation/{beat_id}/{attempt_id}/abandon")
+async def abandon_generation_attempt(beat_id: str, attempt_id: str, request: Request):
+    """Close a paid attempt whose provider outcome nobody knows.
+
+    The supported recovery for a generation that failed after the provider was
+    called. Until this existed the only way out was calling
+    generation.abandon() from a Python shell, which made an ordinary provider
+    timeout a permanently uncompilable beat for anyone without repository
+    access -- a hidden manual pipeline step of exactly the kind the product
+    contract forbids.
+
+    Deliberately explicit and deliberately human: the money may already have
+    been spent, and nothing in the system can tell. The caller states a reason,
+    which is recorded in the lineage.
+    """
+    try:
+        body = await request.body()
+        data = json.loads(body) if body else {}
+    except Exception:  # noqa: BLE001
+        data = {}
+    reason = str(data.get("reason") or "").strip()
+    if not reason:
+        return JSONResponse(status_code=400, content={
+            "ok": False,
+            "error": "A reason is required. Abandoning may be writing off a "
+                     "charge that already happened, so the record has to say who "
+                     "decided that and why."})
+    try:
+        att = generation.abandon(beat_id, attempt_id, reason)
+    except generation.LedgerUnreadable as exc:
+        return JSONResponse(status_code=409, content={"ok": False, "error": str(exc)})
+    except generation.TerminalConflict as exc:
+        return JSONResponse(status_code=409, content={"ok": False, "error": str(exc)})
+    if att is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "error": f"no attempt {attempt_id} on {beat_id}"})
+    return {"ok": True, "attempt": asdict(att),
+            "spend": generation.spend(beat_id)}
+
+
 @app.post("/api/director/warning/{beat_id}/{warning_id}")
 async def decide_director_warning(beat_id: str, warning_id: str, request: Request):
     """Record a human decision about one critic warning.
@@ -2557,6 +2617,14 @@ def _plan_payload(plan) -> dict:
     d["plan_signature"] = director.plan_signature(plan)
     d["approval_is_current"] = director.approval_is_current(plan)
     d["unresolved_warnings"] = len(director.unresolved_warnings(plan))
+    # Stuck paid attempts belong where the plan is shown: they block the beat,
+    # and until they were reported here nothing in the product said so.
+    try:
+        d["unresolved_attempts"] = [asdict(a) for a in generation.load_attempts(plan.beat_id)
+                                    if a.status == generation.RUNNING]
+    except generation.LedgerUnreadable as exc:
+        d["unresolved_attempts"] = []
+        d["lineage_error"] = str(exc)
     return d
 
 
