@@ -95,12 +95,21 @@ def _report_xfails(terminalreporter):
 def _early_stop_reason(terminalreporter) -> str:
     """Why the session stopped early, or "" if it ran to the end.
 
-    `-x` and `--maxfail=N` set ``Session.shouldfail`` to a reason string
-    ("stopping after 1 failures"); ``pytest.exit()`` and internal aborts set
-    ``shouldstop`` the same way. Verified on pytest 9.1.1 rather than assumed:
-    under `-x` the attribute holding the reason is `shouldfail`, and
-    `shouldstop` stays False, so checking only the obvious-sounding one would
-    miss every early stop this suite can actually produce.
+    DO NOT "simplify" this to ``shouldstop`` alone. That is the obvious-looking
+    attribute and it is the wrong one; it was probed and rejected. Measured on
+    pytest 9.1.1:
+
+        run                    shouldstop   shouldfail
+        -x, 1 of 2 failed      False        'stopping after 1 failures'
+        --maxfail=1            False        'stopping after 1 failures'
+        completed normally     False        False
+
+    So ``shouldfail`` is the signal for every early stop this suite can
+    actually produce, and its value is already the human-readable reason -- no
+    message needs inventing here. ``shouldstop`` is kept because
+    ``pytest.exit()`` and internal aborts set it the same way, and it costs one
+    loop iteration to cover them; it is second precisely because it is empty in
+    the common case.
 
     Both are read through getattr defaults because they are internals. A
     summary hook that raised would be a worse failure than one that
