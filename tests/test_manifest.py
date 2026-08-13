@@ -2,7 +2,7 @@
 
 `Storyboard.gate_cleared()` is the whole of Gate 1 in code. pipeline.py branches
 on it twice (pipeline.py:174, pipeline.py:188) and main.py reports it to the
-studio (main.py:3847), and until now nothing exercised it directly — every
+studio (backend/main.py:3847), and until now nothing exercised it directly — every
 existing test that touches a paid shot builds one and then tests something else.
 A predicate that decides whether the pipeline may call a paid video API is worth
 pinning term by term, because each term fails silently: drop the `video_model`
@@ -155,7 +155,7 @@ def test_gate_open_on_an_empty_storyboard_is_approval_only():
 # --- paid_shots() / needs_paid_video() ----------------------------------------
 
 def test_paid_shots_selects_only_ai_video_beats():
-    """main.py:1083 and main.py:3149 report len(paid_shots()) as the spend
+    """backend/main.py:1083 and backend/main.py:3149 report len(paid_shots()) as the spend
     estimate, so a Tier-A/B beat leaking in here misquotes the budget."""
     sb = Storyboard(title="T", shots=[
         _free("s001", MotionType.STATIC),
@@ -205,9 +205,20 @@ def _roundtrip(sb: Storyboard) -> Storyboard:
 
 def test_motion_type_survives_as_an_enum_not_a_string():
     """to_dict() flattens the enum to its value for JSON; from_dict must rebuild
-    it. A shot left holding the raw string "ai_video" compares unequal to
-    MotionType.AI_VIDEO under `==` on an Enum member, so needs_paid_video()
-    would return False and the beat would slip past the budget gate."""
+    it.
+
+    What does *not* break is the gate. MotionType is declared
+    `class MotionType(str, Enum)` (backend/manifest.py:28), and that mixin makes
+    `"ai_video" == MotionType.AI_VIDEO` true, so a shot left holding the raw
+    string still reports needs_paid_video() is True and is still counted by
+    paid_shots(). The mixin is exactly what keeps Gate 1 tolerant of an
+    unconverted value — so this test is not what stands between a raw string and
+    the paid API, and must not be read as if it were.
+
+    What breaks is everything that asks for the member rather than its value:
+    `is` identity, isinstance(x, MotionType), and any call site reaching for
+    `.value` or `.name` (`"ai_video".value` is an AttributeError). Those are
+    real and worth pinning, which is why the assertions below use `is`."""
     sb = Storyboard(title="T", shots=[_paid("s001"),
                                       _free("s002", MotionType.STATIC)])
     assert sb.to_dict()["shots"][0]["motion_type"] == "ai_video"
@@ -215,7 +226,11 @@ def test_motion_type_survives_as_an_enum_not_a_string():
     back = _roundtrip(sb)
     assert back.shots[0].motion_type is MotionType.AI_VIDEO
     assert back.shots[1].motion_type is MotionType.STATIC
-    assert back.shots[0].needs_paid_video() is True
+    # The three things a surviving raw string would actually fail, stated
+    # directly so the test matches its rationale rather than the gate's.
+    assert isinstance(back.shots[0].motion_type, MotionType)
+    assert back.shots[0].motion_type.value == "ai_video"
+    assert back.shots[0].motion_type.name == "AI_VIDEO"
 
 
 def test_missing_motion_type_defaults_to_parallax():
@@ -263,6 +278,57 @@ def test_unknown_keys_are_dropped_rather_than_raising():
     assert back.grade.contrast == 0.3
 
 
+def test_unknown_keys_inside_an_sfx_layer_are_dropped():
+    """AudioLayer filters its own keys, the same way Shot and Camera do."""
+    back = Storyboard.from_dict("p", {}, [{
+        "scene_id": "s001",
+        "sfx_layers": [{"id": "a", "prompt": "wind", "gain": 0.5,
+                        "from_the_future": 1}],
+    }])
+    assert len(back.shots[0].sfx_layers) == 1
+    assert back.shots[0].sfx_layers[0].prompt == "wind"
+    assert back.shots[0].sfx_layers[0].gain == 0.5
+
+
+# `sfx_layers` is the one nested collection from_dict rebuilds without checking
+# its shape (backend/manifest.py:282-286). `camera` two lines below it gets an
+# isinstance(raw_cam, dict) guard; this does not, so any layer that is not a
+# mapping reaches `.items()` and raises AttributeError straight out of
+# from_dict -- into the same get_current_project "create a fresh project"
+# fallback that the key filtering exists to prevent. Same hazard class as the
+# unrecognised motion_type below, different exception, so it is recorded the
+# same way: what happens today, plus a strict xfail for what should.
+
+@pytest.mark.parametrize("sfx_layers", [
+    {"a": 1},          # a mapping of layers rather than a list
+    ["wind"],          # a list of bare prompt strings
+    "wind",            # a single prompt string
+])
+def test_a_misshapen_sfx_layers_currently_raises(sfx_layers):
+    """Current behaviour, recorded — see the hazard note above."""
+    with pytest.raises(AttributeError):
+        Storyboard.from_dict("p", {}, [{"scene_id": "s001",
+                                        "sfx_layers": sfx_layers}])
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "KNOWN GAP in backend/manifest.py: from_dict rebuilds sfx_layers without a "
+    "shape check, so a non-mapping layer raises AttributeError and costs the "
+    "whole storyboard. `camera` guards with isinstance; this does not. "
+    "Deferred - the fix is production code and this PR is tests-only. Remove "
+    "this marker when from_dict skips layers it cannot read."))
+def test_a_misshapen_sfx_layers_should_be_skipped_not_fatal():
+    """The regression test for the fix we owe, kept red until it lands.
+
+    Ambience is the most disposable thing in the manifest — losing a layer costs
+    a sound, losing the storyboard costs the episode. An unreadable layer should
+    drop and leave the rest of the shot standing."""
+    back = Storyboard.from_dict("p", {}, [{
+        "scene_id": "s001", "narration": "n", "sfx_layers": ["wind"]}])
+    assert back.shots[0].narration == "n"
+    assert back.shots[0].sfx_layers == []
+
+
 def test_render_config_survives_a_round_trip():
     sb = Storyboard(title="T", render=RenderConfig(
         backend="flux-cfg", variations=5, video_model="kling_v3",
@@ -305,7 +371,7 @@ def test_an_unrecognised_motion_type_currently_raises():
 @pytest.mark.xfail(strict=True, reason=(
     "KNOWN GAP in backend/manifest.py: an unrecognised motion_type value raises "
     "out of from_dict instead of falling back, so one bad value can cost the "
-    "whole storyboard. Deferred — the fix is production code and this PR is "
+    "whole storyboard. Deferred - the fix is production code and this PR is "
     "tests-only. Remove this marker when from_dict degrades gracefully."))
 def test_an_unrecognised_motion_type_should_fall_back_to_parallax():
     """The regression test for the fix we owe, kept red until it lands.
