@@ -327,13 +327,28 @@ def test_load_never_touches_the_default_manifest_when_given_a_path(tmp_path, mon
 
 def test_load_derives_the_project_id_from_the_path(tmp_path):
     """Documenting current behaviour: the `id` written into the file is ignored
-    and the loaded id is derived from the path, sanitised to alphanumerics and
-    underscores. Worth pinning because save_project() raises without an id."""
-    path = tmp_path / "storyboard_manifest.json"
+    and the loaded id is derived from the path, with every non-alphanumeric
+    character replaced by an underscore. Worth pinning because save_project()
+    raises without an id.
+
+    The invariant asserted is `c.isalnum() or c == "_"`, which is exactly what
+    load() implements -- NOT an ASCII whitelist. str.isalnum() is true for
+    Unicode letters, so load() retains them, and tmp_path inherits the system
+    temp location: on a machine whose username is "José" the derived id legally
+    contains "é" and an ASCII assertion would fail in a perfectly valid
+    environment. The separator case below pins the transformation itself on a
+    path segment this test controls, so it holds whatever the username is."""
+    path = tmp_path / "ep 001" / "storyboard_manifest.json"
     M.save(Storyboard(id="written-into-the-file", title="T"), path)
 
     loaded = M.load(path)
     assert loaded.id != "written-into-the-file"
-    assert loaded.id and set(loaded.id) <= set(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+    assert loaded.id
+    assert all(c.isalnum() or c == "_" for c in loaded.id), (
+        f"derived id {loaded.id!r} contains a character load() should have "
+        f"replaced with an underscore"
+    )
+    # Deterministic regardless of the machine: the separator and the space in
+    # the segment this test created must both come back as underscores.
+    assert "ep_001_storyboard_manifest_json" in loaded.id
     assert M.load(path).id == loaded.id, "the derived id must be stable"
