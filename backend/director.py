@@ -1257,6 +1257,16 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                         log(f"  {ds.id}: paid clip already downloaded — re-running "
                             f"post-processing only, not re-billing")
                     else:
+                        # No idempotency key is minted here, deliberately. A key
+                        # derived from these same inputs would be identical on a
+                        # legitimate re-buy -- media truncated or deleted -- and
+                        # would refuse to replace footage that is genuinely gone.
+                        # A random key would be a NEW key after the crash it is
+                        # meant to survive, so it would not dedupe either. The
+                        # crash window is closed by the in_flight guard below
+                        # instead, which asks the question that actually matters:
+                        # is an attempt for these inputs already running?
+                        #
                         # Every paid generation opens an attempt first. The
                         # attempt is what decides whether money may be spent:
                         # only a "created" disposition permits a call to fal, so
@@ -1269,6 +1279,14 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                             kind="video", backend=ds.backend, paid=True,
                             exists=_media_present,
                         )
+                        if how == "in_flight":
+                            # The provider may already have been paid. Refusing
+                            # is the only answer that cannot bill twice.
+                            raise PlanError(
+                                f"{ds.id}: a paid generation for these inputs is "
+                                f"still recorded as running (attempt "
+                                f"{att.attempt}). It may have been billed. Resolve "
+                                f"it before retrying — see generation.abandon().")
                         if how != "created":
                             log(f"  {ds.id}: not re-billing — {how} "
                                 f"(attempt {att.attempt})")
@@ -1288,7 +1306,13 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                             try:
                                 generate_paid_clip(ds, synth, sb, out_dir, log=log)
                             except BaseException as exc:
-                                generation.fail(plan.beat_id, att.id, str(exc))
+                                # NOT marked failed. Once the provider has been
+                                # called, whether it billed is unknown, and
+                                # "failed" invites a retry that buys the clip a
+                                # second time. It stays running so the next
+                                # request sees it as in_flight and refuses,
+                                # until a human resolves it.
+                                generation.in_doubt(plan.beat_id, att.id, str(exc))
                                 raise
                             ds.estimated_cost += 0.60  # rough; fal has the real figure
                             ds.clip = config.rel_media_path(target)

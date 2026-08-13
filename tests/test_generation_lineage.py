@@ -300,8 +300,13 @@ def test_the_reused_attempt_is_recorded_on_the_shot(scene):
     assert rows[0].paid is True
 
 
-def test_a_failed_paid_generation_is_recorded_and_retryable(scene, monkeypatch):
-    """§6: a failed generation stays attached to the intended shot."""
+def test_a_failed_paid_generation_stays_attached_and_in_doubt(scene, monkeypatch):
+    """§6: a failed generation stays attached to the intended shot.
+
+    It stays RUNNING rather than failed: once generate_paid_clip has been
+    called, whether the provider billed is unknown, and recording "failed"
+    invites a retry that buys the clip again. The reason is recorded on the
+    attempt so a human can resolve it."""
     director, _, sb, render_dir, calls = scene
 
     def boom(*a, **k):
@@ -317,7 +322,7 @@ def test_a_failed_paid_generation_is_recorded_and_retryable(scene, monkeypatch):
 
     rows = generation.for_shot("s011", "s011.01")
     assert len(rows) == 1
-    assert rows[0].status == "failed"
+    assert rows[0].status == "running", "an unknown provider outcome recorded as failed"
     assert "500" in rows[0].error
 
 
@@ -326,3 +331,159 @@ def test_spend_is_reported_from_the_ledger(scene):
     director.compile_coverage(director.load_plan("s011"), sb, render_dir,
                               log=lambda m: None)
     assert generation.spend("s011")["paid_attempts"] == 1
+
+
+# --- S4-01: the charge-before-success crash window --------------------------------
+
+def test_a_crash_after_charging_does_not_buy_the_clip_again(scene):
+    """The window Slice 4 claimed to cover and did not.
+
+    The provider is reached and the process dies before succeed() or the plan
+    marker is written. The attempt is left RUNNING, and nothing can tell whether
+    the money was spent. Creating another attempt is a second bill, so the
+    replay must refuse and ask a human to resolve it.
+    """
+    director, _, sb, render_dir, calls = scene
+
+    def charge_then_die(ds_, synth, sb_, out_dir, log=print):
+        calls["paid"] += 1
+        target = Path(out_dir) / f"{ds_.id}.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"PAID-BYTES")
+        raise KeyboardInterrupt("container reclaimed mid-generation")
+
+    import pytest as _pytest
+    monkey = _pytest.MonkeyPatch()
+    monkey.setattr(director, "generate_paid_clip", charge_then_die)
+    with _pytest.raises(BaseException):
+        director.compile_coverage(director.load_plan("s011"), sb, render_dir,
+                                  log=lambda m: None)
+    monkey.undo()
+    assert calls["paid"] == 1
+
+    # The replay. Nothing about the shot has changed, and the attempt is stuck.
+    with _pytest.raises(director.PlanError):
+        director.compile_coverage(director.load_plan("s011"), sb, render_dir,
+                                  log=lambda m: None, skip_existing=False)
+    # compile_coverage reports an aggregate; the reason lives on the shot.
+    assert "still recorded as running" in director.load_plan("s011").coverage[0].error
+    assert calls["paid"] == 1, "the crash window bought the clip a second time"
+
+
+def test_abandoning_a_stuck_attempt_unblocks_the_retry(scene):
+    """The explicit recovery. A human says the outcome is unknown and accepts
+    the risk; the machine never makes that call for them."""
+    director, _, sb, render_dir, calls = scene
+
+    def charge_then_die(ds_, synth, sb_, out_dir, log=print):
+        calls["paid"] += 1
+        raise KeyboardInterrupt("container reclaimed")
+
+    import pytest as _pytest
+    monkey = _pytest.MonkeyPatch()
+    monkey.setattr(director, "generate_paid_clip", charge_then_die)
+    with _pytest.raises(BaseException):
+        director.compile_coverage(director.load_plan("s011"), sb, render_dir,
+                                  log=lambda m: None)
+    monkey.undo()
+
+    stuck = [a for a in generation.for_shot("s011", "s011.01")
+             if a.status == "running"]
+    assert len(stuck) == 1
+    generation.abandon("s011", stuck[0].id, "checked the provider dashboard")
+
+    director.compile_coverage(director.load_plan("s011"), sb, render_dir,
+                              log=lambda m: None, skip_existing=False)
+    assert calls["paid"] == 2
+    rows = generation.for_shot("s011", "s011.01")
+    assert [r.status for r in rows] == ["failed", "succeeded"]
+    assert "abandoned" in rows[0].error
+
+
+# --- S4-02: an unreadable ledger must not read as an empty one --------------------
+
+def test_a_corrupt_ledger_refuses_rather_than_starting_over():
+    att, _ = _begin(idempotency_key="k1")
+    generation.succeed("s001", att.id, "a.mp4", cost=0.60)
+    path = generation.ledger_path("s001")
+    original = path.read_bytes()
+
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(generation.LedgerUnreadable):
+        _begin(idempotency_key="k2")
+
+    assert path.read_bytes() == b"{not json", "the corrupt ledger was overwritten"
+    assert original != b"{not json"
+
+
+def test_a_read_fault_refuses_rather_than_erasing_history():
+    """One transient GCS read fault used to permit a second charge AND destroy
+    the record that would have prevented the next one.
+
+    Its own MonkeyPatch instance on purpose: the fixture-provided one also holds
+    the autouse project patch, so undoing it here would move the project out
+    from under the assertions.
+    """
+    att, _ = _begin(idempotency_key="k1")
+    generation.succeed("s001", att.id, "a.mp4", cost=0.60)
+    path = generation.ledger_path("s001")
+    before = path.read_bytes()
+
+    real = Path.read_text
+
+    def flaky(self, *a, **k):
+        if self == path:
+            raise OSError(5, "transient input/output error")
+        return real(self, *a, **k)
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(Path, "read_text", flaky)
+    try:
+        with pytest.raises(generation.LedgerUnreadable):
+            _begin(idempotency_key="k2")
+    finally:
+        mp.undo()
+
+    assert path.read_bytes() == before, "the paid success was erased"
+    assert generation.spend("s001")["spent"] == 0.60
+
+
+def test_a_genuinely_missing_ledger_is_still_empty_history():
+    """Failing closed must not mean refusing the first ever generation."""
+    att, how = _begin(idempotency_key="k1")
+    assert how == "created"
+    assert att.attempt == 1
+
+
+# --- S4-03: a terminal attempt is billing truth ------------------------------------
+
+def test_a_succeeded_attempt_cannot_be_rewritten_as_failed():
+    """A late or duplicated error callback used to zero the reported spend."""
+    att, _ = _begin(idempotency_key="k1")
+    generation.succeed("s001", att.id, "a.mp4", cost=0.60)
+    path = generation.ledger_path("s001")
+    before = path.read_bytes()
+
+    with pytest.raises(generation.TerminalConflict):
+        generation.fail("s001", att.id, "a late error callback")
+
+    assert path.read_bytes() == before, "the stored record changed"
+    assert generation.spend("s001")["spent"] == 0.60
+    assert generation.for_shot("s001", "s001.01")[0].status == "succeeded"
+
+
+def test_a_failed_attempt_cannot_be_rewritten_as_succeeded():
+    att, _ = _begin(idempotency_key="k1")
+    generation.fail("s001", att.id, "boom")
+    with pytest.raises(generation.TerminalConflict):
+        generation.succeed("s001", att.id, "a.mp4", cost=0.60)
+    assert generation.spend("s001")["spent"] == 0.0
+
+
+def test_repeating_the_same_completion_is_a_no_op():
+    """A retried callback is not a new fact."""
+    att, _ = _begin(idempotency_key="k1")
+    generation.succeed("s001", att.id, "a.mp4", cost=0.60)
+    again = generation.succeed("s001", att.id, "a.mp4", cost=0.60)
+    assert again.status == "succeeded"
+    assert generation.spend("s001")["paid_attempts"] == 1

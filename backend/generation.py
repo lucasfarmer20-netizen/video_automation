@@ -91,14 +91,40 @@ def ledger_path(beat_id: str) -> Path:
     return generation_dir() / f"{beat_id}.json"
 
 
+class LedgerUnreadable(RuntimeError):
+    """The lineage exists but could not be read. NOT the same as no lineage."""
+
+
 def load_attempts(beat_id: str) -> list[GenerationAttempt]:
+    """Every attempt recorded for a beat, oldest first.
+
+    Raises LedgerUnreadable when a ledger is present but unreadable or corrupt.
+
+    That distinction is the whole point. This used to swallow every OSError and
+    return [], which is indistinguishable from "this beat has no history" -- so
+    one transient read fault on the GCS mount made begin() treat a paid,
+    succeeded attempt as nonexistent, permit a second charge, and then write the
+    new list over the real one. The atomic write preserved the wrong answer
+    perfectly. Failing closed costs a retry; failing open costs money and the
+    record that would have prevented the next one.
+    """
     p = ledger_path(beat_id)
-    if not p.is_file():
-        return []
     try:
-        raw = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
+        if not p.is_file():
+            return []
+        text = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise LedgerUnreadable(
+            f"could not read the generation ledger for {beat_id}: {exc}. "
+            f"Refusing to treat it as empty -- that would permit a second charge "
+            f"and overwrite the record of the first.") from exc
+    try:
+        raw = json.loads(text)
+    except ValueError as exc:
+        raise LedgerUnreadable(
+            f"the generation ledger for {beat_id} is corrupt: {exc}. "
+            f"It has NOT been overwritten; inspect it before generating again."
+        ) from exc
     known = set(GenerationAttempt.__dataclass_fields__)
     return [GenerationAttempt(**{k: v for k, v in a.items() if k in known})
             for a in (raw.get("attempts") or [])]
@@ -159,6 +185,9 @@ def begin(*, beat_id: str, shot_id: str, signature: str, idempotency_key: str = 
     * ``"duplicate"`` -- this exact request was already handled; do NOT generate.
     * ``"reused"``   -- different request, identical inputs, media already
       bought; do NOT generate.
+    * ``"in_flight"`` -- an attempt for these inputs is still running, or died
+      without recording its outcome; do NOT generate, and surface it for a human
+      to resolve with :func:`abandon`.
 
     The caller must not spend money unless it got ``"created"``. That is the
     whole contract of this function, and it is enforced in one place so no call
@@ -180,6 +209,17 @@ def begin(*, beat_id: str, shot_id: str, signature: str, idempotency_key: str = 
                         and (exists is None or exists(a.output))):
                     return a, "reused"
 
+        # An attempt for these same inputs is still RUNNING. Either it is live,
+        # or it died after reaching the provider and before recording success --
+        # and nothing here can tell which. Creating another is how the crash
+        # window double-charges, so refuse and make a human resolve it with
+        # abandon(). Blindly retrying is not idempotency, it is a second bill.
+        if signature:
+            stuck = next((a for a in mine
+                          if a.status == RUNNING and a.signature == signature), None)
+            if stuck is not None:
+                return stuck, "in_flight"
+
         # A retry branches from the most recent attempt for this shot, so the
         # chain records what was tried before rather than a flat list.
         parent = mine[-1].id if mine else ""
@@ -195,25 +235,75 @@ def begin(*, beat_id: str, shot_id: str, signature: str, idempotency_key: str = 
         return att, "created"
 
 
-def _finish(beat_id: str, attempt_id: str, **changes) -> GenerationAttempt | None:
+class TerminalConflict(RuntimeError):
+    """An attempt that already finished was told it finished differently."""
+
+
+def _finish(beat_id: str, attempt_id: str, *, status: str,
+            **changes) -> GenerationAttempt | None:
+    """Move a running attempt to exactly one terminal state.
+
+    A terminal record is billing truth. This used to apply whatever it was
+    given, so a late or duplicated callback could turn a succeeded, paid attempt
+    into a failed one -- the output and cost stayed on the record while spend()
+    stopped counting it, and the reported bill silently dropped to zero.
+
+    Repeating the SAME completion is a no-op, because a retried callback is not
+    a new fact. A conflicting one raises and leaves the stored bytes untouched.
+    """
     with _MUTATE_LOCK:
         attempts = load_attempts(beat_id)
-        found = None
-        for a in attempts:
-            if a.id == attempt_id:
-                for k, v in changes.items():
-                    setattr(a, k, v)
-                a.finished_at = _now()
-                found = a
-                break
-        if found is not None:
-            _save_attempts(beat_id, attempts)
-        return found
+        target = next((a for a in attempts if a.id == attempt_id), None)
+        if target is None:
+            return None
+        if target.terminal:
+            if target.status == status:
+                return target          # idempotent replay of the same outcome
+            raise TerminalConflict(
+                f"{attempt_id} already finished as {target.status}; refusing to "
+                f"rewrite it as {status}. The first terminal result stands.")
+        target.status = status
+        for k, v in changes.items():
+            setattr(target, k, v)
+        target.finished_at = _now()
+        _save_attempts(beat_id, attempts)
+        return target
 
 
 def succeed(beat_id: str, attempt_id: str, output: str,
             cost: float = 0.0) -> GenerationAttempt | None:
     return _finish(beat_id, attempt_id, status=SUCCEEDED, output=output, cost=cost)
+
+
+def in_doubt(beat_id: str, attempt_id: str, reason: str) -> GenerationAttempt | None:
+    """Record why an attempt is unresolved WITHOUT closing it.
+
+    Used when generation raised after the provider was already called. Marking
+    it failed there would be a claim nobody can support -- the money may have
+    been spent -- and the retry that follows a "failed" would buy the clip
+    again. It stays running, which makes the next request see it as in_flight
+    and refuse, until a human resolves it with abandon().
+    """
+    with _MUTATE_LOCK:
+        attempts = load_attempts(beat_id)
+        target = next((a for a in attempts if a.id == attempt_id), None)
+        if target is None or target.terminal:
+            return target
+        target.error = str(reason)[:2000]
+        _save_attempts(beat_id, attempts)
+        return target
+
+
+def abandon(beat_id: str, attempt_id: str,
+            reason: str = "outcome unknown") -> GenerationAttempt | None:
+    """Close a running attempt whose provider outcome nobody knows.
+
+    The explicit recovery for a process that died mid-generation. It is a human
+    decision precisely because the money may already have been spent: the
+    machine cannot tell, so it must not choose. Recorded as a failure with the
+    reason, which keeps it in the lineage and unblocks a retry.
+    """
+    return _finish(beat_id, attempt_id, status=FAILED, error=f"abandoned: {reason}")
 
 
 def fail(beat_id: str, attempt_id: str, error: str) -> GenerationAttempt | None:
