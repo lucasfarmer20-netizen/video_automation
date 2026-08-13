@@ -56,6 +56,29 @@ def _free(scene_id: str, motion_type: MotionType = MotionType.PARALLAX) -> Shot:
     return Shot(scene_id=scene_id, motion_type=motion_type)
 
 
+# The paid beats the mixed-list tests below build, one broken in turn.
+#
+# Parametrized as `range(len(_PAID_IDS))` rather than a literal list of
+# positions, and that is the whole point. An earlier revision covered [0, 2] --
+# both ends -- on the reasoning that it caught a short-circuit or an index-0-only
+# reading. It does, and it still leaves a gate that skips the MIDDLE beat
+# completely green:
+#
+#     all(bool(s.video_model)
+#         for i, s in enumerate(paid) if len(paid) != 3 or i != 1)
+#
+# That predicate admits a model-less paid shot to the paid API and passed the
+# whole suite. Every position gets broken, and deriving the range from the list
+# means adding a beat here cannot silently narrow that coverage again.
+_PAID_IDS = ("s001", "s002", "s003")
+_BROKEN_AT = range(len(_PAID_IDS))
+
+
+def _paid_trio() -> list[Shot]:
+    """Three gate-clearing paid beats — the list each mixed test breaks one of."""
+    return [_paid(scene_id) for scene_id in _PAID_IDS]
+
+
 def _siblings_are_ready(shots: list[Shot], broken_at: int) -> bool:
     """Every shot except ``broken_at`` clears the gate on its own.
 
@@ -78,16 +101,15 @@ def test_gate_shut_when_the_storyboard_is_not_approved():
     assert sb.gate_cleared() is False
 
 
-@pytest.mark.parametrize("broken_at", [0, 2])
+@pytest.mark.parametrize("broken_at", _BROKEN_AT)
 def test_gate_shut_when_any_paid_shot_is_unapproved(broken_at):
     """Approving the storyboard is not approving the spend. Each paid beat is
     its own line item and needs its own tick — and the quantifier is `all`, so
     one unticked beat holds the gate however ready its neighbours are.
 
-    Both ends of the list are covered for the reason given on the video_model
-    test below: a weakening that only ever consults one position passes if the
-    suite only ever breaks that position."""
-    paid = [_paid("s001"), _paid("s002"), _paid("s003")]
+    Every position is broken in turn; see the note on _PAID_IDS for why the ends
+    alone are not enough."""
+    paid = _paid_trio()
     paid[broken_at] = _paid(paid[broken_at].scene_id, approved=False)
     sb = Storyboard(title="T", storyboard_approved=True,
                     shots=[*paid, _free("s004")])
@@ -106,21 +128,21 @@ def test_gate_shut_when_a_paid_shot_has_no_video_model(video_model):
 
 
 @pytest.mark.parametrize("video_model", [None, ""])
-@pytest.mark.parametrize("broken_at", [0, 2])
+@pytest.mark.parametrize("broken_at", _BROKEN_AT)
 def test_gate_shut_when_any_one_of_several_paid_shots_has_no_video_model(
         video_model, broken_at):
     """The model term is quantified over *every* paid beat, and the single-shot
     case above cannot show that: with one paid shot, `all` and `any` agree.
 
     Weaken the predicate to `... and any(bool(s.video_model) for paid)` — all
-    paid shots approved, at least one carrying a model — and every other test
-    in this file still passes, while a storyboard whose second Tier-C beat has
-    no model clears Gate 1 and reaches the paid API with nothing to render on.
-    That is the silent gate weakening this file exists to catch, so it is
-    pinned with the model-less beat both first and last: a reading that
-    short-circuits on the first paid shot, or that only inspects index 0, fails
-    in exactly one of the two positions."""
-    paid = [_paid("s001"), _paid("s002"), _paid("s003")]
+    paid shots approved, at least one carrying a model — and every other test in
+    this file still passes, while a storyboard whose second Tier-C beat has no
+    model clears Gate 1 and reaches the paid API with nothing to render on. That
+    is the silent gate weakening this file exists to catch.
+
+    Every position is broken in turn; see the note on _PAID_IDS for why the ends
+    alone are not enough."""
+    paid = _paid_trio()
     paid[broken_at] = _paid(paid[broken_at].scene_id, video_model=video_model)
     sb = Storyboard(title="T", storyboard_approved=True,
                     shots=[*paid, _free("s004")])
