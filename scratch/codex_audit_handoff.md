@@ -20,7 +20,9 @@ spec being audited. Copies in the repo travel with the code they govern.
 
 ## Current state
 
-- Branch `main`, commit `8f9dd37`, pushed. Worktree clean apart from unrelated
+- Branch `main`, commit `5844356`, pushed. The three commits after
+  `d515320` are documentation only (audit reports, this handoff, and the
+  contract/charter); no implementation changed. Worktree clean apart from unrelated
   untracked scratch files.
 - `python -m pytest tests/ -q` → **287 passed, 0 skipped**. A skip banner in
   `tests/conftest.py` reports any skips separately; a pass count alone is not
@@ -39,8 +41,8 @@ Read in order; each records findings, remediation and re-verification.
 | `scratch/codex_adversarial_audit_slice_2.md` | Approval signature | S2-01…S2-03 closed |
 | `scratch/codex_adversarial_audit_slice_4.md` | Generation lineage | S4-01…S4-03 remediated, **awaiting re-verification** |
 
-The slice 2 and slice 4 reports were only committed at `8f9dd37`; an audit at
-an earlier commit could not read them.
+The slice 2 and slice 4 reports were only committed at `8f9dd37`; an audit
+pinned to an earlier commit could not read them.
 
 ## Closed — do not re-litigate without new evidence
 
@@ -65,7 +67,7 @@ cannot occur in the deployed environment.
 
 ## Next action: re-verify the Slice 4 remediation
 
-Audit `d515320`..`8f9dd37`, against `scratch/codex_adversarial_audit_slice_4.md`.
+Audit `e2bdf2f`..`d515320` — the remediation itself — against `scratch/codex_adversarial_audit_slice_4.md`.
 Key files: `backend/generation.py`, the paid path in
 `backend/director.py::_compile_locked`, `tests/test_generation_lineage.py`.
 
