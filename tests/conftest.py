@@ -113,10 +113,13 @@ def pytest_keyboard_interrupt(excinfo):
 def _early_stop_reason(terminalreporter, exitstatus=None) -> str:
     """Why the session stopped early, or "" if it ran to the end.
 
-    Three arms: ``shouldfail``, then ``shouldstop``, then
-    ``exitstatus == INTERRUPTED`` as the catch-all.
+    Four arms, in this order: ``shouldfail``, ``shouldstop``, the recorded
+    ``_INTERRUPT`` reason, and ``exitstatus == INTERRUPTED`` as the catch-all.
+    The first two carry a reason string of their own; the third reconstructs
+    one; the last only knows that something happened.
 
-    That is pytest's set of conditions but NOT pytest's order -- ``terminal.py``
+    The first three conditions are pytest's own, but NOT in pytest's order --
+    ``terminal.py``
     tests INTERRUPTED before ``shouldstop``, and copying it verbatim mislabels
     ``--stepwise``. ``Interrupted`` subclasses ``KeyboardInterrupt``, so a
     stepwise stop raises it, ``wrap_session`` catches it in the same arm as
@@ -147,7 +150,7 @@ def _early_stop_reason(terminalreporter, exitstatus=None) -> str:
     with ``const=1, dest="maxfail"``, so both rows above are the same code path
     (``main.py:703``) shown twice.
 
-    The middle arm exists because an earlier revision of this docstring claimed
+    The abort arms exist because an earlier revision of this docstring claimed
     ``shouldstop`` covered ``pytest.exit()`` and internal aborts. It does not,
     and that claim was the justification for an arm that therefore caught
     nothing. Across all of ``_pytest`` exactly two lines assign either flag --
