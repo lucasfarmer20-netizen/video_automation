@@ -101,7 +101,7 @@ def test_gate_shut_when_the_storyboard_is_not_approved():
     assert sb.gate_cleared() is False
 
 
-@pytest.mark.parametrize("broken_at", _BROKEN_AT)
+@pytest.mark.parametrize("broken_at", _BROKEN_AT)   # -> 0, 1, 2: every position
 def test_gate_shut_when_any_paid_shot_is_unapproved(broken_at):
     """Approving the storyboard is not approving the spend. Each paid beat is
     its own line item and needs its own tick — and the quantifier is `all`, so
@@ -128,7 +128,7 @@ def test_gate_shut_when_a_paid_shot_has_no_video_model(video_model):
 
 
 @pytest.mark.parametrize("video_model", [None, ""])
-@pytest.mark.parametrize("broken_at", _BROKEN_AT)
+@pytest.mark.parametrize("broken_at", _BROKEN_AT)   # -> 0, 1, 2: every position
 def test_gate_shut_when_any_one_of_several_paid_shots_has_no_video_model(
         video_model, broken_at):
     """The model term is quantified over *every* paid beat, and the single-shot
