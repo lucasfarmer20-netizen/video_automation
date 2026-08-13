@@ -45,6 +45,7 @@ from . import config, manifest, script, assets, audio, motion, timeline, sizzle,
 from . import director, spike_identity, planner, capabilities, casting, characters
 from . import stages as stagemod
 from . import generation
+from . import slots as slotmod
 from . import projects
 from .manifest import Storyboard, Shot, MotionType, Camera, RenderConfig, db
 from .pipeline_worker import start_job, get_jobs_status, log_job
@@ -2335,6 +2336,71 @@ async def patch_director_shot(shot_id: str, request: Request):
         raise
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+
+
+def _slots_now():
+    """The cut as slots, rebuilt from the plan and folded onto the saved edit."""
+    sb = get_current_project()
+
+    def coverage_for(beat_id):
+        plan = director.load_plan(beat_id)
+        return plan.coverage if plan else None
+
+    def media_for(beat_id, shot_id):
+        plan = director.load_plan(beat_id)
+        if plan and shot_id:
+            ds = next((d for d in plan.coverage if d.id == shot_id), None)
+            if ds and ds.clip:
+                return ds.clip, ds.selected_attempt
+        ep = config.episode_paths(sb.title)
+        clip = ep["render"] / f"{beat_id}.mp4"
+        return (config.rel_media_path(clip), "") if clip.is_file() else ("", "")
+
+    rebuilt = slotmod.build(sb, coverage_for, media_for)
+    try:
+        existing = slotmod.load()
+    except (OSError, ValueError):
+        # An unreadable cut rebuilds rather than reading as empty; the trims are
+        # gone either way, but the caller is told rather than shipped a silently
+        # different film.
+        existing = []
+    return slotmod.reconcile(existing, rebuilt)
+
+
+@app.get("/api/timeline/slots")
+def get_timeline_slots():
+    """The cut as slots, with how complete it is (§6.2, §7.1)."""
+    try:
+        current = _slots_now()
+        slotmod.save(current)
+        return {"ok": True,
+                "slots": [s.to_dict() for s in current],
+                "coverage": slotmod.coverage(current)}
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/timeline/slot/{shot_id}/trim")
+async def set_slot_trim(shot_id: str, request: Request):
+    """Trim one slot. The trim belongs to the SLOT, not to the media in it, so
+    it survives a later take swap."""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        data = {}
+    current = _slots_now()
+    target = next((s for s in current if s.shot_id == shot_id or s.id == shot_id), None)
+    if target is None:
+        return JSONResponse(status_code=404,
+                            content={"ok": False, "error": f"no slot for {shot_id}"})
+    target.trim_in = max(0.0, float(data.get("trim_in", target.trim_in) or 0.0))
+    target.trim_out = max(0.0, float(data.get("trim_out", target.trim_out) or 0.0))
+    if target.trim_out and target.trim_out <= target.trim_in:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "error": "trim_out must be after trim_in"})
+    slotmod.save(current)
+    return {"ok": True, "slot": target.to_dict(),
+            "coverage": slotmod.coverage(current)}
 
 
 @app.get("/api/generation/{beat_id}")

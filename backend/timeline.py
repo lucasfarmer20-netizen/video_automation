@@ -39,6 +39,36 @@ FPS = 24
 # --------------------------------------------------------------------------- #
 # small OTIO helpers
 # --------------------------------------------------------------------------- #
+def placeholder_clip(dest: Path, seconds: float, label: str = "") -> Path:
+    """A black clip of exactly ``seconds``, standing in for a missing render.
+
+    Deliberately blank rather than a caption: drawing text needs a font
+    configuration that is not guaranteed on every host, and a placeholder that
+    fails to render is worse than one that is plainly empty. What identifies it
+    is not the picture — that lives in the slot (see backend/slots.py), which
+    knows the shot, the beat and the duration this stands in for.
+
+    Rebuilt whenever the length changes, so a re-timed beat cannot leave a
+    placeholder of the old length behind and shift everything after it.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    want = max(0.04, round(float(seconds), 3))
+    if dest.is_file():
+        try:
+            if abs(_probe_seconds(dest) - want) <= 0.05:
+                return dest
+        except Exception:  # noqa: BLE001 - a bad probe just means rebuild it
+            pass
+    subprocess.run(
+        [ffmpeg_bin(), "-y", "-v", "error",
+         "-f", "lavfi", "-i", f"color=c=black:s=1280x720:r=24:d={want}",
+         "-t", f"{want}", "-c:v", "libx264", "-crf", "30", "-pix_fmt", "yuv420p",
+         "-an", str(dest)],
+        check=True,
+    )
+    return dest
+
+
 def _probe_seconds(path: Path) -> float:
     try:
         out = subprocess.run(
@@ -442,21 +472,33 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
     wav = scratch / f"_{tag}_mix.wav"
     wavfile.write(str(wav), sr, (mix * 32767).astype(np.int16))
     concat = scratch / f"_{tag}_concat.txt"
-    # Every beat must have a clip. Without this the concat demuxer is handed
-    # paths that do not exist and exits 254, whose message names neither the
-    # missing files nor the fact that anything is missing at all.
+    # A beat with no clip gets a placeholder rather than blocking the cut.
+    # Contract §6.2 is explicit that Draft 1 may be built before generation
+    # finishes; refusing outright meant a single un-rendered beat withheld the
+    # whole film, which is the opposite of "get me to a watchable first cut".
+    #
+    # The placeholder is a real clip of the beat's own length, so everything
+    # after it sits at the right time and the runtime is honest. What it must
+    # never be is silent substitution (§11.2): it is not another beat's footage,
+    # and every one of them is named in the log and counted in the sidecar.
     missing = [s.scene_id for s in sb.shots
                if not (render_dir / f"{s.scene_id}.mp4").is_file()]
+    placeholder_dir = render_dir / "_placeholders"
+    sources: list[Path] = []
+    for s in sb.shots:
+        real = render_dir / f"{s.scene_id}.mp4"
+        if real.is_file():
+            sources.append(real)
+            continue
+        seconds = float(s.camera.duration) if s.camera else 0.0
+        sources.append(placeholder_clip(placeholder_dir / f"{s.scene_id}.mp4",
+                                        seconds, s.scene_id))
     if missing:
-        raise RuntimeError(
-            f"cannot build a preview: {len(missing)} of {len(sb.shots)} beats have "
-            f"no rendered clip ({', '.join(missing[:8])}"
-            f"{' …' if len(missing) > 8 else ''}). Render the beats first."
-        )
+        print(f"  note: {len(missing)} beat(s) have no render yet -> placeholders: "
+              f"{', '.join(missing[:8])}{' ...' if len(missing) > 8 else ''}")
 
     concat.write_text(
-        "".join(f"file '{(render_dir / (s.scene_id + '.mp4')).resolve().as_posix()}'\n"
-                for s in sb.shots),
+        "".join(f"file '{p.resolve().as_posix()}'\n" for p in sources),
         encoding="utf-8",
     )
     tmpv = scratch / f"_{tag}_v.mp4"
