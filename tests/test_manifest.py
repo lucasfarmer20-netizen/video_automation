@@ -57,27 +57,49 @@ def _free(scene_id: str, motion_type: MotionType = MotionType.PARALLAX) -> Shot:
     return Shot(scene_id=scene_id, motion_type=motion_type)
 
 
-# The paid beats the mixed-list tests below build, one broken in turn.
+# How the mixed-list gate tests are shaped, and why they are shaped that way.
 #
-# Parametrized as `range(len(_PAID_IDS))` rather than a literal list of
-# positions, and that is the whole point. An earlier revision covered [0, 2] --
-# both ends -- on the reasoning that it caught a short-circuit or an index-0-only
-# reading. It does, and it still leaves a gate that skips the MIDDLE beat
-# completely green:
+# Three revisions of this file were each defeated by a mutation keyed to the
+# shape of its own fixture, and the pattern only became visible on the third:
 #
-#     all(bool(s.video_model)
-#         for i, s in enumerate(paid) if len(paid) != 3 or i != 1)
+#   1. one paid shot            -> `any()` on the model term passed (with one
+#                                  shot, `all` and `any` agree)
+#   2. three shots, ends only   -> a gate ignoring index 1 when len(paid) == 3
+#                                  passed all of them
+#   3. three shots, all indices -> `for s in self.shots[:3]` passed all 15 gate
+#                                  tests, and opened Gate 1 on a fourth beat
+#                                  with no model and no approval
 #
-# That predicate admits a model-less paid shot to the paid API and passed the
-# whole suite. Every position gets broken, and deriving the range from the list
-# means adding a beat here cannot silently narrow that coverage again.
-_PAID_IDS = ("s001", "s002", "s003")
-_BROKEN_AT = range(len(_PAID_IDS))
+# Each fix closed its instance and left the class open, because a fixture of
+# fixed size N cannot distinguish a gate that reads the whole list from one that
+# reads a prefix of length >= N. Adding a four-shot case would just move the
+# mutation to `[:4]`.
+#
+# So both dimensions are parametrized and both are derived: the paid-list LENGTH
+# over 1.._MAX_PAID, crossed with EVERY position in a list of that length. That
+# closes every fixed-prefix and fixed-index weakening in one change rather than
+# one more instance of it. Raising _MAX_PAID widens both dimensions together;
+# nothing here is hand-written per-length.
+#
+# _MAX_PAID is 6, not 5, and the reason is worth stating because it is easy to
+# get wrong by one. A `shots[:k]` gate is only detectable when some case puts a
+# BROKEN paid beat past position k, so a list of n paid beats catches prefixes
+# up to k = n - 1. Measured, with _MAX_PAID = 5: [:1] 30 failed, [:2] 18, [:3]
+# 18, [:4] 3, and [:5] fully GREEN -- because the longest list was five paid
+# beats plus one free, so [:5] truncated only the free one. The agreed boundary
+# is that [:6] is out of scope (neither a plausible accident nor a plausible
+# regression) and everything below it is in, so the list has to reach six.
+# At 6: [:1] through [:5] all fail, [:6] passes. That is the boundary, exactly.
+_MAX_PAID = 6
+
+# (list length, index broken) for every position of every length in 1.._MAX_PAID.
+_LENGTHS_X_POSITIONS = [(n, i) for n in range(1, _MAX_PAID + 1) for i in range(n)]
+_LXP_IDS = [f"{n}paid-break{i}" for n, i in _LENGTHS_X_POSITIONS]
 
 
-def _paid_trio() -> list[Shot]:
-    """Three gate-clearing paid beats — the list each mixed test breaks one of."""
-    return [_paid(scene_id) for scene_id in _PAID_IDS]
+def _paid_list(n: int) -> list[Shot]:
+    """``n`` gate-clearing paid beats — the list each mixed test breaks one of."""
+    return [_paid(f"s{i + 1:03d}") for i in range(n)]
 
 
 def _siblings_are_ready(shots: list[Shot], broken_at: int) -> bool:
@@ -102,51 +124,44 @@ def test_gate_shut_when_the_storyboard_is_not_approved():
     assert sb.gate_cleared() is False
 
 
-@pytest.mark.parametrize("broken_at", _BROKEN_AT, ids=_PAID_IDS)
-def test_gate_shut_when_any_paid_shot_is_unapproved(broken_at):
+@pytest.mark.parametrize("n_paid,broken_at", _LENGTHS_X_POSITIONS, ids=_LXP_IDS)
+def test_gate_shut_when_any_paid_shot_is_unapproved(n_paid, broken_at):
     """Approving the storyboard is not approving the spend. Each paid beat is
     its own line item and needs its own tick — and the quantifier is `all`, so
-    one unticked beat holds the gate however ready its neighbours are.
+    one unticked beat holds the gate however ready its neighbours are, and
+    wherever in the list it sits.
 
-    Every position is broken in turn; see the note on _PAID_IDS for why the ends
-    alone are not enough."""
-    paid = _paid_trio()
+    Every position of every length up to _MAX_PAID; see the note there for why
+    a fixed-size fixture is not enough."""
+    paid = _paid_list(n_paid)
     paid[broken_at] = _paid(paid[broken_at].scene_id, approved=False)
     sb = Storyboard(title="T", storyboard_approved=True,
-                    shots=[*paid, _free("s004")])
+                    shots=[*paid, _free("s900")])
     assert sb.gate_cleared() is False
     assert _siblings_are_ready(paid, broken_at)
 
 
 @pytest.mark.parametrize("video_model", [None, ""])
-def test_gate_shut_when_a_paid_shot_has_no_video_model(video_model):
-    """`bool(video_model)` — so an unset model and a blank string both hold the
-    gate. Approving a Tier-C beat with nothing to render it on would send the
-    pipeline at a paid API with no model selected."""
-    sb = Storyboard(title="T", storyboard_approved=True,
-                    shots=[_paid("s001", video_model=video_model)])
-    assert sb.gate_cleared() is False
-
-
-@pytest.mark.parametrize("video_model", [None, ""])
-@pytest.mark.parametrize("broken_at", _BROKEN_AT, ids=_PAID_IDS)
+@pytest.mark.parametrize("n_paid,broken_at", _LENGTHS_X_POSITIONS, ids=_LXP_IDS)
 def test_gate_shut_when_any_one_of_several_paid_shots_has_no_video_model(
-        video_model, broken_at):
-    """The model term is quantified over *every* paid beat, and the single-shot
-    case above cannot show that: with one paid shot, `all` and `any` agree.
+        video_model, n_paid, broken_at):
+    """The model term is quantified over *every* paid beat, at every length.
+
+    `bool(video_model)` is the test, so an unset model and a blank string both
+    hold the gate: approving a Tier-C beat with nothing to render it on would
+    send the pipeline at a paid API with no model selected. The `n_paid=1` cases
+    pin that minimal form; the longer ones pin the quantifier, which one shot
+    cannot show because `all` and `any` agree over a single element.
 
     Weaken the predicate to `... and any(bool(s.video_model) for paid)` — all
-    paid shots approved, at least one carrying a model — and every other test in
-    this file still passes, while a storyboard whose second Tier-C beat has no
-    model clears Gate 1 and reaches the paid API with nothing to render on. That
-    is the silent gate weakening this file exists to catch.
-
-    Every position is broken in turn; see the note on _PAID_IDS for why the ends
-    alone are not enough."""
-    paid = _paid_trio()
+    paid shots approved, at least one carrying a model — and a storyboard whose
+    second Tier-C beat has no model clears Gate 1 and reaches the paid API with
+    nothing to render on. That is the silent gate weakening this file exists to
+    catch. See the note on _MAX_PAID for why the length is parametrized too."""
+    paid = _paid_list(n_paid)
     paid[broken_at] = _paid(paid[broken_at].scene_id, video_model=video_model)
     sb = Storyboard(title="T", storyboard_approved=True,
-                    shots=[*paid, _free("s004")])
+                    shots=[*paid, _free("s900")])
     assert sb.gate_cleared() is False
     assert _siblings_are_ready(paid, broken_at)
 

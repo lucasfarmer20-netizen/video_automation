@@ -19,11 +19,18 @@ that as "117/117 passing". pytest_terminal_summary below reprints the skips as
 their own banner, grouped by reason, so an incomplete run cannot read as a
 clean one.
 
-Expected failures are counted the same way and for the same reason. An xfail is
-a test whose assertions did not run, but pytest files it under stats["xfailed"]
-rather than stats["skipped"], so a banner that counted only skips would report
-"0 skipped - full suite ran" over a permanently-red test — the same false green
-in a different column.
+Expected failures are counted for a related reason, though not the same one. An
+xfail *does* run and *does* execute its assertions -- they fail, which is the
+point -- so it is not a did-not-run at all. What it has in common with a skip is
+that it protects nothing today, and that pytest files it in a quiet counter of
+its own (stats["xfailed"], not stats["skipped"]). A banner that counted only
+skips therefore printed "0 skipped - full suite ran" over a permanently-red
+test: the same false green in a different column.
+
+The banner also has to be honest about what it did not run. `-k`, `-m`, a
+`--lf` with a stored cache and a collection error all produce a partial run, so
+deselected/error counts are reported and the words "full suite ran" are held
+back unless the run was genuinely complete.
 """
 
 from __future__ import annotations
@@ -52,25 +59,29 @@ def _restore_config_globals():
 
 
 def _report_xfails(terminalreporter):
-    """List xfails and xpasses. Same argument as the skip banner: a test that is
-    expected to fail did not run its assertions either, and pytest files it
-    under stats["xfailed"], not stats["skipped"] — so counting only skips would
-    let a permanently-red test hide behind "0 skipped - full suite ran", which
-    is the exact blind spot this module exists to close.
+    """List xfails and xpasses with their reasons.
 
-    xpassed is listed too, for the non-strict markers. A *strict* xfail that
-    starts passing is filed under stats["failed"], not stats["xpassed"] --
-    verified, not assumed -- so pytest already fails the run and names it, and
-    nothing here needs to catch it. A non-strict one is the quiet case: it
-    passes, says XPASS in the status line and nothing else, and the gap its
-    reason describes has in fact closed and the marker should come off."""
+    These tests run and their assertions execute; the assertions fail, on
+    purpose. So this is not a did-not-run report -- it is a "protects nothing
+    yet" report, which is why the banner says EXPECTED FAILURES rather than
+    anything about not asserting. What it shares with the skip banner is the
+    failure mode: pytest keeps them in a counter of their own, and a summary
+    that watched only stats["skipped"] would call a run clean while a
+    permanently-red test sat in it.
+
+    xpassed is listed for the non-strict markers. A *strict* xfail that starts
+    passing is filed under stats["failed"], not stats["xpassed"] -- verified,
+    not assumed -- so pytest already fails the run and names it, and nothing
+    here needs to catch it. A non-strict one is the quiet case: it passes, says
+    XPASS in the status line and nothing else, and the gap its reason describes
+    has in fact closed and the marker should come off."""
     xfailed = terminalreporter.stats.get("xfailed", [])
     xpassed = terminalreporter.stats.get("xpassed", [])
     if not xfailed and not xpassed:
         return
 
-    terminalreporter.write_sep("-", f"{len(xfailed) + len(xpassed)} KNOWN-GAP "
-                                    f"TEST(S) DID NOT ASSERT", yellow=True)
+    terminalreporter.write_sep("-", f"{len(xfailed) + len(xpassed)} EXPECTED "
+                                    f"FAILURE(S) / KNOWN GAPS", yellow=True)
     for report in sorted(xfailed, key=lambda r: r.nodeid):
         reason = str(getattr(report, "wasxfail", "") or "no reason given")
         terminalreporter.write_line(f"  xfail: {report.nodeid}")
@@ -81,17 +92,59 @@ def _report_xfails(terminalreporter):
             f"closed; remove the xfail.", yellow=True)
 
 
+def _coverage_line(stats) -> tuple[str, bool]:
+    """The banner text, and whether the run was actually the whole suite.
+
+    "full suite ran" is a claim, and it was being printed over runs that were
+    nothing of the kind: `-k` matching nothing, or a collection error, both used
+    to produce "coverage: 0 passed, 0 skipped - full suite ran". Pytest's own
+    output still showed the deselection or the error, so nothing was hidden --
+    but a banner added specifically to stop a partial run reading as a clean one
+    must not be the thing asserting it. The phrase is now held back unless the
+    run is genuinely complete, and whatever prevented that is named.
+    """
+    def n(key: str) -> int:
+        return len(stats.get(key, []))
+
+    gaps = n("xfailed") + n("xpassed")
+    parts = [f"{n('passed')} passed"]
+    if n("failed"):
+        parts.append(f"{n('failed')} failed")
+    if n("error"):
+        parts.append(f"{n('error')} error")
+    parts.append(f"{n('skipped')} skipped")
+    if gaps:
+        parts.append(f"{gaps} known-gap")
+    if n("deselected"):
+        parts.append(f"{n('deselected')} deselected")
+
+    # Only things that stopped a test from running make the run partial. A
+    # failure is a complete run with a bad result, which is a different claim
+    # and one pytest already makes loudly.
+    partial = []
+    if n("deselected"):
+        partial.append(f"{n('deselected')} deselected")
+    if n("skipped"):
+        partial.append(f"{n('skipped')} skipped")
+    if n("error"):
+        partial.append(f"{n('error')} collection/setup error(s)")
+    if not (n("passed") or n("failed") or n("skipped") or gaps):
+        partial.append("nothing ran")
+
+    tail = "full suite ran" if not partial else "PARTIAL RUN: " + ", ".join(partial)
+    return "coverage: " + ", ".join(parts) + " - " + tail, not partial
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Reprint skips as their own banner — the status line hides them too well."""
-    skipped = terminalreporter.stats.get("skipped", [])
-    passed = len(terminalreporter.stats.get("passed", []))
-    deferred = (len(terminalreporter.stats.get("xfailed", []))
-                + len(terminalreporter.stats.get("xpassed", [])))
+    stats = terminalreporter.stats
+    skipped = stats.get("skipped", [])
+    passed = len(stats.get("passed", []))
+    line, complete = _coverage_line(stats)
+    clean = complete and not stats.get("failed") and not stats.get("error")
+    terminalreporter.write_sep("=", line, green=clean, yellow=not clean)
+
     if not skipped:
-        tail = f", {deferred} known-gap" if deferred else ""
-        terminalreporter.write_sep("=", f"coverage: {passed} passed, 0 skipped"
-                                        f"{tail} - full suite ran",
-                                   green=not deferred, yellow=bool(deferred))
         _report_xfails(terminalreporter)
         return
 
