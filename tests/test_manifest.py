@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend import manifest as M  # noqa: E402
 from backend.manifest import (  # noqa: E402
+    AudioLayer,
     Camera,
     MotionType,
     RenderConfig,
@@ -101,7 +102,7 @@ def test_gate_shut_when_the_storyboard_is_not_approved():
     assert sb.gate_cleared() is False
 
 
-@pytest.mark.parametrize("broken_at", _BROKEN_AT)   # -> 0, 1, 2: every position
+@pytest.mark.parametrize("broken_at", _BROKEN_AT, ids=_PAID_IDS)
 def test_gate_shut_when_any_paid_shot_is_unapproved(broken_at):
     """Approving the storyboard is not approving the spend. Each paid beat is
     its own line item and needs its own tick — and the quantifier is `all`, so
@@ -128,7 +129,7 @@ def test_gate_shut_when_a_paid_shot_has_no_video_model(video_model):
 
 
 @pytest.mark.parametrize("video_model", [None, ""])
-@pytest.mark.parametrize("broken_at", _BROKEN_AT)   # -> 0, 1, 2: every position
+@pytest.mark.parametrize("broken_at", _BROKEN_AT, ids=_PAID_IDS)
 def test_gate_shut_when_any_one_of_several_paid_shots_has_no_video_model(
         video_model, broken_at):
     """The model term is quantified over *every* paid beat, and the single-shot
@@ -314,39 +315,82 @@ def test_unknown_keys_inside_an_sfx_layer_are_dropped():
 
 # `sfx_layers` is the one nested collection from_dict rebuilds without checking
 # its shape (backend/manifest.py:282-286). `camera` two lines below it gets an
-# isinstance(raw_cam, dict) guard; this does not, so any layer that is not a
-# mapping reaches `.items()` and raises AttributeError straight out of
-# from_dict -- into the same get_current_project "create a fresh project"
-# fallback that the key filtering exists to prevent. Same hazard class as the
-# unrecognised motion_type below, different exception, so it is recorded the
-# same way: what happens today, plus a strict xfail for what should.
+# isinstance(raw_cam, dict) guard; this does not. A malformed layer therefore
+# fails in one of two ways, and the split is `(lay or {})`:
+#
+#   truthy non-mapping ("wind", 1)  -> reaches .items(), AttributeError out of
+#       from_dict, into the same get_current_project "create a fresh project"
+#       fallback the key filtering exists to prevent. Loud, and costs the board.
+#   falsy   (None, "", 0, [], {})   -> absorbed by `or {}` and rebuilt as a
+#       DEFAULT AudioLayer(). Silent, and costs the beat's ambience.
+#
+# The falsy half is the dangerous one, which is why it is pinned below rather
+# than left to the "it raises" summary. A phantom default layer is truthy, and
+# resolve_sfx_layers (backend/audio.py:244-246) reads
+# `layers = list(... or []); if layers: return layers` -- so the phantom
+# short-circuits the legacy `<scene>.mp3` / `sfx`-prompt fallback underneath it
+# and the beat loses ambience it already had, with nothing raised and nothing
+# logged. Measured: a beat with a real s001.mp3 resolves to [('legacy',
+# 's001.mp3')] normally and to [('', '')] once one None sits in sfx_layers.
+#
+# Both halves are recorded the same way as the unrecognised motion_type below:
+# what happens today, plus a strict xfail for what should.
 
 @pytest.mark.parametrize("sfx_layers", [
     {"a": 1},          # a mapping of layers rather than a list
     ["wind"],          # a list of bare prompt strings
     "wind",            # a single prompt string
+    [1],               # a list of bare numbers
 ])
-def test_a_misshapen_sfx_layers_currently_raises(sfx_layers):
-    """Current behaviour, recorded — see the hazard note above."""
+def test_a_truthy_misshapen_sfx_layers_currently_raises(sfx_layers):
+    """Current behaviour of the loud half — see the hazard note above."""
     with pytest.raises(AttributeError):
         Storyboard.from_dict("p", {}, [{"scene_id": "s001",
                                         "sfx_layers": sfx_layers}])
 
 
+@pytest.mark.parametrize("layer", [None, "", 0, [], {}])
+def test_a_falsy_sfx_layer_currently_becomes_a_phantom_default(layer):
+    """Current behaviour of the silent half, recorded — not endorsed.
+
+    `or {}` turns each of these into `AudioLayer()`: a layer with no file, no
+    prompt and unity gain, indistinguishable from a real one to anything that
+    only checks whether the list is empty. That is precisely what
+    resolve_sfx_layers checks, so this is the value that quietly deletes a
+    beat's ambience. Pinned so the summary above cannot drift back to "malformed
+    layers raise", which would send a maintainer looking for an exception that
+    never comes."""
+    back = Storyboard.from_dict("p", {}, [{"scene_id": "s001",
+                                           "sfx_layers": [layer]}])
+    assert back.shots[0].sfx_layers == [AudioLayer()]
+
+
+@pytest.mark.parametrize("sfx_layers", [["wind"], [None]], ids=["truthy", "falsy"])
 @pytest.mark.xfail(strict=True, reason=(
     "KNOWN GAP in backend/manifest.py: from_dict rebuilds sfx_layers without a "
-    "shape check, so a non-mapping layer raises AttributeError and costs the "
-    "whole storyboard. `camera` guards with isinstance; this does not. "
-    "Deferred - the fix is production code and this PR is tests-only. Remove "
-    "this marker when from_dict skips layers it cannot read."))
-def test_a_misshapen_sfx_layers_should_be_skipped_not_fatal():
+    "shape check. A truthy non-mapping layer raises AttributeError and costs the "
+    "whole storyboard; a falsy one is absorbed by `(lay or {})` into a phantom "
+    "default AudioLayer(), which is truthy and so suppresses the legacy "
+    "ambience fallback in resolve_sfx_layers -- silently. `camera` guards with "
+    "isinstance; this does not. Deferred - the fix is production code and this "
+    "PR is tests-only. Remove this marker when from_dict drops layers it cannot "
+    "read, BOTH halves: fixing only the truthy one leaves the silent case live."))
+def test_an_unreadable_sfx_layer_should_be_dropped_not_fatal_and_not_phantom(
+        sfx_layers):
     """The regression test for the fix we owe, kept red until it lands.
 
     Ambience is the most disposable thing in the manifest — losing a layer costs
-    a sound, losing the storyboard costs the episode. An unreadable layer should
-    drop and leave the rest of the shot standing."""
+    a sound, losing the storyboard costs the episode, and losing it silently
+    costs the sound plus the chance to notice. An unreadable layer should drop,
+    leaving the rest of the shot standing and the list genuinely empty so the
+    legacy fallback still fires.
+
+    Parametrized over both halves deliberately: implement the drop for truthy
+    layers only and this case XPASSes (strict, so it fails and demands
+    attention) while `[None]` stays red, instead of the whole marker coming off
+    over a half-fix."""
     back = Storyboard.from_dict("p", {}, [{
-        "scene_id": "s001", "narration": "n", "sfx_layers": ["wind"]}])
+        "scene_id": "s001", "narration": "n", "sfx_layers": sfx_layers}])
     assert back.shots[0].narration == "n"
     assert back.shots[0].sfx_layers == []
 
