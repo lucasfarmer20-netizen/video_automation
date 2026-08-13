@@ -92,16 +92,41 @@ def _report_xfails(terminalreporter):
             f"closed; remove the xfail.", yellow=True)
 
 
-def _coverage_line(stats) -> tuple[str, bool]:
+def _early_stop_reason(terminalreporter) -> str:
+    """Why the session stopped early, or "" if it ran to the end.
+
+    `-x` and `--maxfail=N` set ``Session.shouldfail`` to a reason string
+    ("stopping after 1 failures"); ``pytest.exit()`` and internal aborts set
+    ``shouldstop`` the same way. Verified on pytest 9.1.1 rather than assumed:
+    under `-x` the attribute holding the reason is `shouldfail`, and
+    `shouldstop` stays False, so checking only the obvious-sounding one would
+    miss every early stop this suite can actually produce.
+
+    Both are read through getattr defaults because they are internals. A
+    summary hook that raised would be a worse failure than one that
+    under-reports -- the whole point of this module is that the run's shape
+    stays legible, and an exception here would take the skip and known-gap
+    banners down with it.
+    """
+    session = getattr(terminalreporter, "_session", None)
+    for attr in ("shouldfail", "shouldstop"):
+        value = getattr(session, attr, False)
+        if value:
+            return value if isinstance(value, str) else f"session.{attr}"
+    return ""
+
+
+def _coverage_line(stats, stop_reason: str = "") -> tuple[str, bool]:
     """The banner text, and whether the run was actually the whole suite.
 
     "full suite ran" is a claim, and it was being printed over runs that were
-    nothing of the kind: `-k` matching nothing, or a collection error, both used
-    to produce "coverage: 0 passed, 0 skipped - full suite ran". Pytest's own
-    output still showed the deselection or the error, so nothing was hidden --
-    but a banner added specifically to stop a partial run reading as a clean one
-    must not be the thing asserting it. The phrase is now held back unless the
-    run is genuinely complete, and whatever prevented that is named.
+    nothing of the kind: `-k` matching nothing, a collection error, or `-x`
+    aborting the session all used to produce "... - full suite ran". Pytest's
+    own output still showed the deselection, the error or the `!!! stopping`
+    line, so nothing was hidden -- but a banner added specifically to stop a
+    partial run reading as a clean one must not be the thing asserting it. The
+    phrase is held back unless the run is genuinely complete, and whatever
+    prevented that is named.
     """
     def n(key: str) -> int:
         return len(stats.get(key, []))
@@ -121,6 +146,13 @@ def _coverage_line(stats) -> tuple[str, bool]:
     # Only things that stopped a test from running make the run partial. A
     # failure is a complete run with a bad result, which is a different claim
     # and one pytest already makes loudly.
+    #
+    # There are four ways a run ends up short, and they are listed here rather
+    # than inferred, because each was missed in turn: deselection (-k/-m),
+    # skips, collection or setup errors, and the session stopping early. That
+    # last one is why `stop_reason` is a parameter -- it is the only one of the
+    # four that leaves no trace in `stats`, so counting reports alone will call
+    # an aborted run complete.
     partial = []
     if n("deselected"):
         partial.append(f"{n('deselected')} deselected")
@@ -128,6 +160,8 @@ def _coverage_line(stats) -> tuple[str, bool]:
         partial.append(f"{n('skipped')} skipped")
     if n("error"):
         partial.append(f"{n('error')} collection/setup error(s)")
+    if stop_reason:
+        partial.append(f"stopped early ({stop_reason})")
     if not (n("passed") or n("failed") or n("skipped") or gaps):
         partial.append("nothing ran")
 
@@ -140,7 +174,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     stats = terminalreporter.stats
     skipped = stats.get("skipped", [])
     passed = len(stats.get("passed", []))
-    line, complete = _coverage_line(stats)
+    line, complete = _coverage_line(stats, _early_stop_reason(terminalreporter))
     # Green means "nothing here needs your attention", and a known gap does.
     #
     # `complete` and `clean` are deliberately different questions. A run with
