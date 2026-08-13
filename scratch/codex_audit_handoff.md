@@ -10,9 +10,13 @@ Codex is the independent adversarial auditor for FilmCraft V1; Claude Code is
 the implementation owner. Findings by default, not patches. Preserve
 reproducible evidence and mutation-test important safeguards.
 
-Charter: `C:\Users\Lucas_Admin\Downloads\FILMCRAFT_V1_CODEX_ADVERSARIAL_AUDIT_CHARTER.md`
-Contract: `C:\Users\Lucas_Admin\Downloads\FILMCRAFT_V1_CODE_IMPLEMENTATION_CONTRACT.md`
-Both live outside the repo and will not appear in a clone.
+Charter: `docs/FILMCRAFT_V1_CODEX_ADVERSARIAL_AUDIT_CHARTER.md`
+Contract: `docs/FILMCRAFT_V1_CODE_IMPLEMENTATION_CONTRACT.md`
+
+Both are now committed. They used to live only in a local Downloads
+folder, so an auditor working from a clone -- or the author working from
+another machine -- had neither the rules being audited against nor the
+spec being audited. Copies in the repo travel with the code they govern.
 
 ## Current state
 
