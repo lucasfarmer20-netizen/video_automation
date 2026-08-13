@@ -13,6 +13,11 @@ Each report should record:
 - rejected findings and compensating safeguards;
 - whether production repository files were modified.
 
+Before starting a round, on either side, read
+[orchestration guardrails](orchestration_guardrails.md): when a round is worth
+running, what a finding and a fix must contain to count, and when to stop and
+ask a human.
+
 Current reports:
 
 - [Slice 4 remediation re-audit](filmcraft_v1_slice_4_remediation_reaudit.md)
