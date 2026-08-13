@@ -92,36 +92,113 @@ def _report_xfails(terminalreporter):
             f"closed; remove the xfail.", yellow=True)
 
 
-def _early_stop_reason(terminalreporter) -> str:
+_INTERRUPT: dict[str, str] = {}
+
+
+def pytest_keyboard_interrupt(excinfo):
+    """Record that the session was aborted, and why.
+
+    ``wrap_session`` (main.py:336-345) fires this for BOTH KeyboardInterrupt
+    and ``pytest.exit()`` -- they share an except arm -- and it fires *before*
+    an exit status is chosen. That ordering is the point: it is the one signal
+    that survives ``pytest.exit(returncode=N)``, where the exit status is
+    whatever the caller asked for and no longer says "interrupted".
+    """
+    value = getattr(excinfo, "value", None)
+    message = str(getattr(value, "msg", "") or value or "").strip()
+    kind = type(value).__name__ if value is not None else "interrupt"
+    _INTERRUPT["reason"] = f"{kind}: {message}" if message else kind
+
+
+def _early_stop_reason(terminalreporter, exitstatus=None) -> str:
     """Why the session stopped early, or "" if it ran to the end.
+
+    Three arms: ``shouldfail``, then ``shouldstop``, then
+    ``exitstatus == INTERRUPTED`` as the catch-all.
+
+    That is pytest's set of conditions but NOT pytest's order -- ``terminal.py``
+    tests INTERRUPTED before ``shouldstop``, and copying it verbatim mislabels
+    ``--stepwise``. ``Interrupted`` subclasses ``KeyboardInterrupt``, so a
+    stepwise stop raises it, ``wrap_session`` catches it in the same arm as
+    Ctrl-C, and the session ends with BOTH ``shouldstop`` set and
+    ``exitstatus == INTERRUPTED``. Measured under pytest's order: a stepwise
+    stop reported "interrupted (pytest.exit() or KeyboardInterrupt)" when the
+    true reason was "Test failed, continuing from this test next run."
+    Reordered, it reports the latter.
+
+    The orders differ because the jobs differ. pytest is choosing which *report*
+    to print and prefers the keyboard-interrupt traceback; this function is
+    choosing which *reason string* to show, so the specific one has to win over
+    the generic one. INTERRUPTED is last precisely because it is the arm that
+    cannot say why.
 
     DO NOT "simplify" this to ``shouldstop`` alone. That is the obvious-looking
     attribute and it is the wrong one; it was probed and rejected. Measured on
     pytest 9.1.1:
 
-        run                    shouldstop   shouldfail
-        -x, 1 of 2 failed      False        'stopping after 1 failures'
-        --maxfail=1            False        'stopping after 1 failures'
-        completed normally     False        False
+        run                    shouldstop   shouldfail   exitstatus
+        -x, 1 of 2 failed      False        'stopping…'  TESTS_FAILED
+        --maxfail=1            False        'stopping…'  TESTS_FAILED
+        --stepwise, 1 failed   'Test fail…' False        INTERRUPTED
+        pytest.exit() mid-run  False        False        INTERRUPTED
+        completed normally     False        False        OK
 
-    So ``shouldfail`` is the signal for every early stop this suite can
-    actually produce, and its value is already the human-readable reason -- no
-    message needs inventing here. ``shouldstop`` is kept because
-    ``pytest.exit()`` and internal aborts set it the same way, and it costs one
-    loop iteration to cover them; it is second precisely because it is empty in
-    the common case.
+    ``-x`` and ``--maxfail=N`` are one signal, not two: ``-x`` is registered
+    with ``const=1, dest="maxfail"``, so both rows above are the same code path
+    (``main.py:703``) shown twice.
 
-    Both are read through getattr defaults because they are internals. A
+    The middle arm exists because an earlier revision of this docstring claimed
+    ``shouldstop`` covered ``pytest.exit()`` and internal aborts. It does not,
+    and that claim was the justification for an arm that therefore caught
+    nothing. Across all of ``_pytest`` exactly two lines assign either flag --
+    ``main.py:703`` (shouldfail) and ``stepwise.py:187`` (shouldstop) -- and
+    ``pytest.exit()`` raises ``Exit``, which ``wrap_session`` catches at
+    ``main.py:336-345``, setting ``session.exitstatus`` and firing
+    ``pytest_keyboard_interrupt`` without touching either flag. KeyboardInterrupt
+    takes the same branch. Measured before the fix: a probe calling
+    ``pytest.exit()`` after the first of three tests printed
+    "1 passed, 0 skipped - full suite ran".
+
+    ``shouldstop`` keeps its place with a reason that is actually true:
+    ``--stepwise`` sets it, and third-party plugins (pytest-xdist,
+    pytest-timeout) set it too.
+
+    The fourth arm, ``_INTERRUPT``, exists because the exitstatus comparison
+    alone leaves a hole and the mapping behind it is not something to lean on.
+    ``pytest.exit(returncode=N)`` puts N in the exit status, so INTERRUPTED
+    never matches. Measured:
+
+        call                     exitstatus at the hook   without _INTERRUPT
+        pytest.exit("x")         2 (INTERRUPTED)          caught
+        pytest.exit(returncode=0) 0                       "full suite ran"
+        pytest.exit(returncode=1) 1                       "full suite ran"
+        pytest.exit(returncode=3) 1  (not 3)              "full suite ran"
+
+    The last row is the reason this is a hook and not a wider comparison: 3
+    arrives as 1, so no set of exit codes written here would be reliable.
+    ``pytest_keyboard_interrupt`` fires before any of that mapping happens, for
+    both KeyboardInterrupt and Exit, so it catches all four rows. The exitstatus
+    arm is kept underneath it as a cheap backstop.
+
+    Everything is read through getattr defaults because these are internals. A
     summary hook that raised would be a worse failure than one that
     under-reports -- the whole point of this module is that the run's shape
     stays legible, and an exception here would take the skip and known-gap
     banners down with it.
     """
     session = getattr(terminalreporter, "_session", None)
+
     for attr in ("shouldfail", "shouldstop"):
         value = getattr(session, attr, False)
         if value:
             return value if isinstance(value, str) else f"session.{attr}"
+
+    if _INTERRUPT.get("reason"):
+        return _INTERRUPT["reason"]
+
+    if exitstatus is not None and exitstatus == pytest.ExitCode.INTERRUPTED:
+        return "interrupted"
+
     return ""
 
 
@@ -183,7 +260,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     stats = terminalreporter.stats
     skipped = stats.get("skipped", [])
     passed = len(stats.get("passed", []))
-    line, complete = _coverage_line(stats, _early_stop_reason(terminalreporter))
+    line, complete = _coverage_line(
+        stats, _early_stop_reason(terminalreporter, exitstatus))
     # Green means "nothing here needs your attention", and a known gap does.
     #
     # `complete` and `clean` are deliberately different questions. A run with
