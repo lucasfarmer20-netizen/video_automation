@@ -271,10 +271,14 @@ class Storyboard:
             known = set(Shot.__dataclass_fields__)
             for shot in shots_list:
                 # Drop unknown keys rather than raising. Shot(**shot) used to
-                # explode on any extra field, and because get_current_project
-                # catches that and falls through to "create a fresh project",
-                # one stray key was enough to overwrite a whole storyboard with
-                # an empty one. RenderConfig already filters this way.
+                # explode on any extra field, and a from_dict that raises takes
+                # the project offline: get_current_project (backend/main.py:280-
+                # 294) refuses to overwrite a manifest that exists but will not
+                # parse, and raises HTTP 500 instead. That refusal is correct --
+                # it replaced an older branch that answered a failed load by
+                # seeding a fresh empty Storyboard over the top -- but it means
+                # one stray key is a hard 500 on every read until a human
+                # intervenes. RenderConfig already filters this way.
                 fields = {k: v for k, v in shot.items() if k in known}
                 extra = set(shot) - known
                 if extra:
@@ -290,8 +294,19 @@ class Storyboard:
                 # ambience it already had, with nothing raised and nothing
                 # logged. That is worse than the exception it replaces, so
                 # "cannot be read" must reach an empty list, not a placeholder.
+                #
+                # `is not None` rather than a truthiness test, which would let
+                # `{}`, `""` and `0` past the guard and drop them to [] with no
+                # note -- the silent failure this exists to remove, reintroduced
+                # one level up. `is not None` rather than `"sfx_layers" in shot`
+                # because an explicit null is JSON for "no layers", not a
+                # mistyped value: every other nested field here reads
+                # `data.get(...) or {}` and coerces null to empty without
+                # comment, and a note that fires on the idiom the loader accepts
+                # everywhere else teaches people to ignore notes. A wrong *type*
+                # is worth saying out loud; "nothing" is not.
                 raw_layers = shot.get("sfx_layers")
-                if raw_layers and not isinstance(raw_layers, (list, tuple)):
+                if raw_layers is not None and not isinstance(raw_layers, (list, tuple)):
                     print(f"manifest: dropping sfx_layers on {scene}: expected a "
                           f"list of layers, got {type(raw_layers).__name__}")
                     raw_layers = ()
@@ -300,6 +315,16 @@ class Storyboard:
                     readable = ({k: v for k, v in lay.items()
                                  if k in AudioLayer.__dataclass_fields__}
                                 if isinstance(lay, dict) else {})
+                    # A mapping with no recognised key at all -- `{}`, or nothing
+                    # but unknown keys -- rebuilds as that same phantom, so it
+                    # drops too. A mapping with ANY recognised key is kept,
+                    # however thin, and that is load-bearing rather than
+                    # cautious: PATCH /api/scene/{id}/sfx/layer
+                    # (backend/main.py:4645-4648) appends exactly a fileless,
+                    # promptless AudioLayer(id=...), because in the studio a
+                    # layer exists before its audio is generated. A loader that
+                    # dropped layers for having no file would delete the layer
+                    # the UI had just created, on the very next read.
                     if not readable:
                         print(f"manifest: dropping unreadable sfx layer {lay!r} on {scene}")
                         continue
@@ -309,6 +334,17 @@ class Storyboard:
                 # reason the keys are filtered. PARALLAX is the fallback because
                 # it is the free local tier: a value nobody recognises must move
                 # the beat away from spend, never toward the paid video API.
+                #
+                # Know that this degrade is not only logged, it is PERSISTED.
+                # from_dict feeds load(), and anything that loads then saves --
+                # the Firestore bootstrap at backend/main.py:88-94 on a project's
+                # first sync, or any PATCH endpoint afterwards -- writes the
+                # substituted tier back. A manifest carrying a tier this build
+                # does not recognise is rewritten to parallax, with one line of
+                # stdout as the whole audit trail. Preserving the raw string
+                # instead would be worse: the value would sit in the manifest
+                # unreadable by anything, and Gate 1 could not reason about it.
+                # This is a known cost, not an oversight.
                 raw_tier = shot.get("motion_type", "parallax")
                 try:
                     fields["motion_type"] = MotionType(raw_tier)

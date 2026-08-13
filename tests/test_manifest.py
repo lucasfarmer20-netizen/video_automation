@@ -304,10 +304,12 @@ def test_non_dict_camera_becomes_a_default_camera():
 
 
 def test_unknown_keys_are_dropped_rather_than_raising():
-    """Shot(**shot) used to explode on any extra field, and get_current_project
-    catches that and falls through to "create a fresh project" — so one stray
-    key was enough to overwrite a whole storyboard with an empty one. Camera and
-    every nested config filter for the same reason."""
+    """Shot(**shot) used to explode on any extra field, and a from_dict that
+    raises takes the project offline: get_current_project (backend/main.py:280-
+    294) refuses to overwrite a manifest that exists but will not parse and
+    raises HTTP 500 instead, so one stray key is a hard 500 on every read until
+    a human intervenes. Camera and every nested config filter for the same
+    reason."""
     back = Storyboard.from_dict(
         "p",
         {"title": "T", "render": {"backend": "flux-cfg", "from_the_future": 1},
@@ -344,8 +346,10 @@ def test_unknown_keys_inside_an_sfx_layer_are_dropped():
 # one of two ways, and the split was `(lay or {})`:
 #
 #   truthy non-mapping ("wind", 1)  -> reached .items(), AttributeError out of
-#       from_dict, into the same get_current_project "create a fresh project"
-#       fallback the key filtering exists to prevent. Loud, and cost the board.
+#       from_dict, and a from_dict that raises takes the project offline:
+#       get_current_project (backend/main.py:280-294) refuses to overwrite a
+#       manifest that will not parse and raises HTTP 500 instead. Loud, and it
+#       blocked every read of the project until a human intervened.
 #   falsy   (None, "", 0, [], {})   -> absorbed by `or {}` and rebuilt as a
 #       DEFAULT AudioLayer(). Silent, and cost the beat's ambience.
 #
@@ -369,9 +373,11 @@ def test_unknown_keys_inside_an_sfx_layer_are_dropped():
 # through: `{}` and a mapping of nothing but unrecognised keys both filter down
 # to no readable field and would rebuild as exactly the same phantom default
 # AudioLayer(). A mapping carrying at least one recognised key is kept, however
-# thin — deciding that a layer with a gain but no file is "not really a layer"
-# would be redefining the shape rather than reading it, and that belongs
-# nowhere near a loader.
+# thin, and that is load-bearing: PATCH /api/scene/{id}/sfx/layer
+# (backend/main.py:4645-4648) appends exactly a fileless, promptless
+# AudioLayer(id=...), because in the studio a layer exists before its audio is
+# generated. A loader that dropped layers for having no file would delete the
+# layer the UI had just created, on the very next read.
 
 _UNREADABLE = [
     pytest.param(["wind"], id="truthy"),               # a bare prompt string
@@ -419,20 +425,64 @@ def test_dropping_an_unreadable_sfx_layer_says_so(sfx_layers, capsys):
 
 
 @pytest.mark.parametrize("sfx_layers", [
-    pytest.param("wind", id="a-single-prompt-string"),
-    pytest.param({"a": 1}, id="a-mapping-of-layers"),
-    pytest.param(7, id="a-number"),
+    pytest.param("wind", id="truthy-string"),
+    pytest.param({"a": 1}, id="truthy-mapping"),
+    pytest.param(7, id="truthy-number"),
+    pytest.param({}, id="falsy-mapping"),
+    pytest.param("", id="falsy-string"),
+    pytest.param(0, id="falsy-number"),
+    pytest.param(0.0, id="falsy-float"),
+    pytest.param(False, id="falsy-bool"),
 ])
 def test_a_misshapen_sfx_layers_value_costs_only_the_layers(sfx_layers, capsys):
-    """`sfx_layers` itself not being a list is the other way in. Iterating a
+    """`sfx_layers` itself not being a sequence is the other way in. Iterating a
     string yields characters and a mapping yields its keys, so both used to
     reach `.items()` on a str and take the storyboard down with them. Now the
-    whole value drops, loudly, and the beat survives."""
+    whole value drops, loudly, and the beat survives.
+
+    Parametrized across the truthiness boundary for the same reason the
+    per-layer cases are, and the reason is not hypothetical: the first version
+    of this guard read `if raw_layers and not isinstance(...)`, so `{}`, `""`
+    and `0` skipped it, became `[]`, and said nothing. That is the silent drop
+    this whole slice exists to remove, reintroduced one level up from where it
+    was fixed — and the truthy cases alone could not see it.
+
+    Both halves of the outcome are asserted. An empty list on its own is what
+    the buggy version also produced; it is the empty list *plus* the note that
+    distinguishes a drop from a disappearance."""
     back = Storyboard.from_dict("p", {}, [{
         "scene_id": "s001", "narration": "n", "sfx_layers": sfx_layers}])
     assert back.shots[0].narration == "n"
     assert back.shots[0].sfx_layers == []
-    assert "s001" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "sfx_layers" in out and "s001" in out, out
+    assert type(sfx_layers).__name__ in out, out
+
+
+@pytest.mark.parametrize("shot", [
+    pytest.param({"scene_id": "s001"}, id="absent"),
+    pytest.param({"scene_id": "s001", "sfx_layers": None}, id="explicit-null"),
+    pytest.param({"scene_id": "s001", "sfx_layers": []}, id="empty-list"),
+    pytest.param({"scene_id": "s001", "sfx_layers": ()}, id="empty-tuple"),
+])
+def test_having_no_sfx_layers_is_not_a_malformed_value(shot, capsys):
+    """The decision behind `raw_layers is not None`, pinned so it reads as a
+    decision rather than an oversight.
+
+    An explicit null is JSON for "no layers", not a mistyped value. Every other
+    nested field in from_dict — render, mix, grade, motion — reads
+    `data.get(...) or {}` and coerces null to empty without comment, so a note
+    here would make sfx_layers the one field that complains about the idiom the
+    loader accepts everywhere else. The note exists to flag values that were
+    *meant* to be layers and could not be read; one that fires on a legitimate
+    idiom trains people to ignore notes, which costs more than it saves.
+
+    The alternative considered was `"sfx_layers" in shot`, which distinguishes
+    absent from null and would print on null. Rejected on the above; the
+    reachable difference between the two is exactly this test."""
+    back = Storyboard.from_dict("p", {}, [shot])
+    assert back.shots[0].sfx_layers == []
+    assert "sfx_layers" not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("container", [list, tuple], ids=["list", "tuple"])
