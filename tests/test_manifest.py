@@ -56,6 +56,18 @@ def _free(scene_id: str, motion_type: MotionType = MotionType.PARALLAX) -> Shot:
     return Shot(scene_id=scene_id, motion_type=motion_type)
 
 
+def _siblings_are_ready(shots: list[Shot], broken_at: int) -> bool:
+    """Every shot except ``broken_at`` clears the gate on its own.
+
+    The mixed-list tests assert a *closed* gate, which is what a broken helper
+    would also produce — if `_paid()` stopped building a gate-clearing beat they
+    would pass for the wrong reason and stop testing the quantifier at all.
+    This pins that exactly one beat in the list is the one holding it shut."""
+    rest = [s for i, s in enumerate(shots) if i != broken_at]
+    return Storyboard(title="T", storyboard_approved=True,
+                      shots=rest).gate_cleared() is True
+
+
 # --- Gate 1: Storyboard.gate_cleared() ----------------------------------------
 
 def test_gate_shut_when_the_storyboard_is_not_approved():
@@ -66,12 +78,21 @@ def test_gate_shut_when_the_storyboard_is_not_approved():
     assert sb.gate_cleared() is False
 
 
-def test_gate_shut_when_a_paid_shot_is_unapproved():
+@pytest.mark.parametrize("broken_at", [0, 2])
+def test_gate_shut_when_any_paid_shot_is_unapproved(broken_at):
     """Approving the storyboard is not approving the spend. Each paid beat is
-    its own line item and needs its own tick."""
+    its own line item and needs its own tick — and the quantifier is `all`, so
+    one unticked beat holds the gate however ready its neighbours are.
+
+    Both ends of the list are covered for the reason given on the video_model
+    test below: a weakening that only ever consults one position passes if the
+    suite only ever breaks that position."""
+    paid = [_paid("s001"), _paid("s002"), _paid("s003")]
+    paid[broken_at] = _paid(paid[broken_at].scene_id, approved=False)
     sb = Storyboard(title="T", storyboard_approved=True,
-                    shots=[_paid("s001"), _paid("s002", approved=False)])
+                    shots=[*paid, _free("s004")])
     assert sb.gate_cleared() is False
+    assert _siblings_are_ready(paid, broken_at)
 
 
 @pytest.mark.parametrize("video_model", [None, ""])
@@ -82,6 +103,29 @@ def test_gate_shut_when_a_paid_shot_has_no_video_model(video_model):
     sb = Storyboard(title="T", storyboard_approved=True,
                     shots=[_paid("s001", video_model=video_model)])
     assert sb.gate_cleared() is False
+
+
+@pytest.mark.parametrize("video_model", [None, ""])
+@pytest.mark.parametrize("broken_at", [0, 2])
+def test_gate_shut_when_any_one_of_several_paid_shots_has_no_video_model(
+        video_model, broken_at):
+    """The model term is quantified over *every* paid beat, and the single-shot
+    case above cannot show that: with one paid shot, `all` and `any` agree.
+
+    Weaken the predicate to `... and any(bool(s.video_model) for paid)` — all
+    paid shots approved, at least one carrying a model — and every other test
+    in this file still passes, while a storyboard whose second Tier-C beat has
+    no model clears Gate 1 and reaches the paid API with nothing to render on.
+    That is the silent gate weakening this file exists to catch, so it is
+    pinned with the model-less beat both first and last: a reading that
+    short-circuits on the first paid shot, or that only inspects index 0, fails
+    in exactly one of the two positions."""
+    paid = [_paid("s001"), _paid("s002"), _paid("s003")]
+    paid[broken_at] = _paid(paid[broken_at].scene_id, video_model=video_model)
+    sb = Storyboard(title="T", storyboard_approved=True,
+                    shots=[*paid, _free("s004")])
+    assert sb.gate_cleared() is False
+    assert _siblings_are_ready(paid, broken_at)
 
 
 def test_gate_open_when_approved_and_every_paid_shot_is_ready():
@@ -234,15 +278,49 @@ def test_camera_survives_a_round_trip():
     assert _roundtrip(sb).shots[0].camera == sb.shots[0].camera
 
 
-def test_an_unrecognised_motion_type_raises():
-    """Documenting current behaviour, not endorsing it: unknown *keys* are
-    filtered out, but an unknown motion_type *value* propagates a ValueError out
-    of from_dict. That lands in the same get_current_project fallback the key
-    filtering exists to avoid. Flagged for review; deliberately not changed here,
-    since a fallback would be a behaviour change and this suite is tests-only."""
+# An unknown motion_type *value* is a live hazard, not a settled contract.
+# Unknown *keys* are filtered out precisely so one stray field cannot cost a
+# whole storyboard, but `MotionType(shot.get("motion_type", "parallax"))` still
+# raises ValueError on an unrecognised value — and that lands in the very
+# get_current_project fallback the key filtering exists to avoid, discarding a
+# valid storyboard to "create a fresh project".
+#
+# Fixing it means changing backend/manifest.py, and this suite is tests-only, so
+# the two tests below split the job rather than blessing the current behaviour:
+# the first records what the code does today (so a change in the *shape* of the
+# failure is noticed), and the second states what it should do and is expected to
+# fail until someone makes it true. strict=True means the day the production fix
+# lands, the xfail turns into an XPASS failure and forces both of these to be
+# rewritten deliberately, instead of the desired-behaviour test quietly passing
+# unnoticed.
+
+def test_an_unrecognised_motion_type_currently_raises():
+    """Current behaviour, recorded — see the hazard note above. Not an
+    endorsement: the companion xfail below is the behaviour we want."""
     with pytest.raises(ValueError):
         Storyboard.from_dict("p", {}, [{"scene_id": "s001",
                                         "motion_type": "claymation"}])
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "KNOWN GAP in backend/manifest.py: an unrecognised motion_type value raises "
+    "out of from_dict instead of falling back, so one bad value can cost the "
+    "whole storyboard. Deferred — the fix is production code and this PR is "
+    "tests-only. Remove this marker when from_dict degrades gracefully."))
+def test_an_unrecognised_motion_type_should_fall_back_to_parallax():
+    """The regression test for the fix we owe, kept red until it lands.
+
+    An unreadable tier is not a reason to lose an episode. It should degrade the
+    way a missing tier already does — to PARALLAX, the free tier — because the
+    safe failure for a value nobody recognises is the one that cannot spend
+    money. The rest of the shot must survive intact; that is the whole point of
+    degrading instead of raising."""
+    back = Storyboard.from_dict("p", {}, [{"scene_id": "s001",
+                                           "narration": "n",
+                                           "motion_type": "claymation"}])
+    assert back.shots[0].motion_type is MotionType.PARALLAX
+    assert back.shots[0].needs_paid_video() is False
+    assert back.shots[0].narration == "n"
 
 
 # --- load() / save() on local JSON --------------------------------------------
