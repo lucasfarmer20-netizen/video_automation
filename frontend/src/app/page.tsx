@@ -187,10 +187,10 @@ export default function WorkspacePage() {
    * and "the studio can safely display it" are different conditions, and using
    * the first to answer the second renders one film while addressing another.
    *
-   * Only an installed load takes the loading screen down, for the same reason:
-   * exposing the workspace after a failed refresh shows the PREVIOUS film while
-   * the identity has already moved to the new one. Callers that raised the
-   * loading screen are responsible for lowering it when this returns false.
+   * This does not touch the loading screen. Callers that raise it own lowering
+   * it — see `whileLoading` — because a loader that sometimes lowers a screen it
+   * never raised is precisely how one caller came to depend on a side effect
+   * that later changed underneath it.
    */
   const fetchActiveProject = async (): Promise<boolean> => {
     let installed = false;
@@ -243,13 +243,32 @@ export default function WorkspacePage() {
       await fetchSlots();
     } catch (e) {
       console.error("Failed to load active project details", e);
-    } finally {
-      // Only an installed load exposes the workspace. Clearing this on failure
-      // is what let a switch render the previous film with the new film's
-      // identity already applied.
-      if (installed) setLoading(false);
     }
     return installed;
+  };
+
+  /**
+   * Run something that replaces the workspace with the loading screen.
+   *
+   * Raising the screen and lowering it are ONE responsibility, and it lives
+   * here. Splitting them is what broke `handleCreateProject`: it raised the
+   * screen and relied on `fetchActiveProject` to lower it, which silently
+   * stopped being true when that lowering became conditional, and a create
+   * whose follow-up load failed sat on the spinner until someone reloaded.
+   *
+   * `fetchActiveProject` no longer touches `loading` at all — it loads and says
+   * whether it installed, which is all it should ever have done. The screen
+   * comes down here on every exit: success, failure, or throw. A caller that
+   * wants it to stay up after success does not exist, because success means the
+   * film is installed and ready to show.
+   */
+  const whileLoading = async <T,>(run: () => Promise<T>): Promise<T> => {
+    setLoading(true);
+    try {
+      return await run();
+    } finally {
+      setLoading(false);
+    }
   };
 
   /**
@@ -442,11 +461,11 @@ export default function WorkspacePage() {
 
   useEffect(() => {
     fetchProjects();
-    // The first load raised the loading screen (useState(true)), so it owns
-    // lowering it when the load does not install anything — otherwise a failed
-    // first fetch sits on the spinner forever instead of reaching the "no
-    // active project" recovery below.
-    fetchActiveProject().then((installed) => { if (!installed) setLoading(false); });
+    // The first render raises the screen via useState(true), so this owns
+    // lowering it — on BOTH outcomes, or a failed first fetch sits on the
+    // spinner instead of reaching the "no active project" recovery below.
+    // (Not whileLoading: the screen is already up before this effect runs.)
+    fetchActiveProject().finally(() => setLoading(false));
     pollJobs();
 
     // Setup polling intervals
@@ -556,8 +575,7 @@ export default function WorkspacePage() {
   };
 
   // Action handlers
-  const handleSelectProject = async (rel: string, projectId: string) => {
-    setLoading(true);
+  const handleSelectProject = (rel: string, projectId: string) => whileLoading(async () => {
     // Retarget first. Any reply still in flight for the previous project now
     // fails the staleness check instead of repainting the studio.
     //
@@ -620,10 +638,9 @@ export default function WorkspacePage() {
       if (!opened) {
         projectIdRef.current = previousId;
         setActiveProjectId(previousId);
-        setLoading(false);
       }
     }
-  };
+  });
 
   const openImage = (sceneId: string, images: string[], index: number, chosen: number | null) =>
     setLightbox({ sceneId, images, index, chosen });
@@ -651,17 +668,21 @@ Moved to: ${res.moved_to}`);
     }
   };
 
-  const handleCreateProject = async (name: string, channel: string) => {
-    setLoading(true);
+  const handleCreateProject = (name: string, channel: string) => whileLoading(async () => {
     const data = await post("/api/project/new", { name, channel });
-    if (data.ok) {
-      await fetchActiveProject();
-      await fetchProjects();
-    } else {
-      alert("Failed to create project");
-      setLoading(false);
+    if (!data.ok) {
+      alert("Failed to create project: " + (data.error || "unknown error"));
+      return;
     }
-  };
+    // Says what happened rather than leaving the studio to be interpreted. The
+    // project exists on the server either way; what failed is reading it back.
+    if (await fetchActiveProject()) {
+      await fetchProjects();
+      return;
+    }
+    alert("Created that project, but could not load it. Reload the studio to "
+          + "pick it up.");
+  });
 
   const handleUpdateField = async (sceneId: string, field: string, value: any) => {
     const data = await post(`/api/shot/${sceneId}`, { [field]: value });

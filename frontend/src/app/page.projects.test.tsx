@@ -49,7 +49,7 @@ let active: FilmId = "film-a";
 /** How /api/project/select behaves. Tests set this before clicking. */
 let selectOutcome: "ok" | "refused" | "network-failure" = "ok";
 /** How /api/project/active behaves — the authoritative load after a switch. */
-let activeOutcome: "ok" | "transport" | "bad-json" = "ok";
+let activeOutcome: "ok" | "transport" | "bad-json" | "refused" = "ok";
 
 /** The coverage slot both films share — the id collision the stamp must survive. */
 const SLOT_ID = "s001::s001.1";
@@ -167,6 +167,19 @@ beforeEach(() => {
     // land in fetchActiveProject's catch, which used to swallow them.
     if (url.startsWith("/api/project/active")) {
       if (activeOutcome === "transport") throw new TypeError("Failed to fetch");
+      if (activeOutcome === "refused") {
+        // The create-specific shape: /api/project/new repoints the pointer, but
+        // this request still carries the PREVIOUS X-Project-Id, and if that id
+        // no longer resolves the middleware answers 404. A well-formed reply
+        // that simply is not ok — so `installed` is false without anything
+        // having thrown, which is a different route to the same hang.
+        return {
+          ok: false, status: 404,
+          headers: new Headers({ "X-Project-Id": target }),
+          json: async () => ({ ok: false, error: "unknown project" }),
+          text: async () => JSON.stringify({ ok: false, error: "unknown project" }),
+        } as unknown as Response;
+      }
       if (activeOutcome === "bad-json") {
         return {
           ok: true, status: 200,
@@ -199,6 +212,22 @@ const after = (prefix: string) => {
   return sent.slice(at + 1).filter((r) => r.url.startsWith(prefix));
 };
 
+/**
+ * Assert every request to `prefix` after the switch named `projectId` — and
+ * that there was at least one.
+ *
+ * The length check is the whole point. `[].every(...)` is vacuously true, so
+ * asserting `.every()` alone would keep passing if the flow stopped issuing the
+ * request at all: the test would assert nothing while still reporting green.
+ * Going through one helper is what stops that reappearing at the next call site
+ * someone adds.
+ */
+const expectAllNamed = async (prefix: string, projectId: string) => {
+  await waitFor(() => expect(after(prefix).length).toBeGreaterThan(0));
+  const named = after(prefix).map((r) => r.projectId);
+  expect(named.every((p) => p === projectId)).toBe(true);
+};
+
 const openRoughCut = () =>
   fireEvent.click(screen.getByRole("button", { name: /roughcut/i }));
 
@@ -226,11 +255,9 @@ describe("switching project, through the sidebar the user actually clicks", () =
 
     // Every request issued after the switch names film B. Before the wiring fix
     // these all carried film-a and the server dutifully answered about film A.
-    await waitFor(() => expect(after("/api/project/active").length).toBeGreaterThan(0));
-    expect(after("/api/project/active").every((r) => r.projectId === "film-b")).toBe(true);
+    await expectAllNamed("/api/project/active", "film-b");
 
-    await waitFor(() => expect(after("/api/timeline/slots").length).toBeGreaterThan(0));
-    expect(after("/api/timeline/slots").every((r) => r.projectId === "film-b")).toBe(true);
+    await expectAllNamed("/api/timeline/slots", "film-b");
   });
 
   test("film A's cut does not survive the switch, though the slot ids collide", async () => {
@@ -279,14 +306,11 @@ describe("a switch the server refuses leaves the studio on the film it is showin
 
     // …and still film A in everything it says: two reads and one mutation.
     await swapTakeOnBeatSlot();
-    await waitFor(() => expect(after("/api/shot/s002").length).toBeGreaterThan(0));
-    expect(after("/api/shot/s002").every((r) => r.projectId === "film-a")).toBe(true);
+    await expectAllNamed("/api/shot/s002", "film-a");
 
-    await waitFor(() => expect(after("/api/timeline/slots").length).toBeGreaterThan(0));
-    expect(after("/api/timeline/slots").every((r) => r.projectId === "film-a")).toBe(true);
+    await expectAllNamed("/api/timeline/slots", "film-a");
 
-    await waitFor(() => expect(after("/api/project/active").length).toBeGreaterThan(0));
-    expect(after("/api/project/active").every((r) => r.projectId === "film-a")).toBe(true);
+    await expectAllNamed("/api/project/active", "film-a");
   });
 
   test("a thrown request rolls back the same way", async () => {
@@ -299,10 +323,9 @@ describe("a switch the server refuses leaves the studio on the film it is showin
     expect(screen.getByTestId("coverage-summary").textContent).toBe("2/2 visuals ready");
 
     await swapTakeOnBeatSlot();
-    await waitFor(() => expect(after("/api/shot/s002").length).toBeGreaterThan(0));
-    expect(after("/api/shot/s002").every((r) => r.projectId === "film-a")).toBe(true);
-    expect(after("/api/timeline/slots").every((r) => r.projectId === "film-a")).toBe(true);
-    expect(after("/api/project/active").every((r) => r.projectId === "film-a")).toBe(true);
+    await expectAllNamed("/api/shot/s002", "film-a");
+    await expectAllNamed("/api/timeline/slots", "film-a");
+    await expectAllNamed("/api/project/active", "film-a");
   });
 
   test("a switch the server ACCEPTS but the studio cannot load rolls back too", async () => {
@@ -328,9 +351,8 @@ describe("a switch the server refuses leaves the studio on the film it is showin
     // …so a real edit made here must reach film A, not the film the server
     // switched to underneath it.
     await swapTakeOnBeatSlot();
-    await waitFor(() => expect(after("/api/shot/s002").length).toBeGreaterThan(0));
-    expect(after("/api/shot/s002").every((r) => r.projectId === "film-a")).toBe(true);
-    expect(after("/api/timeline/slots").every((r) => r.projectId === "film-a")).toBe(true);
+    await expectAllNamed("/api/shot/s002", "film-a");
+    await expectAllNamed("/api/timeline/slots", "film-a");
   });
 
   test("the same when the load returns a body that will not parse", async () => {
@@ -347,9 +369,58 @@ describe("a switch the server refuses leaves the studio on the film it is showin
       expect(screen.getByTestId("coverage-summary").textContent).toBe("2/2 visuals ready"));
 
     await swapTakeOnBeatSlot();
-    await waitFor(() => expect(after("/api/shot/s002").length).toBeGreaterThan(0));
-    expect(after("/api/shot/s002").every((r) => r.projectId === "film-a")).toBe(true);
-    expect(after("/api/timeline/slots").every((r) => r.projectId === "film-a")).toBe(true);
+    await expectAllNamed("/api/shot/s002", "film-a");
+    await expectAllNamed("/api/timeline/slots", "film-a");
+  });
+
+  test("creating a project that will not load does not strand the spinner", async () => {
+    // Every caller that raises the loading screen must lower it. fetchActiveProject
+    // now lowers it only on a successful install — right for a switch, and fatal
+    // for any other caller that raised it and assumed the old unconditional
+    // behaviour. handleCreateProject is one, and this pins it: without its own
+    // check the studio sits on "Loading Workspace" until someone reloads.
+    await bootIntoFilmA();
+    activeOutcome = "transport";
+    vi.stubGlobal("prompt", vi.fn(() => "A New Film"));
+
+    fireEvent.click(screen.getByRole("button", { name: /new storyboard/i }));
+    await waitFor(() => expect(alert).toHaveBeenCalled());
+    activeOutcome = "ok";
+
+    // The spinner is down and the studio is usable again.
+    await waitFor(() => expect(screen.queryByText(/Loading Workspace/i)).toBeNull());
+    expect(screen.getAllByText("Film A").length).toBeGreaterThan(0);
+  });
+
+  test("…including when the load returns a body that will not parse", async () => {
+    await bootIntoFilmA();
+    activeOutcome = "bad-json";
+    vi.stubGlobal("prompt", vi.fn(() => "A New Film"));
+
+    fireEvent.click(screen.getByRole("button", { name: /new storyboard/i }));
+    await waitFor(() => expect(alert).toHaveBeenCalled());
+    activeOutcome = "ok";
+
+    await waitFor(() => expect(screen.queryByText(/Loading Workspace/i)).toBeNull());
+    expect(screen.getAllByText("Film A").length).toBeGreaterThan(0);
+  });
+
+  test("…including when the load answers 404 rather than throwing", async () => {
+    // Specific to create: /api/project/new repoints the pointer, but the
+    // follow-up load still carries the PREVIOUS X-Project-Id. If that id no
+    // longer resolves the middleware answers 404 — a well-formed reply that is
+    // simply not ok, so `installed` is false with nothing thrown. Same hang,
+    // different route, and it does not go through fetchActiveProject's catch.
+    await bootIntoFilmA();
+    activeOutcome = "refused";
+    vi.stubGlobal("prompt", vi.fn(() => "A New Film"));
+
+    fireEvent.click(screen.getByRole("button", { name: /new storyboard/i }));
+    await waitFor(() => expect(alert).toHaveBeenCalled());
+    activeOutcome = "ok";
+
+    await waitFor(() => expect(screen.queryByText(/Loading Workspace/i)).toBeNull());
+    expect(screen.getAllByText("Film A").length).toBeGreaterThan(0);
   });
 
   test("a late reply from the abandoned film is stale after the rollback", async () => {

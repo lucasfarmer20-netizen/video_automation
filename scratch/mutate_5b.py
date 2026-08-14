@@ -15,6 +15,7 @@ mutation would have left the tree dirty.
 """
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -139,10 +140,10 @@ MUTATIONS = [
           "      if (!opened) {\n"
           "        projectIdRef.current = previousId;\n"
           "        setActiveProjectId(previousId);\n"
-          "        setLoading(false);\n"
           "      }",
-          "      if (!opened) {\n"
-          "        setLoading(false);\n"
+          "      if (false && !opened) {\n"
+          "        projectIdRef.current = previousId;\n"
+          "        setActiveProjectId(previousId);\n"
           "      }")],
     ),
     Mutation(
@@ -152,6 +153,28 @@ MUTATIONS = [
           "      if (!opened) {",
           "      opened = true;\n"
           "      await fetchActiveProject();\n"
+          "      if (!opened) {")],
+    ),
+    Mutation(
+        # The regression, restored exactly: lowering the screen split back out of
+        # whileLoading, so the switch path keeps working and create hangs.
+        "the loading screen lowered by one caller and not the other", "§11.4",
+        [(PAGE,
+          "    try {\n"
+          "      return await run();\n"
+          "    } finally {\n"
+          "      setLoading(false);\n"
+          "    }",
+          "    try {\n"
+          "      return await run();\n"
+          "    } finally {\n"
+          "      /* mutated: left to whichever caller remembers */\n"
+          "    }"),
+         (PAGE,
+          "    } finally {\n"
+          "      if (!opened) {",
+          "    } finally {\n"
+          "      setLoading(false);\n"
           "      if (!opened) {")],
     ),
     Mutation(
@@ -231,7 +254,20 @@ def apply(path: Path, find: str, replace: str) -> None:
     path.write_text(text.replace(find, replace, 1), encoding="utf-8")
 
 
+def digest(paths) -> dict:
+    return {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+
+
 def main() -> int:
+    # Every file any mutation touches, hashed before anything is applied. The
+    # run reported "restored: PASS" once while leaving a mutation in the tree:
+    # the suite passed because the mutation happened to be in a file the
+    # then-running tests did not exercise, so a green suite was NOT evidence the
+    # tree was clean. Hashes are evidence; a passing suite is not.
+    touched = sorted({p for m in MUTATIONS for p, _, _ in m.edits})
+    pristine = {p: p.read_text(encoding="utf-8") for p in touched}
+    before = digest(touched)
+
     ok, out = run_suite()
     print(f"baseline: {'PASS' if ok else 'FAIL'}")
     if not ok:
@@ -256,13 +292,25 @@ def main() -> int:
         for t in failing_tests(out):
             print(f"    x {t}")
 
+    # Byte-identical to where we started, or say so loudly. This is the check
+    # that "restored: PASS" was pretending to be.
+    after = digest(touched)
+    dirty = [p.name for p in touched if before[p] != after[p]]
+    for p in touched:
+        if before[p] != after[p]:
+            p.write_text(pristine[p], encoding="utf-8")   # put it back, from the
+                                                          # content held at entry
+
     ok, _ = run_suite()
-    print(f"\nrestored: {'PASS' if ok else 'FAIL'}")
+    print(f"\nrestored: {'PASS' if ok and not dirty else 'FAIL'}")
+    if dirty:
+        print(f"  TREE NOT RESTORED — still modified: {', '.join(dirty)}")
+        print("  git checkout -- <file> before trusting any result above.")
     if survived:
         print("\nmutations that survived:")
         for name in survived:
             print(f"  - {name}")
-    return 1 if survived or not ok else 0
+    return 1 if survived or dirty or not ok else 0
 
 
 if __name__ == "__main__":

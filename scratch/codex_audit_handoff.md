@@ -211,6 +211,45 @@ blocking `alert`. The mutation was written, run, survived, and is recorded in
 `scratch/mutate_5b.py` under `KNOWN_UNKILLABLE_IN_JSDOM` rather than deleted or
 left to rot in the pass/fail signal.
 
+### Two sibling handlers with the same identity defect — pre-existing, NOT fixed
+
+Flagged by review, verified, deliberately left alone: they are outside 5b and
+each wants its own page-level tests rather than being smuggled into a rollback
+fix. Both are unchanged from `main`.
+
+- **`handleCreateProject`** (`page.tsx`) calls `fetchActiveProject()` with the
+  previous project's id still in `projectIdRef`. The middleware honours the
+  header over the pointer, so the studio is answered about the *old* film and
+  never lands on the one it just created.
+- **`handleDeleteProject`** leaves `projectIdRef` naming a project that has just
+  been moved into `_trash`, where `_context_for` cannot resolve it — so every
+  later request 404s and `fetchActiveProject` silently updates nothing. The
+  delete response already returns `was_active`, which is exactly the signal
+  needed to fix it.
+
+### The harness lied once — hardened
+
+A run reported `restored: PASS` while leaving the ORIGINAL DEFECT mutation
+applied in `MultitrackTimeline.tsx`. The pushed branch was unaffected (the file
+was never staged), but the claim was false, and it is the claim this slice's
+evidence rests on. Root cause not established; the response is that a green
+suite is no longer treated as proof the tree is clean. `scratch/mutate_5b.py`
+now hashes every file any mutation touches before the run, compares after,
+restores from content captured at entry, prints `TREE NOT RESTORED` naming the
+files, and exits non-zero. Any `restored: PASS` printed from here is backed by
+hashes rather than by a suite that might simply not exercise the mutated file.
+
+### Known cosmetic, deliberately not fixed
+
+After a refresh-failure rollback in `handleSelectProject`, the sidebar still
+marks the previous film active while the server's pointer says the new one,
+because `fetchProjects()` is skipped on that path. Inert for the same reason the
+pointer is inert — every request names its project — and a refetch was
+considered and rejected: the alert already tells the user to try again, and
+repainting the list mid-failure adds a request on the path that is already
+failing. It is the one visible thing left disagreeing. Reviewed and agreed on
+both sides.
+
 **Left open, deliberately, and NOT closed by this slice:**
 `POST /api/timeline/slot/{id}/trim` accepts a `trim_in` beyond
 `intended_duration` and returns a zero-length slot. The inspector no longer
