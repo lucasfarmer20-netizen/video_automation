@@ -30,7 +30,6 @@ second charge, the second stops a *new* request re-buying an unchanged shot.
 from __future__ import annotations
 
 import datetime as _dt
-import json
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -112,14 +111,12 @@ def load_attempts(beat_id: str) -> list[GenerationAttempt]:
     try:
         if not p.is_file():
             return []
-        text = p.read_text(encoding="utf-8")
+        raw = atomic.read_json(p)
     except OSError as exc:
         raise LedgerUnreadable(
             f"could not read the generation ledger for {beat_id}: {exc}. "
             f"Refusing to treat it as empty -- that would permit a second charge "
             f"and overwrite the record of the first.") from exc
-    try:
-        raw = json.loads(text)
     except ValueError as exc:
         raise LedgerUnreadable(
             f"the generation ledger for {beat_id} is corrupt: {exc}. "
