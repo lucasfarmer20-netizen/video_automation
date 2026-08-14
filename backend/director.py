@@ -591,7 +591,10 @@ def load_plan(beat_id: str) -> CoveragePlan | None:
     p = plan_path(beat_id)
     if not p.is_file():
         return None
-    raw = json.loads(p.read_text(encoding="utf-8"))
+    # Through backend.atomic, not a bare read: this function persists the
+    # transitions below, so every reader here is also a writer and a bare open
+    # raced the replace.
+    raw = atomic.read_json(p)
     shots = []
     for d in raw.get("coverage") or []:
         cam = Camera(**(d.pop("camera", None) or {}))

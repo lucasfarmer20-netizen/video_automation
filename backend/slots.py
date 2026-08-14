@@ -26,7 +26,6 @@ attempts that produced its media (Generate's), or approval. It references them.
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -103,7 +102,7 @@ def load() -> list[TimelineSlot]:
     if not p.is_file():
         return []
     try:
-        raw = json.loads(p.read_text(encoding="utf-8"))
+        raw = atomic.read_json(p)
     except (OSError, ValueError):
         # A cut that cannot be read is not an empty cut. Callers rebuild from
         # the plan instead, which loses trims but never silently ships a film

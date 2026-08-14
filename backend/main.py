@@ -41,7 +41,7 @@ def secure_filename(filename: str) -> str:
     return filename
 
 # Submodule imports
-from . import config, manifest, script, assets, audio, motion, timeline, sizzle, metadata, bundle, ledger
+from . import atomic, config, manifest, script, assets, audio, motion, timeline, sizzle, metadata, bundle, ledger
 from . import director, spike_identity, planner, capabilities, casting, characters
 from . import stages as stagemod
 from . import generation
@@ -2742,9 +2742,12 @@ async def put_director_plan(beat_id: str, request: Request):
         sb = get_current_project()
         data = await request.json()
         data["beat_id"] = beat_id
-        path = director.director_dir() / f"{beat_id}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        # Through backend.atomic like every other write of a plan record. A bare
+        # write_text truncates in place, so a concurrent reader could open a
+        # half-written file -- and that is the one failure the reader-side retry
+        # deliberately does not cover, because a torn file is a ValueError and
+        # retrying a parse is how a corrupt record gets read eight times.
+        path = atomic.write_json(director.director_dir() / f"{beat_id}.json", data)
 
         plan = director.load_plan(beat_id)
         beat = next((s for s in sb.shots if s.scene_id == beat_id), None)

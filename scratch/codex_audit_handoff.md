@@ -53,10 +53,18 @@ pinned to an earlier commit could not read them.
 - S2-01 delimiter-ambiguous signature preimage; S2-02 unpersisted transitions;
   S2-03 concurrent plan writes (incl. the Windows transient replace denial,
   closed at `8fda625` and independently verified over 19,200 saves).
+- S2-04 concurrent *reads* denied by a concurrent replace — the reader-side half
+  of S2-03, closed by `atomic.read_json`. Same class as the out-of-scope
+  `os.replace` entry below and fixed anyway, by explicit human override: the
+  test asserting it was failing ~9 runs in 10, and a permanently red suite
+  trains people to ignore red. Severity Low (workstation-only); the reason was
+  signal integrity, not reachability.
 
 ## Explicitly out of scope
 
-- Windows-only transient `os.replace` behaviour — settled.
+- Windows-only transient `os.replace` behaviour — settled. The reader-side form
+  (S2-04) was fixed once, by human override, for the false-signal reason above;
+  that is not a re-opening of this entry and does not license another round on it.
 - Cross-process locking and logical lost-update prevention — both documented in
   `backend/atomic.py` as *not provided*, by agreement.
 - Slices 0–3 unless a later change touched them.
