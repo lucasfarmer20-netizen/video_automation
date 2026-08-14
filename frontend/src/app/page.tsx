@@ -534,17 +534,41 @@ export default function WorkspacePage() {
     setLoading(true);
     // Retarget first. Any reply still in flight for the previous project now
     // fails the staleness check instead of repainting the studio.
-    if (projectId) {
-      projectIdRef.current = projectId;
-      setActiveProjectId(projectId);
-    }
-    const data = await post("/api/project/select", { rel });
-    if (data.ok) {
-      await fetchActiveProject();
-      await fetchProjects();
-    } else {
-      alert("Failed to load storyboard project");
-      setLoading(false);
+    //
+    // Which is to say the identity is committed before the server has agreed to
+    // it, so the path where it never agrees has to put it back. It did not:
+    // /api/project/select refuses while any job is running, and a refusal left
+    // the studio showing this film while every later request named the other
+    // one — so the next edit made on screen was written into a film the user
+    // was not looking at. The retarget stays; the rollback is what was missing.
+    //
+    // Rollback is the DEFAULT rather than a branch of its own. Only a confirmed
+    // open keeps the new identity, so a refusal, a network failure and a throw
+    // from anywhere in here all land in the same place — including whatever
+    // failure this function grows next.
+    const previousId = projectIdRef.current;
+    projectIdRef.current = projectId;
+    setActiveProjectId(projectId);
+
+    let opened = false;
+    try {
+      const data = await post("/api/project/select", { rel });
+      if (data.ok) {
+        opened = true;
+        await fetchActiveProject();
+        await fetchProjects();
+        return;
+      }
+      // The server's reason, not a stand-in for it. A 409 names the job that is
+      // running and says to wait, which the user can act on; "Failed to load
+      // storyboard project" told them only that something went wrong.
+      alert("Could not open that project: " + (data.error || "unknown error"));
+    } finally {
+      if (!opened) {
+        projectIdRef.current = previousId;
+        setActiveProjectId(previousId);
+        setLoading(false);
+      }
     }
   };
 

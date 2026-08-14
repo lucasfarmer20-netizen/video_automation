@@ -115,6 +115,24 @@ MUTATIONS = [
           "              handleSelectProject(rel);")],
     ),
     Mutation(
+        "a refused switch that never puts the identity back", "§11.4",
+        [(PAGE,
+          "      if (!opened) {\n"
+          "        projectIdRef.current = previousId;\n"
+          "        setActiveProjectId(previousId);\n"
+          "        setLoading(false);\n"
+          "      }",
+          "      if (!opened) {\n"
+          "        setLoading(false);\n"
+          "      }")],
+    ),
+    Mutation(
+        "the server's refusal reason replaced by a generic one", "§11.4",
+        [(PAGE,
+          "      alert(\"Could not open that project: \" + (data.error || \"unknown error\"));",
+          "      alert(\"Failed to load storyboard project\");")],
+    ),
+    Mutation(
         "a held cut served for whichever film is on screen", "§11.4",
         [(SLOTS,
           "  return held.projectId === projectId ? held : NO_SLOT_VIEW;",
