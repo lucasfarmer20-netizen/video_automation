@@ -198,6 +198,11 @@ ID_COVERS_STATE = "    return digest({\"snapshot_version\": SNAPSHOT_VERSION, \"
 FROZEN_SLOTS = "        \"timeline_slots\": [asdict(s) for s in slots.load()],"
 NOW_DEF = "def _now() -> str:"
 GRADE_PER_BEAT = "            \"beats\": {s.get(\"scene_id\"): s.get(\"grade\") for s in shots},"
+# The three the review's own mutations found. Each field IS in the snapshot; what
+# was missing was a test that fails when it is taken out again.
+AGGREGATE_APPROVAL = "            \"storyboard_approved\": sb.get(\"storyboard_approved\"),"
+SFX_LAYERS_IN_AUDIO = "                \"sfx_layers\": s.get(\"sfx_layers\"),"
+TIMELINE_FULL_SLOTS = "        \"timeline\": digest(slots),"
 PLAN_VERSION_IN_DIGEST = (
     "        \"director_plan\": digest({\n"
     "            \"plan_version\": frozen.get(\"director_plan_version\"),\n"
@@ -348,6 +353,38 @@ MUTATIONS = [
         "containment: an export version can now be written outside exports/",
         [(EXPORTS, VERSION_VALIDATION, "    if False:  # MUTANT")],
         expect=["a_version_name_cannot_escape_the_exports_directory"],
+    ),
+    # --- the three the review found, now guarded -------------------------------
+    #
+    # These are not hypothetical shapes. The reviewer wrote them, they SURVIVED
+    # the suite as it stood, and they were filed as test gaps rather than
+    # findings, because the fields were in the snapshot the whole time and only
+    # the guard was missing. They are kept here so removing one is caught the
+    # next time rather than the round after.
+    Mutation(
+        "aggregate storyboard approval is dropped from the snapshot", "§9.1",
+        "the episode-level approval — per-beat flags still move the digest, so a "
+        "storyboard un-approved as a whole freezes as though nothing changed",
+        [(EXPORTS, AGGREGATE_APPROVAL,
+          "            \"storyboard_approved\": None,  # MUTANT")],
+        expect=["each_state_digest_changes_when_its_own_state_changes"],
+    ),
+    Mutation(
+        "layered SFX is dropped from the audio digest", "§9.1",
+        "every layer of ambience on every beat — the bus levels still move the "
+        "digest, so the loss hides behind the part that still works",
+        [(EXPORTS, SFX_LAYERS_IN_AUDIO,
+          "                \"sfx_layers\": None,  # MUTANT")],
+        expect=["each_state_digest_changes_when_its_own_state_changes"],
+    ),
+    Mutation(
+        "the timeline digest is reduced to slot ids", "§9.1",
+        "everything a slot CONTAINS — trims, media, source attempt — while the "
+        "digest still moves whenever the cut gains or loses a slot, which is why "
+        "a one-change-per-key test could not see this",
+        [(EXPORTS, TIMELINE_FULL_SLOTS,
+          "        \"timeline\": digest([s.get(\"id\") for s in slots]),  # MUTANT")],
+        expect=["each_state_digest_changes_when_its_own_state_changes"],
     ),
     Mutation(
         "the Director digest stops covering the plan schema version", "§9.1",

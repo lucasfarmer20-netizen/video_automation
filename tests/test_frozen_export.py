@@ -320,45 +320,106 @@ def test_each_state_digest_changes_when_its_own_state_changes(tmp_path, monkeypa
     So each of the eight is exercised against a change to the state it claims to
     cover, and must move. This is what stops "the snapshot identifies the grade
     state" from being a sentence in a docstring.
+
+    **Several cases per §9.1 item, not one.** A single change per key leaves a
+    digest covered only for the one field that change touches, and the review of
+    this slice found exactly that: three of the reviewer's own mutations survived
+    (aggregate `storyboard_approved` dropped, `sfx_layers` dropped from audio, the
+    timeline digest reduced to slot ids) because the one case for each key
+    happened to move some *other* field in the same digest.
+
+    The timeline case was the sharpest lesson and the reason ``prepare`` exists.
+    It used to go from *no slots file* to *one slot*, so the digest moved because
+    the cut came into existence — which even an ids-only digest notices. A case
+    that proves the digest covers a slot's *contents* has to start from a saved
+    cut and change a field inside it, leaving the slot set identical.
     """
     from backend import director
+    from backend.manifest import AudioLayer
 
     _fake_master(monkeypatch)
     _renders(tmp_path, "s001", "s002")
 
-    def _plan():
-        plan = director.CoveragePlan(
+    def _plan(sb):
+        director.save_plan(director.CoveragePlan(
             beat_id="s001", beat_duration=6.0, status="draft",
             coverage=[director.DirectorShot(id="s001.01", beat_id="s001",
-                                            camera=Camera(duration=6.0))])
-        director.save_plan(plan)
+                                            camera=Camera(duration=6.0))]))
 
-    def _cut(sb):
+    def _save_cut(sb):
         cut = slots.build(sb)
+        cut[0].media = "render/s001.mp4"
+        slots.save(cut)
+
+    def _trim_slot(sb):
+        cut = slots.load()
         cut[0].trim_in = 1.25
         slots.save(cut)
 
-    changes = {
-        "project_version": lambda sb: setattr(sb, "cultural_origin", "Slavic"),
-        "script_timing": lambda sb: setattr(sb.shots[0], "narration", "rewritten"),
-        "director_plan": lambda sb: _plan(),
-        "approved_shots": lambda sb: setattr(sb.shots[0], "approved", False),
-        "selected_outputs": lambda sb: setattr(sb.shots[0], "chosen_variation", 3),
-        "timeline": _cut,
-        "audio": lambda sb: setattr(sb.mix, "narration", 0.42),
-        "grade": lambda sb: setattr(sb.shots[0], "grade", {"contrast": 0.4}),
-    }
-    assert set(changes) == set(exports.STATE_KEYS), \
-        "every §9.1 item needs a change that must move its digest"
+    def _swap_take(sb):
+        cut = slots.load()
+        cut[0].media = "render/s001_take2.mp4"
+        cut[0].source_attempt = "att-2"
+        slots.save(cut)
 
-    for n, (key, change) in enumerate(changes.items(), start=1):
+    def _add_layer(sb):
+        sb.shots[0].sfx_layers = [AudioLayer(id="L1", label="wind", gain=0.6)]
+
+    def _tune_layer(sb):
+        sb.shots[0].sfx_layers[0].gain = 0.95
+        sb.shots[0].sfx_layers[0].offset = -0.4
+
+    # (§9.1 key, what this case proves the digest covers, prepare, change).
+    # ``prepare`` runs before the first freeze, so the change is the ONLY
+    # difference between the two snapshots.
+    cases = [
+        ("project_version", "the culture the episode is illustrated in",
+         None, lambda sb: setattr(sb, "cultural_origin", "Slavic")),
+        ("script_timing", "the narration text",
+         None, lambda sb: setattr(sb.shots[0], "narration", "rewritten")),
+        ("script_timing", "a beat's duration",
+         None, lambda sb: setattr(sb.shots[0].camera, "duration", 9.5)),
+        ("director_plan", "the coverage plan for a beat",
+         None, _plan),
+        ("approved_shots", "one beat's approval",
+         None, lambda sb: setattr(sb.shots[0], "approved", False)),
+        ("approved_shots", "the AGGREGATE storyboard approval",
+         None, lambda sb: setattr(sb, "storyboard_approved", False)),
+        ("selected_outputs", "which take a beat uses",
+         None, lambda sb: setattr(sb.shots[0], "chosen_variation", 3)),
+        ("timeline", "a slot's trim, with the slot set unchanged",
+         _save_cut, _trim_slot),
+        ("timeline", "the media in a slot, with the slot set unchanged",
+         _save_cut, _swap_take),
+        ("audio", "the episode mix bus",
+         None, lambda sb: setattr(sb.mix, "narration", 0.42)),
+        ("audio", "a layer of ambience appearing on a beat",
+         None, _add_layer),
+        ("audio", "an existing layer's gain and offset",
+         _add_layer, _tune_layer),
+        ("grade", "a per-beat grade override",
+         None, lambda sb: setattr(sb.shots[0], "grade", {"contrast": 0.4})),
+    ]
+    assert {key for key, *_ in cases} == set(exports.STATE_KEYS), \
+        "every §9.1 item needs at least one change that must move its digest"
+
+    for n, (key, covers, prepare, change) in enumerate(cases, start=1):
+        # Each case starts from nothing on disk. The stores outlive a case
+        # otherwise, and a leftover plan or cut makes the next case's "before"
+        # something other than what it reads as.
+        slots.slots_path().unlink(missing_ok=True)
+        for stale in director.director_dir().glob("*.json"):
+            stale.unlink()
+
         sb = _sb(("s001", 6.0), ("s002", 4.0))
+        if prepare is not None:
+            prepare(sb)
         before = exports.freeze(sb, version=f"a{n}")["state"]
         change(sb)
         after = exports.freeze(sb, version=f"b{n}")["state"]
         assert after[key] != before[key], (
-            f"the {key} digest did not move when {key} state changed — it does "
-            f"not identify what §9.1 says it identifies")
+            f"the {key} digest did not move when {covers} changed — it does not "
+            f"identify what §9.1 says it identifies")
 
 
 def test_the_director_plan_digest_covers_the_plan_schema_version(
