@@ -3,7 +3,11 @@
 Evaluation of `video_automation` against the vNext Spec, per the Code Evaluation
 Scaffold. Read-only: no schema, contract, data or behaviour was changed.
 
-- **Repo state:** `main` @ `ebffeef`, suite 324 passed / 0 skipped
+- **Repo state:** `main` @ `99a883b`, suite 471 passed / 0 skipped
+- **Note:** written against `ebffeef`; four commits landed during the
+  evaluation (H1 manifest hardening, 5b timeline UI, an atomic read-side
+  fix, and the Gate-1 test merge). Sections below were re-verified against
+  `99a883b` and corrected where they had gone stale.
 - **Authority:** `vNext Spec` sheet; `docs/FILMCRAFT_V1_CODE_IMPLEMENTATION_CONTRACT.md`
 - **Date:** 2026-08-14
 
@@ -59,7 +63,8 @@ orchestration, prompt assembly, provider calls and state transitions all meet.
 ## 2. Current architecture
 
 **Stack (verified).** FastAPI backend (`backend/main.py`), Next.js frontend
-(`frontend/src/app/page.tsx`, 1,236 lines), per-project JSON state on disk or a
+(`frontend/src/app/page.tsx`; `MultitrackTimeline.tsx` now renders from
+timeline slots as of `a25abf8`), per-project JSON state on disk or a
 GCS FUSE mount, fal.ai for images and video, ElevenLabs for voice.
 
 **Domain objects and their files:**
@@ -120,7 +125,7 @@ Status: **CURRENT** built and tested · **PARTIAL** exists, incomplete ·
 | Moment + frame geometry in DirectorShot | **MISSING** | `composition` is free prose; no moment/keyframe field, no fg/mg/bg screen-position model. |
 | Generation state reconciliation | **CONFLICTING** | `pipeline_worker.py:25` `_jobs` is in-memory; `get_jobs_status()` reads it; a cold start loses everything. Needs replacement, not extension. |
 | Prompt truncation preflight | **MISSING** | `assets.py:651 soften_prompt` rewrites prompts on rejection but nothing checks length before submit or protects required content. |
-| Guided storyboard → motion → rough-cut handoff | **PARTIAL** | `stages.py` computes stage status, blocking reasons and one CTA per stage server-side. Missing the finer target sequence (Render QC, Shot Review, Director Review). |
+| Guided storyboard → motion → rough-cut handoff | **PARTIAL** | `stages.py` computes stage status, blocking reasons and one CTA per stage server-side, and the timeline UI now reads slots (`a25abf8`). Missing the finer target sequence (Render QC, Shot Review, Director Review). |
 | Panel → Beat → GenerationAttempt schema | **CONFLICTING** | `Shot`(beat) → `DirectorShot` → `GenerationAttempt` is the same *shape* with inverted naming and no Scene level. Highest-risk rename in the migration. |
 | Immutable generation history + active take | **CURRENT** | `generation.py` append-only; `DirectorShot.selected_attempt` references the chosen one. Gap: the selector lives on the shot, vNext wants `panel.active_generation_id`. Naming, not mechanism. |
 | Global render queue / origin-aware navigation | **MISSING** | Depends on job authority. `get_jobs_status()` is project-scoped but not durable and stores no origin. |
@@ -139,7 +144,7 @@ Status: **CURRENT** built and tested · **PARTIAL** exists, incomplete ·
 | Separate image/video prompt compilers | **PARTIAL** | Distinct paths exist (`assets._compose_prompt` for stills; `director.generate_paid_clip` for motion) but neither is a compiler over a canonical shot spec, and both embed provider specifics. |
 | Automatic model/settings recommendation | **PARTIAL** | `capabilities.resolve()` picks a model from duration + gestural intent and returns a reason. No cost-aware recommendation surfaced for override. |
 | Revision diff / scoped rerender | **MISSING** | `paid_signature` detects that inputs changed but there is no spec diff and no smallest-render-unit scoping. |
-| Timeline specialist service | **PARTIAL** | `slots.py` owns editorial state cleanly; it is a module, not a service, and `timeline.py` still renders from `sb.shots`. |
+| Timeline specialist service | **PARTIAL** | `slots.py` owns editorial state cleanly and the UI now reads it (`a25abf8`); it is a module, not a service, and `timeline.py` still renders from `sb.shots`. |
 | Preview/export parity | **MISSING** | `timeline.build_preview` and the FCPXML path both derive from the manifest but nothing asserts they agree. This is also V1 slice 7's §11.7. |
 | Quick Generate mode | **PARTIAL** | One-off endpoints exist (`main.py:3344` image, `main.py:3580` generate_video, `main.py:3031` render/reference) but they mutate canonical project state rather than standing outside it. |
 
@@ -150,7 +155,7 @@ Status: **CURRENT** built and tested · **PARTIAL** exists, incomplete ·
 | Module | Call | Reason | Migration risk |
 |---|---|---|---|
 | `generation.py` | **Retain** | Already Invariant B, audited twice | Low — add `initiated_by`, origin |
-| `slots.py` | **Retain** | Already Invariant E | Low |
+| `slots.py` | **Retain** | Already Invariant E; UI bound to it as of `a25abf8` | Low |
 | `atomic.py` | **Retain** | Durable writes, learned from three audit rounds | None |
 | `projects.py` | **Retain** | Per-request identity; vNext assumes it | None |
 | `capabilities.py` | **Retain + extend** | Registry shape is right; extend to images and refs | Low |
@@ -313,7 +318,7 @@ same object. Building slice 6 to the V1 contract first means rebuilding it.
 
 ## 8. Test strategy
 
-**Existing (324 tests, all passing):** approval/plan signature
+**Existing (471 tests, all passing):** approval/plan signature
 (`test_plan_approval.py`), generation lineage and no-double-spend
 (`test_generation_lineage.py`), project isolation (`test_project_isolation.py`),
 timeline slots (`test_timeline_slots.py`), stages (`test_stages.py`), Gate 1 and
@@ -360,9 +365,11 @@ Only what inspection cannot answer.
 5. **Concept images.** Concept exploration generates 3–6 candidates with images
    before any approval gate. What spend cap applies to a stage that runs before
    the budget gate exists?
-6. **V1 completion.** Does V1 ship (slices 5b–8, deploy, §15 walkthrough) before
-   phase 1, or do the two run concurrently? This determines whether slice 6 is
-   built to the V1 contract or to vNext's QCFinding.
+6. **V1 completion.** H1 and 5b landed during this evaluation, so V1 remains
+   open on slices 6, 7 and 8 plus deploy and the §15 walkthrough. Does V1 finish
+   before phase 1, or do the two run concurrently? This determines whether slice
+   6 is built to the V1 contract or to vNext's QCFinding — and slice 6 is the
+   next thing the orchestrator would pick up.
 
 ---
 
