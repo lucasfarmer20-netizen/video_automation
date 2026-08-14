@@ -65,6 +65,39 @@ Prefer defects reachable in production on Linux/Cloud Run over workstation-only
 conditions. An earlier round was spent on a Windows-only concurrency case that
 cannot occur in the deployed environment.
 
+## Round in flight: slice 5b — the timeline UI bound to slots
+
+Build round, not a remediation round. Frontend only; `backend/` is untouched and
+`git diff main -- backend/` is empty. Slice 5's slot model, API and tests were
+already built and audited — 5b binds `MultitrackTimeline.tsx` to
+`GET /api/timeline/slots` instead of to `project.shots`.
+
+What is new to audit:
+
+- `frontend/src/lib/slots.ts` — the client's reader for the slot payload.
+  `isFilled()` returns `slot.placeholder === false` and fails closed; it must
+  never re-derive the flag from `media`, and no client state mirrors it (§11.4).
+- V1 renders one clip per slot, keyed on `slot.id`, and selection is held as a
+  slot id rather than a position — that is what survives a re-plan (§7.1).
+- `coverage.summary` is rendered verbatim; the component does not count (§6.2).
+- Placeholders carry shot id, slot identity, intended duration, expected media
+  and source beat, in words as well as attributes (C5).
+- Trims are written through `POST /api/timeline/slot/{id}/trim`; take selection
+  through the existing `POST /api/director/shot/{shot_id}` (coverage slots) and
+  `POST /api/shot/{beat_id}` (whole-beat slots). No new endpoint, no new field.
+
+Evidence: `frontend/src/lib/slots.test.ts`,
+`frontend/src/components/MultitrackTimeline.slots.test.tsx` (20 tests,
+`npm test` in `frontend/`), and `scratch/mutate_5b.py`, which applies six
+mutations — including one that reproduces the original defect (V1 built from
+beats and their file paths) — and reports each killed and the suite restored.
+
+Note for this round: take selection records which take a shot uses; the media in
+a slot changes when the server next reports it. The UI states what the server
+reports and claims nothing beyond it. That is deliberate, not an oversight — an
+endpoint that swaps a rendered sub-clip does not exist and was not added, since
+the slot contract is settled.
+
 ## Next action: re-verify the Slice 4 remediation
 
 Audit `e2bdf2f`..`d515320` — the remediation itself — against `scratch/codex_adversarial_audit_slice_4.md`.

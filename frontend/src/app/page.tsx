@@ -38,6 +38,8 @@ import DirectorWorkspace from "../components/DirectorWorkspace";
 import LockedCoverageModal from "../components/LockedCoverageModal";
 import CoverageSurveyPanel from "../components/CoverageSurveyPanel";
 import { MOCK_SCENES , setActiveProjectId } from "../lib/directorApi";
+import type { TimelineSlot, SlotCoverage } from "../lib/slots";
+import type { SlotTakes } from "../components/MultitrackTimeline";
 
 // Setup API URL mapping
 const API_BASE = typeof window !== "undefined"
@@ -122,6 +124,14 @@ export default function WorkspacePage() {
   const [loading, setLoading] = useState(true);
   const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [peaks, setPeaks] = useState<Record<string, any>>({});
+  // The cut, as slots (§7.1). `null` means "not read yet", which is not the
+  // same claim as "there are no clips" — see MultitrackTimeline's V1 track.
+  const [slots, setSlots] = useState<TimelineSlot[] | null>(null);
+  const [slotCoverage, setSlotCoverage] = useState<SlotCoverage | null>(null);
+  const [slotsError, setSlotsError] = useState<string | null>(null);
+  // Takes for coverage slots, read from the DirectorShot's plan when the slot is
+  // selected. Keyed by slot id. Whole-beat slots take theirs from the manifest.
+  const [planTakes, setPlanTakes] = useState<Record<string, SlotTakes>>({});
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const [voiceStudioOpen, setVoiceStudioOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -206,11 +216,106 @@ export default function WorkspacePage() {
         const pj = await getJson("/api/audio/peaks");
         if (pj) setPeaks(pj.ok ? (pj.peaks || {}) : {});
       } catch { setPeaks({}); }
+      // The cut. Rebuilt from the plan and folded onto the saved edit server-
+      // side, so this is the only thing the timeline's V1 track is drawn from.
+      await fetchSlots();
     } catch (e) {
       console.error("Failed to load active project details", e);
     } finally {
       setLoading(false);
     }
+  };
+
+  /**
+   * Re-read the cut from `GET /api/timeline/slots`.
+   *
+   * Called after anything that can change what is in a slot. The client never
+   * writes slot state of its own: a take swap is a write to the server followed
+   * by this read, which is what keeps the UI from claiming media the server has
+   * not reported (§11.4) — and why the slot keeps its id, index and trims, since
+   * the server reconciles them rather than the client rebuilding them.
+   */
+  const fetchSlots = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/timeline/slots`, { headers: authHeaders() });
+      // Another film answered a request we issued before switching. Keep what is
+      // on screen rather than repainting this cut with someone else's.
+      if (isStaleReply(res)) return;
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.ok) {
+        setSlots(data.slots || []);
+        setSlotCoverage(data.coverage || null);
+        setSlotsError(null);
+        return;
+      }
+      // Say the cut could not be read. An empty list here would read as "this
+      // film has no clips", which is a different and false statement.
+      setSlots(null);
+      setSlotCoverage(null);
+      setSlotsError(data?.error || `server error (${res.status})`);
+    } catch (e) {
+      setSlots(null);
+      setSlotCoverage(null);
+      setSlotsError(e instanceof Error ? e.message : "the cut could not be read");
+    }
+  };
+
+  /** As much of a DirectorShot as the takes strip needs. */
+  interface DirectorShotTakes {
+    id: string;
+    draft_variations?: string[];
+    chosen_variation?: number | null;
+  }
+
+  /** Load the takes for a coverage slot's DirectorShot, on selection (§7.2). */
+  const handleSelectSlot = async (slot: TimelineSlot | null) => {
+    if (!slot?.shot_id) return;
+    try {
+      const data = await getJson(`/api/director/plan/${slot.beat_id}`);
+      const coverage: DirectorShotTakes[] | undefined = data?.plan?.coverage;
+      if (!Array.isArray(coverage)) return;
+      setPlanTakes((prev) => {
+        const next = { ...prev };
+        coverage.forEach((ds) => {
+          next[`${slot.beat_id}::${ds.id}`] = {
+            variations: ds.draft_variations || [],
+            chosen: typeof ds.chosen_variation === "number" ? ds.chosen_variation : null,
+          };
+        });
+        return next;
+      });
+    } catch { /* the takes strip says "no takes" rather than inventing any */ }
+  };
+
+  /**
+   * Select a different take for a slot's shot.
+   *
+   * Writes through the endpoint that owns take selection — the client does not
+   * touch the slot — then re-reads the cut. Whatever media the server then
+   * reports for that slot is what is drawn, in the slot that was already there.
+   */
+  const handleSelectTake = async (slot: TimelineSlot, index: number) => {
+    const url = slot.shot_id
+      ? `/api/director/shot/${slot.shot_id}`
+      : `/api/shot/${slot.beat_id}`;
+    const res = await post(url, { chosen_variation: index });
+    if (!res.ok) {
+      alert("Take not selected: " + (res.error || "unknown error"));
+      return;
+    }
+    await handleSelectSlot(slot);
+    await fetchSlots();
+    if (!slot.shot_id) fetchActiveProject();
+  };
+
+  /** Trim one slot. The trim belongs to the slot, so it outlives its media. */
+  const handleTrimSlot = async (
+    slot: TimelineSlot,
+    trim: { trim_in: number; trim_out: number },
+  ) => {
+    const res = await post(`/api/timeline/slot/${encodeURIComponent(slot.id)}/trim`, trim);
+    if (!res.ok) alert("Trim rejected: " + (res.error || "unknown error"));
+    await fetchSlots();
   };
 
   // Poll assembly job status
@@ -800,6 +905,25 @@ Moved to: ${res.moved_to}`);
     beats: project.shots?.length ?? 0, stills: 0, narration: 0, sfx: 0, rendered: 0,
   };
   const effectiveTiers = tiers || {};
+  // Takes per slot, keyed by slot id. A whole-beat slot's takes are the beat's
+  // draft variations, which the manifest already carries; a coverage slot's come
+  // from its DirectorShot's plan, loaded when the slot is selected. Both are the
+  // server's answer about which take is chosen — nothing is marked in use here.
+  const takesBySlot: Record<string, SlotTakes> = {};
+  (slots || []).forEach((s) => {
+    if (s.shot_id) {
+      const t = planTakes[s.id];
+      if (t) takesBySlot[s.id] = t;
+      return;
+    }
+    const beat = (project.shots || []).find((b: Shot) => b.scene_id === s.beat_id);
+    if (beat?.draft_variations?.length) {
+      takesBySlot[s.id] = {
+        variations: beat.draft_variations,
+        chosen: typeof beat.chosen_variation === "number" ? beat.chosen_variation : null,
+      };
+    }
+  });
   const canAssemble = Boolean(project.storyboard_approved);
   // Approval refuses unless every beat has a chosen image, so this is what
   // stands between a drafted script and the rest of the pipeline.
@@ -1043,6 +1167,14 @@ Moved to: ${res.moved_to}`);
           ) : activeStage === "roughcut" ? (
             <MultitrackTimeline
               shots={project.shots || []}
+              slots={slots}
+              coverage={slotCoverage}
+              slotsError={slotsError}
+              takes={takesBySlot}
+              onSelectSlot={handleSelectSlot}
+              onSelectTake={handleSelectTake}
+              onTrimSlot={handleTrimSlot}
+              onBuildDraft1={() => handleAssemble("rough_cut")}
               peaks={peaks}
               musicTrack={project.music_track}
               onUpdateGain={handleUpdateGain}
