@@ -61,7 +61,13 @@ export interface SlotBlock {
   dur: number;
 }
 
-export const VIDEO = "video";
+/** The takes the server holds for one slot's DirectorShot, as it reports them. */
+export interface SlotTakes {
+  variations: string[];
+  /** 0-based, as everywhere on the server; null when nothing is chosen. */
+  chosen: number | null;
+}
+
 export const STILL = "still";
 
 /**
@@ -80,12 +86,19 @@ export function isFilled(slot: TimelineSlot): boolean {
   return slot.placeholder === false;
 }
 
-/** What a slot occupies in the cut. Server-derived; `duration` is authoritative. */
+/** What a slot occupies in the cut. Server-derived; `duration` is authoritative.
+ *
+ * The fallback is `TimelineSlot.duration`'s arithmetic, clause for clause: a
+ * trim governs when one is set, otherwise the intended length less trim_in.
+ * Anything else would make this module disagree with the server inside a file
+ * whose whole premise is that the two must not.
+ */
 export function slotDuration(slot: TimelineSlot): number {
   if (typeof slot.duration === "number") return slot.duration;
-  // Only reached for a payload without the derived field, where showing the
-  // slot at its intended length is better than showing it at zero width.
-  return Math.max(0, slot.intended_duration - slot.trim_in);
+  if (slot.trim_out && slot.trim_out > slot.trim_in) {
+    return Math.round((slot.trim_out - slot.trim_in) * 1000) / 1000;
+  }
+  return Math.round(Math.max(0, slot.intended_duration - slot.trim_in) * 1000) / 1000;
 }
 
 /** True when an editor has trimmed this slot away from its intended length. */
@@ -144,7 +157,39 @@ export function layoutSlots(
   return { blocks, total: acc };
 }
 
-/** The slot at a point in time, for playhead readouts and §7.2 navigation. */
-export function slotAt(blocks: SlotBlock[], t: number): SlotBlock | undefined {
-  return blocks.find((b) => t >= b.start && t < b.start + b.dur);
+// --- whose cut is this? ----------------------------------------------------
+
+/**
+ * Everything the studio holds about one project's cut, stamped with whose it is.
+ *
+ * Slot ids are `beat_id::shot_id`, which is unique within a film and emphatically
+ * not across films. Held unstamped, a slot's takes from film A are served for a
+ * slot in film B whose beat and shot ids happen to coincide — and beat ids are
+ * `s001`, `s002`, so they coincide constantly. The page already refuses replies
+ * that arrive for the wrong project (`isStaleReply`); this is the same rule for
+ * state that has already arrived and is merely still on screen.
+ */
+export interface SlotView {
+  /** The project this was read for. Never inferred; set when it was read. */
+  projectId: string | null;
+  slots: TimelineSlot[] | null;
+  coverage: SlotCoverage | null;
+  error: string | null;
+  takes: Record<string, SlotTakes>;
+}
+
+/** No cut read yet — which is not the same claim as a cut with no clips. */
+export const NO_SLOT_VIEW: SlotView = {
+  projectId: null, slots: null, coverage: null, error: null, takes: {},
+};
+
+/**
+ * The held cut, but only if it belongs to the project on screen.
+ *
+ * Returns the unread view rather than someone else's film. The timeline draws
+ * `slots: null` as "reading the cut…", which is the truthful thing to say in the
+ * moment between switching project and the new cut arriving.
+ */
+export function viewForProject(held: SlotView, projectId: string | null): SlotView {
+  return held.projectId === projectId ? held : NO_SLOT_VIEW;
 }

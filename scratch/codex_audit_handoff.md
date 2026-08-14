@@ -98,6 +98,41 @@ reports and claims nothing beyond it. That is deliberate, not an oversight — a
 endpoint that swaps a rendered sub-clip does not exist and was not added, since
 the slot contract is settled.
 
+### Round 1 outcome — split, remediated
+
+Deep pass approved. The built-in reviewer requested changes with four defects,
+all real, all reproduced at source before being fixed. None required a backend
+change.
+
+1. **V1 drew slot media into an `<img>`** — `DirectorShot.clip` is
+   `render/<beat>/<shot>.mp4` and the whole-beat fallback is
+   `render/<beat>.mp4`, so every filled slot fired `onError` and hid its own
+   frame; V1 had no imagery at all. Now a `<video preload="metadata" muted>`
+   with a poster taken from the still the clip was rendered from, where the
+   studio already holds one. The server-supplied-poster alternative was not
+   taken: it is an API change.
+2. **Slot state leaked across projects** — slot ids are `beat_id::shot_id`,
+   unique within a film and not across films. Slot state is now stamped with the
+   project it was read for and `viewForProject()` refuses to serve it to any
+   other; this covered `slots` and `coverage` as well as the takes strip.
+3. **"Take 2 · in use"** claimed the slot held a take that only becomes its media
+   at the next render. Now "chosen", with the timing said out loud (§11.4).
+4. **Build Draft 1 reported success** for a run that stops at the storyboard
+   gate. The reply is now reported for what it is, and an uncleared gate is
+   stated beside the button. Still not disabled — incomplete coverage must never
+   block Draft 1 (§6.2), and disabling would misattribute the block to coverage.
+
+All four notes were taken as well: the mutation harness snapshots every file a
+mutation touches; `slotAt`/`VIDEO` are gone; `slotDuration`'s fallback is now the
+server's arithmetic clause for clause.
+
+**Left open, deliberately, and NOT closed by this slice:**
+`POST /api/timeline/slot/{id}/trim` accepts a `trim_in` beyond
+`intended_duration` and returns a zero-length slot. The inspector no longer
+authors one and says why it refused, but the endpoint is unchanged and any other
+caller can still reach it. Server-side gap, belongs to whoever owns that
+endpoint. Do not record it as fixed.
+
 ## Next action: re-verify the Slice 4 remediation
 
 Audit `e2bdf2f`..`d515320` — the remediation itself — against `scratch/codex_adversarial_audit_slice_4.md`.

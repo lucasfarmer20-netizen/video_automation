@@ -297,14 +297,58 @@ describe("§7.1 — a take swap replaces media in the slot that already exists",
       coverage: coverageOf(),
     });
 
-    const img = screen.getByTestId("slot-media-b2::b2.2") as HTMLImageElement;
-    expect(img.getAttribute("src")).toBe("/media/render/b2/b2.2-takeA.mp4");
+    const frame = screen.getByTestId("slot-media-b2::b2.2");
+    expect(frame.getAttribute("src")).toBe("/media/render/b2/b2.2-takeA.mp4");
 
-    // A frame that fails to load is a broken image, not an empty slot. If the
+    // A frame that fails to load is a broken frame, not an empty slot. If the
     // component demoted the slot on error, the cut would lose a clip to a 404.
-    fireEvent.error(img);
+    fireEvent.error(frame);
     expect(screen.getByTestId("slot-b2::b2.2").getAttribute("data-placeholder")).toBe("false");
     expect(screen.queryByTestId("slot-placeholder-b2::b2.2")).toBeNull();
+  });
+
+  test("slot media is drawn by an element that can actually decode it", () => {
+    // Slot media is always a clip: DirectorShot.clip is render/<beat>/<shot>.mp4
+    // and the whole-beat fallback is render/<beat>.mp4. Drawn into an <img>,
+    // every filled slot fires onError and hides its own frame, so V1 shows no
+    // imagery at all — which looks like a styling choice rather than a bug.
+    mount({
+      shots: [{ ...beat("b3", 4), draft_image: "assets/b3/take1.png" }],
+      slots: [slot({
+        id: "b3::beat", beat_id: "b3", index: 0,
+        media: "render/b3.mp4", source_attempt: "att-3", placeholder: false,
+      })],
+      coverage: coverageOf(),
+    });
+
+    const frame = screen.getByTestId("slot-media-b3::beat");
+    expect(frame.tagName).toBe("VIDEO");
+    expect(frame.getAttribute("src")).toBe("/media/render/b3.mp4");
+    // The still the clip was rendered from, where the studio already has it.
+    expect(frame.getAttribute("poster")).toBe("/media/assets/b3/take1.png");
+    expect(screen.getByTestId("slot-b3::beat").querySelector("img")).toBeNull();
+  });
+
+  test("a take is chosen, not in use — the slot still holds its own media", () => {
+    // chosen_variation records which draft still the shot uses; the media in the
+    // slot is DirectorShot.clip and only moves when the beat is rendered again.
+    mount({
+      shots: [beat("b2", 9)],
+      slots: cutBeforeSwap(),
+      coverage: coverageOf(),
+      takes: { "b2::b2.2": { variations: ["a.png", "d.png"], chosen: 1 } },
+      onSelectTake: () => {},
+    });
+
+    fireEvent.click(screen.getByTestId("slot-b2::b2.2"));
+    const takes = screen.getByTestId("slot-takes").textContent || "";
+    expect(takes).toContain("chosen");
+    expect(takes).not.toContain("in use");
+    expect(screen.getByTestId("slot-takes-note").textContent)
+      .toContain("applies the next time this beat is rendered");
+    // …and the Media field still names the clip the server reported.
+    expect(screen.getByTestId("slot-inspector-media").textContent)
+      .toContain("render/b2/b2.2-takeA.mp4");
   });
 });
 
@@ -332,5 +376,76 @@ describe("trims belong to the slot", () => {
 
     // Still what the server last said, because the server has not answered yet.
     expect(screen.getByTestId("slot-b2::b2.2").getAttribute("data-trim-out")).toBe("3");
+  });
+
+  test("a trim that would empty the slot is refused, not sent", () => {
+    // POST /api/timeline/slot/{id}/trim accepts a trim_in past the intended
+    // duration and hands back a zero-length slot. This inspector is the first
+    // thing that makes that reachable, so it does not author one.
+    const onTrimSlot = vi.fn();
+    mount({
+      shots: [beat("b2", 9)],
+      slots: cutBeforeSwap(),   // b2.2 is intended 4s
+      coverage: coverageOf(),
+      onTrimSlot,
+    });
+
+    fireEvent.click(screen.getByTestId("slot-b2::b2.2"));
+    const trimIn = screen.getByTestId("slot-trim-in") as HTMLInputElement;
+    fireEvent.change(trimIn, { target: { value: "9" } });
+    fireEvent.blur(trimIn);
+
+    expect(onTrimSlot).not.toHaveBeenCalled();
+    expect(screen.getByTestId("slot-trim-error").textContent)
+      .toContain("trim in must be under the intended 4.00s");
+  });
+
+  test("trim out at or before trim in is refused too", () => {
+    const onTrimSlot = vi.fn();
+    mount({
+      shots: [beat("b2", 9)],
+      slots: cutBeforeSwap(),   // b2.2 has trim_in 0.5
+      coverage: coverageOf(),
+      onTrimSlot,
+    });
+
+    fireEvent.click(screen.getByTestId("slot-b2::b2.2"));
+    const trimOut = screen.getByTestId("slot-trim-out") as HTMLInputElement;
+    fireEvent.change(trimOut, { target: { value: "0.4" } });
+    fireEvent.blur(trimOut);
+
+    expect(onTrimSlot).not.toHaveBeenCalled();
+    expect(screen.getByTestId("slot-trim-error").textContent)
+      .toContain("trim out must be after trim in");
+  });
+});
+
+// --- §6.2 vs the storyboard gate --------------------------------------------
+
+describe("Build Draft 1 says which gate it will stop at", () => {
+  test("an uncleared gate is stated, and still does not disable the action", () => {
+    const onBuildDraft1 = vi.fn();
+    mount({
+      slots: [slot({ id: "b1::beat" })],
+      coverage: coverageOf(),
+      onBuildDraft1,
+      draftGateNote: "Gate 1 not cleared — this run stops at the storyboard gate",
+    });
+
+    expect(screen.getByTestId("draft-gate-note").textContent)
+      .toContain("stops at the storyboard gate");
+    const build = screen.getByTestId("build-draft-1") as HTMLButtonElement;
+    expect(build.disabled).toBe(false);
+    fireEvent.click(build);
+    expect(onBuildDraft1).toHaveBeenCalledTimes(1);
+  });
+
+  test("no note when there is no gate to report", () => {
+    mount({
+      slots: [slot({ id: "b1::beat" })],
+      coverage: coverageOf(),
+      onBuildDraft1: () => {},
+    });
+    expect(screen.queryByTestId("draft-gate-note")).toBeNull();
   });
 });

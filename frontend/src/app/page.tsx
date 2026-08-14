@@ -38,8 +38,8 @@ import DirectorWorkspace from "../components/DirectorWorkspace";
 import LockedCoverageModal from "../components/LockedCoverageModal";
 import CoverageSurveyPanel from "../components/CoverageSurveyPanel";
 import { MOCK_SCENES , setActiveProjectId } from "../lib/directorApi";
-import type { TimelineSlot, SlotCoverage } from "../lib/slots";
-import type { SlotTakes } from "../components/MultitrackTimeline";
+import { NO_SLOT_VIEW, viewForProject } from "../lib/slots";
+import type { SlotTakes, SlotView, TimelineSlot } from "../lib/slots";
 
 // Setup API URL mapping
 const API_BASE = typeof window !== "undefined"
@@ -124,14 +124,14 @@ export default function WorkspacePage() {
   const [loading, setLoading] = useState(true);
   const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [peaks, setPeaks] = useState<Record<string, any>>({});
-  // The cut, as slots (§7.1). `null` means "not read yet", which is not the
-  // same claim as "there are no clips" — see MultitrackTimeline's V1 track.
-  const [slots, setSlots] = useState<TimelineSlot[] | null>(null);
-  const [slotCoverage, setSlotCoverage] = useState<SlotCoverage | null>(null);
-  const [slotsError, setSlotsError] = useState<string | null>(null);
-  // Takes for coverage slots, read from the DirectorShot's plan when the slot is
-  // selected. Keyed by slot id. Whole-beat slots take theirs from the manifest.
-  const [planTakes, setPlanTakes] = useState<Record<string, SlotTakes>>({});
+  // The cut, as slots (§7.1), stamped with the project it was read for.
+  // `slots: null` means "not read yet", which is not the same claim as "there
+  // are no clips" — see MultitrackTimeline's V1 track. The stamp matters
+  // because slot ids are `beat_id::shot_id`, unique within a film and not
+  // across them: held unstamped, film A's takes are served for film B's
+  // identically-named slot until the new read lands. `viewForProject` is what
+  // makes that impossible; see lib/slots.ts.
+  const [slotView, setSlotView] = useState<SlotView>(NO_SLOT_VIEW);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const [voiceStudioOpen, setVoiceStudioOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -236,6 +236,10 @@ export default function WorkspacePage() {
    * the server reconciles them rather than the client rebuilding them.
    */
   const fetchSlots = async () => {
+    // Whose cut this read is for, captured before the request goes out so the
+    // reply is stamped with the project that asked, not the one on screen when
+    // it lands.
+    const forProject = projectIdRef.current;
     try {
       const res = await fetch(`${API_BASE}/api/timeline/slots`, { headers: authHeaders() });
       // Another film answered a request we issued before switching. Keep what is
@@ -243,20 +247,28 @@ export default function WorkspacePage() {
       if (isStaleReply(res)) return;
       const data = await res.json().catch(() => null);
       if (res.ok && data?.ok) {
-        setSlots(data.slots || []);
-        setSlotCoverage(data.coverage || null);
-        setSlotsError(null);
+        setSlotView((prev) => ({
+          projectId: forProject,
+          slots: data.slots || [],
+          coverage: data.coverage || null,
+          error: null,
+          // Takes already read for this project survive the refresh; a read for
+          // a different one starts from nothing rather than inheriting them.
+          takes: prev.projectId === forProject ? prev.takes : {},
+        }));
         return;
       }
       // Say the cut could not be read. An empty list here would read as "this
       // film has no clips", which is a different and false statement.
-      setSlots(null);
-      setSlotCoverage(null);
-      setSlotsError(data?.error || `server error (${res.status})`);
+      setSlotView({
+        projectId: forProject, slots: null, coverage: null,
+        error: data?.error || `server error (${res.status})`, takes: {},
+      });
     } catch (e) {
-      setSlots(null);
-      setSlotCoverage(null);
-      setSlotsError(e instanceof Error ? e.message : "the cut could not be read");
+      setSlotView({
+        projectId: forProject, slots: null, coverage: null,
+        error: e instanceof Error ? e.message : "the cut could not be read", takes: {},
+      });
     }
   };
 
@@ -270,19 +282,23 @@ export default function WorkspacePage() {
   /** Load the takes for a coverage slot's DirectorShot, on selection (§7.2). */
   const handleSelectSlot = async (slot: TimelineSlot | null) => {
     if (!slot?.shot_id) return;
+    const forProject = projectIdRef.current;
     try {
       const data = await getJson(`/api/director/plan/${slot.beat_id}`);
       const coverage: DirectorShotTakes[] | undefined = data?.plan?.coverage;
       if (!Array.isArray(coverage)) return;
-      setPlanTakes((prev) => {
-        const next = { ...prev };
+      setSlotView((prev) => {
+        // The plan we asked for belongs to the project we asked from. If the
+        // studio has moved on, these takes are not this film's and are dropped.
+        if (prev.projectId !== forProject) return prev;
+        const takes = { ...prev.takes };
         coverage.forEach((ds) => {
-          next[`${slot.beat_id}::${ds.id}`] = {
+          takes[`${slot.beat_id}::${ds.id}`] = {
             variations: ds.draft_variations || [],
             chosen: typeof ds.chosen_variation === "number" ? ds.chosen_variation : null,
           };
         });
-        return next;
+        return { ...prev, takes };
       });
     } catch { /* the takes strip says "no takes" rather than inventing any */ }
   };
@@ -306,6 +322,29 @@ export default function WorkspacePage() {
     await handleSelectSlot(slot);
     await fetchSlots();
     if (!slot.shot_id) fetchActiveProject();
+  };
+
+  /**
+   * §6.2's primary action.
+   *
+   * Deliberately not `handleAssemble`, whose alert says the process started and
+   * stops there. `/api/assemble/rough_cut` runs to the storyboard gate and halts
+   * if Gate 1 is uncleared — true and invisible, since only the job log says so.
+   * The button stays available either way; what changes is that the reply is
+   * reported for what it is.
+   */
+  const handleBuildDraft1 = async () => {
+    const r = await post("/api/assemble/rough_cut");
+    if (!r.ok) {
+      alert("Draft 1 not started: " + (r.error || "unknown error"));
+      return;
+    }
+    alert(activeProject?.project?.storyboard_approved
+      ? "Building Draft 1 in the background. Placeholders hold their slots; "
+        + "watch the job banner for progress."
+      : "Started — but the storyboard gate is not cleared, so this run will "
+        + "stop there rather than produce a draft. Approve the storyboard to "
+        + "let it through.");
   };
 
   /** Trim one slot. The trim belongs to the slot, so it outlives its media. */
@@ -905,14 +944,17 @@ Moved to: ${res.moved_to}`);
     beats: project.shots?.length ?? 0, stills: 0, narration: 0, sfx: 0, rendered: 0,
   };
   const effectiveTiers = tiers || {};
+  // The cut, but only if it is this film's. Anything held for another project
+  // reads as unread rather than as this one's — slot ids collide across films.
+  const cut = viewForProject(slotView, activeProject.project_id ?? null);
   // Takes per slot, keyed by slot id. A whole-beat slot's takes are the beat's
   // draft variations, which the manifest already carries; a coverage slot's come
   // from its DirectorShot's plan, loaded when the slot is selected. Both are the
-  // server's answer about which take is chosen — nothing is marked in use here.
+  // server's answer about which take is chosen — nothing is marked chosen here.
   const takesBySlot: Record<string, SlotTakes> = {};
-  (slots || []).forEach((s) => {
+  (cut.slots || []).forEach((s) => {
     if (s.shot_id) {
-      const t = planTakes[s.id];
+      const t = cut.takes[s.id];
       if (t) takesBySlot[s.id] = t;
       return;
     }
@@ -1167,14 +1209,17 @@ Moved to: ${res.moved_to}`);
           ) : activeStage === "roughcut" ? (
             <MultitrackTimeline
               shots={project.shots || []}
-              slots={slots}
-              coverage={slotCoverage}
-              slotsError={slotsError}
+              slots={cut.slots}
+              coverage={cut.coverage}
+              slotsError={cut.error}
               takes={takesBySlot}
               onSelectSlot={handleSelectSlot}
               onSelectTake={handleSelectTake}
               onTrimSlot={handleTrimSlot}
-              onBuildDraft1={() => handleAssemble("rough_cut")}
+              onBuildDraft1={handleBuildDraft1}
+              draftGateNote={project.storyboard_approved
+                ? null
+                : "Gate 1 not cleared — this run stops at the storyboard gate"}
               peaks={peaks}
               musicTrack={project.music_track}
               onUpdateGain={handleUpdateGain}

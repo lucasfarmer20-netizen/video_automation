@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
-  TimelineSlot, isFilled, isTrimmed, layoutSlots, slotDuration, slotLabel, waitingFor,
+  NO_SLOT_VIEW, SlotView, TimelineSlot,
+  isFilled, isTrimmed, layoutSlots, slotDuration, slotLabel, viewForProject, waitingFor,
 } from "./slots";
 
 const slot = (over: Partial<TimelineSlot>): TimelineSlot => ({
@@ -65,9 +66,50 @@ describe("layoutSlots", () => {
   });
 });
 
+describe("viewForProject — a cut is only ever shown for the film it was read for", () => {
+  const held: SlotView = {
+    projectId: "film-a",
+    slots: [slot({ id: "s001::s001.1", beat_id: "s001", shot_id: "s001.1" })],
+    coverage: { slots: 1, ready: 0, placeholders: 1, runtime: 4, summary: "0/1 visuals ready" },
+    error: null,
+    takes: { "s001::s001.1": { variations: ["assets/film-a/take1.png"], chosen: 0 } },
+  };
+
+  test("the film on screen sees its own cut", () => {
+    expect(viewForProject(held, "film-a")).toBe(held);
+  });
+
+  test("another film sees an unread cut, not this one's", () => {
+    // Slot ids are `beat_id::shot_id`. Beat ids are s001, s002 — they collide
+    // across films constantly, so film B would otherwise be served film A's
+    // take thumbnails for its own s001.1 until the new plan fetch resolved.
+    const other = viewForProject(held, "film-b");
+    expect(other).toEqual(NO_SLOT_VIEW);
+    expect(other.slots).toBeNull();
+    expect(other.takes).toEqual({});
+  });
+
+  test("before any project is known, nothing is claimed", () => {
+    expect(viewForProject(NO_SLOT_VIEW, "film-a")).toEqual(NO_SLOT_VIEW);
+    expect(viewForProject(held, null)).toEqual(NO_SLOT_VIEW);
+  });
+});
+
 describe("what a slot says about itself", () => {
   test("duration prefers the server's derived value", () => {
     expect(slotDuration(slot({ duration: 2.5, intended_duration: 4 }))).toBe(2.5);
+  });
+
+  test("the fallback is the server's arithmetic, trim_out included", () => {
+    // Only reachable on a payload missing the derived field — but the two must
+    // not disagree inside a module whose premise is that they cannot.
+    const noDerived = slot({ intended_duration: 4, trim_in: 0.5, trim_out: 3 });
+    delete noDerived.duration;
+    expect(slotDuration(noDerived)).toBe(2.5);
+
+    const inOnly = slot({ intended_duration: 4, trim_in: 0.5, trim_out: 0 });
+    delete inOnly.duration;
+    expect(slotDuration(inOnly)).toBe(3.5);
   });
 
   test("isTrimmed reads either end", () => {
