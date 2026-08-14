@@ -1378,8 +1378,20 @@ async def new_project(request: Request):
         
         set_active_manifest_path(manifest_file)
         config.set_active_manifest(manifest_file)
-        
-        return {"ok": True, "rel": str(manifest_file.resolve()).replace("\\", "/")}
+
+        # `project_id` is the same id `bind_project_context` will resolve this
+        # manifest to, so the client can name the new project on its very next
+        # request instead of leaving that request to the active pointer. It was
+        # already computed above and thrown away; without it the studio's
+        # follow-up load still carried the PREVIOUS X-Project-Id, and the
+        # middleware honours the header over the pointer by design -- so the
+        # server answered about the previous film and the studio never entered
+        # the one it had just created (issue #8).
+        return {
+            "ok": True,
+            "rel": str(manifest_file.resolve()).replace("\\", "/"),
+            "project_id": f_id,
+        }
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 

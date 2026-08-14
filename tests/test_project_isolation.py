@@ -309,6 +309,139 @@ def test_same_named_jobs_do_not_share_a_log_buffer(tmp_path):
     assert "bravo" in log_b and "alpha" not in log_b
 
 
+# --- lifecycle: the identity the studio is handed (issues #7, #8) ----------------
+#
+# Creating and deleting a project both MOVE the active pointer server-side. The
+# studio can only follow that move if the response tells it enough to, and these
+# pin exactly what each response promises -- because the client now depends on
+# it. `/api/project/new` promises the id of what it made; `/api/project/delete`
+# promises only THAT it repointed, which is why the two handlers correct
+# identity in different ways.
+
+
+@pytest.fixture
+def workspace(tmp_path, monkeypatch):
+    """A TestClient over a workspace the lifecycle endpoints may really write to."""
+    pytest.importorskip("fastapi.testclient")
+    from fastapi.testclient import TestClient
+    from backend import main as M
+
+    original = config.MANIFEST_PATH
+    monkeypatch.setattr(M, "WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(M, "ACTIVE_PROJECT_FILE", tmp_path / ".active_project")
+    try:
+        yield TestClient(M.app, raise_server_exceptions=False), M, tmp_path
+    finally:
+        # set_active_manifest rewrites five module globals plus the identity
+        # fallback. Left pointed into tmp_path it would follow this test into
+        # every later one.
+        config.set_active_manifest(original)
+
+
+def _create(client, name: str) -> dict:
+    r = client.post("/api/project/new", json={"name": name, "channel": "bestiary"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    return body
+
+
+def test_creating_a_project_reports_the_id_the_middleware_will_bind(workspace):
+    """Issue #8: without this the studio cannot name what it just created.
+
+    `/api/project/new` repoints the active pointer, but `bind_project_context`
+    honours `X-Project-Id` over that pointer by design -- so the studio's
+    follow-up load, still carrying the previous film's id, was answered about the
+    previous film. The id has to be the SAME one the middleware resolves this
+    manifest to; an id that were merely unique would send the next request
+    straight to a 404.
+    """
+    c, _M, _root = workspace
+    body = _create(c, "newborn")
+
+    assert body["project_id"] == projects.project_id_for(body["rel"])
+
+    # Additive. `rel` still answers for every caller that already reads it, and
+    # nothing that was returned before has changed shape.
+    assert body["rel"].endswith("/storyboard_manifest.json")
+    assert set(body) == {"ok", "rel", "project_id"}
+
+    got = c.get("/api/stages", headers={"X-Project-Id": body["project_id"]})
+    assert got.status_code == 200
+    assert got.headers.get("X-Project-Id") == body["project_id"]
+
+
+def test_a_reported_id_still_resolves_once_the_pointer_has_moved_on(workspace):
+    """The id must name a project, not just whatever happens to be active.
+
+    Creating a second project repoints the pointer away from the first. If the
+    first id only worked while it was active it would be useless for the very
+    thing it exists for -- naming a project the server is not currently on.
+    """
+    c, _M, _root = workspace
+    first = _create(c, "elder")
+    second = _create(c, "younger")
+    assert first["project_id"] != second["project_id"]
+
+    # Resolved by scanning projects, not by being the pointer's answer.
+    got = c.get("/api/stages", headers={"X-Project-Id": first["project_id"]})
+    assert got.status_code == 200
+    assert got.headers.get("X-Project-Id") == first["project_id"]
+
+
+def test_deleting_the_active_project_says_so_and_repoints_to_what_remains(workspace):
+    """Issue #7's premise: `was_active` is the only signal the client gets.
+
+    The response does not say WHICH project is active now -- only that the
+    pointer moved -- which is why the studio drops its identity here and lets the
+    pointer answer the next request, instead of retargeting to a named project
+    the way a create or a select does.
+    """
+    c, _M, _root = workspace
+    keeper = _create(c, "keeper")
+    doomed = _create(c, "doomed")          # created last, so this one is active
+
+    r = c.post("/api/project/delete", json={"rel": doomed["rel"], "confirm": "doomed"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["was_active"] is True
+
+    # Never left pointed at a directory that no longer exists.
+    assert config.MANIFEST_PATH.resolve() == Path(keeper["rel"]).resolve()
+
+    # And the deleted id stops resolving, which is precisely why the client must
+    # stop sending it: _trash is skipped by the project scan.
+    gone = c.get("/api/stages", headers={"X-Project-Id": doomed["project_id"]})
+    assert gone.status_code == 404
+
+    # A request naming no project is answered about the survivor -- the fallback
+    # the studio now relies on to recover.
+    fell_back = c.get("/api/stages")
+    assert fell_back.status_code == 200
+    assert fell_back.headers.get("X-Project-Id") == keeper["project_id"]
+
+
+def test_deleting_another_project_does_not_claim_the_pointer_moved(workspace):
+    """The gate the client keys on. `was_active` false must mean the studio stays.
+
+    If this ever reported true for a project that was not active, the studio
+    would drop a perfectly good identity and hand its next request to the
+    pointer -- landing the user in a film they did not ask for.
+    """
+    c, _M, _root = workspace
+    bystander = _create(c, "bystander")
+    current = _create(c, "current")        # active
+
+    r = c.post("/api/project/delete", json={"rel": bystander["rel"], "confirm": "bystander"})
+    assert r.status_code == 200, r.text
+    assert r.json()["was_active"] is False
+
+    assert config.MANIFEST_PATH.resolve() == Path(current["rel"]).resolve()
+    still = c.get("/api/stages", headers={"X-Project-Id": current["project_id"]})
+    assert still.status_code == 200
+
+
 # --- F-01: the application save wrapper, not just the primitive -----------------
 
 def test_save_current_project_writes_to_the_bound_project(tmp_path, monkeypatch):

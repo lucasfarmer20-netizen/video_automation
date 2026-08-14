@@ -659,29 +659,105 @@ Type the project name to confirm:`
     );
     if (!typed) return;
     const res = await post("/api/project/delete", { rel, confirm: typed });
-    if (res.ok) {
-      const mb = (res.bytes / 1048576).toFixed(1);
-      alert(`Deleted "${res.deleted}" (${mb} MB).
+    if (!res.ok) return;
+    const mb = (res.bytes / 1048576).toFixed(1);
+    alert(`Deleted "${res.deleted}" (${mb} MB).
 Moved to: ${res.moved_to}`);
-      fetchProjects();
-      fetchActiveProject();
-    }
+
+    // One rule, shared with handleSelectProject and handleCreateProject: the
+    // ref holds ONLY an id the server has just confirmed. Here what it holds
+    // has just been confirmed *gone* — the deleted project is in _trash, and
+    // `_context_for` resolves foreign ids by scanning `_scan_projects()`, which
+    // skips _trash. Kept, that id makes `bind_project_context` answer 404 to the
+    // load below and to every request after it, while `fetchActiveProject` sees
+    // `data.ok` false and updates nothing — so the storm never reached the
+    // screen and only a reload recovered (issue #7).
+    //
+    // Unlike the other two handlers there is no id to retarget TO: the server
+    // picks the replacement (backend/main.py:1295) and the response says only
+    // THAT it repointed, not where. So identity is dropped rather than moved,
+    // the load goes out naming no project, and the server's active pointer —
+    // the only thing that now knows the answer — resolves it; `fetchActiveProject`
+    // adopts the id it comes back with. This is the one place a header-less
+    // request is the right request, and it is safe precisely because the id it
+    // omits is known dead.
+    //
+    // Gated on `was_active` because deleting some OTHER project must not move
+    // this studio at all: clearing the ref then would hand the next request to
+    // the pointer, which may name a film the user is not looking at.
+    //
+    // The reload runs behind the loading screen, and `whileLoading` lowers it on
+    // every exit. That is not cosmetic. Between dropping the dead id and the
+    // replacement landing there is no project to write to, and the requests the
+    // studio issues in that window carry no id — so the server's active pointer
+    // answers them. A control clicked there would write to whichever film the
+    // server picked, under a screen still showing the deleted one: the same
+    // class, just a smaller window than the wedge above. Taking the workspace
+    // away for the duration makes it unclickable rather than merely unlikely.
+    await whileLoading(async () => {
+      if (res.was_active) {
+        projectIdRef.current = "";
+        setActiveProjectId("");
+      }
+      await fetchProjects();
+      const installed = await fetchActiveProject();
+      if (!installed && res.was_active) {
+        // Nothing to roll back to — the film on screen is in _trash. Leaving it
+        // up would invite an edit on a project that no longer exists, so the
+        // studio states what is true: it has no project loaded. That screen
+        // already exists and offers the way out.
+        setActiveProject(null);
+        alert("Deleted it, but the studio could not load the project the server "
+              + "switched to. Reload to pick it up.");
+      }
+    });
   };
 
   const handleCreateProject = (name: string, channel: string) => whileLoading(async () => {
+    const previousId = projectIdRef.current;
     const data = await post("/api/project/new", { name, channel });
     if (!data.ok) {
       alert("Failed to create project: " + (data.error || "unknown error"));
       return;
     }
-    // Says what happened rather than leaving the studio to be interpreted. The
-    // project exists on the server either way; what failed is reading it back.
-    if (await fetchActiveProject()) {
-      await fetchProjects();
-      return;
+    // Retarget to what was just created, BEFORE loading it, exactly as
+    // handleSelectProject does. /api/project/new repoints the active pointer
+    // (backend/main.py:1379) but `bind_project_context` honours X-Project-Id
+    // over that pointer by design — so a load still carrying the previous id was
+    // answered about the previous film, `data.project_id` came back as the
+    // previous film, and the ref never moved (issue #8).
+    //
+    // The id comes from the create response, which now returns it. Naming it is
+    // better than clearing the ref and letting the pointer answer, even though
+    // that also works: it leaves no window in which a request names no project,
+    // and the value was already computed server-side. `|| ""` is that fallback,
+    // kept so an older server that omits the field degrades to the header-less
+    // read rather than back to the defect.
+    //
+    // Committing identity before the load confirms it means the path where the
+    // load fails has to put it back — the lesson handleSelectProject was taught
+    // over six rounds. Rollback is the default, not a branch, so a refusal, a
+    // transport failure and a throw all land in the same place. It is available
+    // here and not after a delete because the previous film still exists.
+    let opened = false;
+    try {
+      projectIdRef.current = data.project_id || "";
+      setActiveProjectId(data.project_id || "");
+      opened = await fetchActiveProject();
+      if (opened) {
+        await fetchProjects();
+        return;
+      }
+      // Says what happened rather than leaving the studio to be interpreted. The
+      // project exists on the server either way; what failed is reading it back.
+      alert("Created that project, but could not load it. The studio is still "
+            + "showing the previous film — reload to pick the new one up.");
+    } finally {
+      if (!opened) {
+        projectIdRef.current = previousId;
+        setActiveProjectId(previousId);
+      }
     }
-    alert("Created that project, but could not load it. Reload the studio to "
-          + "pick it up.");
   });
 
   const handleUpdateField = async (sceneId: string, field: string, value: any) => {
