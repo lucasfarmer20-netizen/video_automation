@@ -178,10 +178,25 @@ export default function WorkspacePage() {
     if (action === "export:master") { await post("/api/assemble/timeline"); return; }
   };
 
-  const fetchActiveProject = async () => {
+  /**
+   * Load the active project and install it.
+   *
+   * Returns whether the authoritative load actually **installed** this
+   * project's identity and data — not whether the request was made. Callers
+   * that switch project gate on this, because "the server accepted the switch"
+   * and "the studio can safely display it" are different conditions, and using
+   * the first to answer the second renders one film while addressing another.
+   *
+   * Only an installed load takes the loading screen down, for the same reason:
+   * exposing the workspace after a failed refresh shows the PREVIOUS film while
+   * the identity has already moved to the new one. Callers that raised the
+   * loading screen are responsible for lowering it when this returns false.
+   */
+  const fetchActiveProject = async (): Promise<boolean> => {
+    let installed = false;
     try {
       const res = await fetch(`${API_BASE}/api/project/active`, { headers: authHeaders() });
-      if (isStaleReply(res)) return;
+      if (isStaleReply(res)) return false;
       const data = await res.json();
       if (data.ok) {
         // Adopt the server's id for this project; every later request names it
@@ -192,6 +207,9 @@ export default function WorkspacePage() {
         }
         setActiveProject(data);
         setActiveChannel(data.project.channel);
+        // Identity and data are both in place from here; everything below is
+        // best-effort detail that a switch does not need to have succeeded.
+        installed = true;
         if (data.project?.shots && data.project.shots.length > 0) {
           const firstBeatId = data.project.shots[0].scene_id;
           if (firstBeatId) {
@@ -226,8 +244,12 @@ export default function WorkspacePage() {
     } catch (e) {
       console.error("Failed to load active project details", e);
     } finally {
-      setLoading(false);
+      // Only an installed load exposes the workspace. Clearing this on failure
+      // is what let a switch render the previous film with the new film's
+      // identity already applied.
+      if (installed) setLoading(false);
     }
+    return installed;
   };
 
   /**
@@ -420,7 +442,11 @@ export default function WorkspacePage() {
 
   useEffect(() => {
     fetchProjects();
-    fetchActiveProject();
+    // The first load raised the loading screen (useState(true)), so it owns
+    // lowering it when the load does not install anything — otherwise a failed
+    // first fetch sits on the spinner forever instead of reaching the "no
+    // active project" recovery below.
+    fetchActiveProject().then((installed) => { if (!installed) setLoading(false); });
     pollJobs();
 
     // Setup polling intervals
@@ -550,19 +576,46 @@ export default function WorkspacePage() {
     projectIdRef.current = projectId;
     setActiveProjectId(projectId);
 
+    // `opened` is "the studio can safely display this film", NOT "the server
+    // accepted the switch". They are different conditions and the second is
+    // weaker: the server can accept while the authoritative load that installs
+    // the new identity and data then fails — a dropped connection, a truncated
+    // body that fails to parse — and with the retarget already applied that
+    // leaves the previous film on screen and the new one in every header. So
+    // this is set only once /api/project/active has returned and installed.
     let opened = false;
     try {
       const data = await post("/api/project/select", { rel });
-      if (data.ok) {
-        opened = true;
-        await fetchActiveProject();
-        await fetchProjects();
+      if (!data.ok) {
+        // The server's reason, not a stand-in for it. A 409 names the job that
+        // is running and says to wait, which the user can act on; "Failed to
+        // load storyboard project" told them only that something went wrong.
+        alert("Could not open that project: " + (data.error || "unknown error"));
         return;
       }
-      // The server's reason, not a stand-in for it. A 409 names the job that is
-      // running and says to wait, which the user can act on; "Failed to load
-      // storyboard project" told them only that something went wrong.
-      alert("Could not open that project: " + (data.error || "unknown error"));
+      opened = await fetchActiveProject();
+      if (!opened) {
+        // The server HAS switched; the studio has not, and cannot be shown as
+        // though it had. Of the two coherent outcomes -- hold a blocking retry
+        // state on the new film, or return the studio to the film it is still
+        // displaying -- this takes the second, deliberately:
+        //
+        //  * the view never moved, so restoring the identity is all it takes to
+        //    make the whole studio consistent again, with no new UI state and
+        //    no new claim to get wrong;
+        //  * every request names its project explicitly, so nothing resolves
+        //    through the server's active pointer. That pointer now says the new
+        //    film while the studio works on the previous one, which is inert:
+        //    it is consulted only for requests that name no project, and the
+        //    studio does not make those once identity is known.
+        //
+        // What must never happen -- the previous film on screen while requests
+        // target the new one -- is exactly what the rollback below prevents.
+        alert("Opened that project, but could not load it. The studio is still "
+              + "showing the previous film — try again.");
+        return;
+      }
+      await fetchProjects();
     } finally {
       if (!opened) {
         projectIdRef.current = previousId;

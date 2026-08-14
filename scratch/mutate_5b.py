@@ -34,6 +34,25 @@ class Mutation:
     edits: list[tuple[Path, str, str]]
 
 
+# Mutations that were written, ran, and SURVIVED for a reason worth recording
+# rather than hiding. They are not in MUTATIONS because a permanent survivor
+# turns this harness from a pass/fail signal into a thing people learn to
+# ignore; they are here because deleting them silently would be worse.
+#
+#   `if (installed) setLoading(false);`  (page.tsx, fetchActiveProject)
+#       Removing the guard lets a failed authoritative load expose the
+#       workspace, so the previous film can paint while the new film's identity
+#       is still applied. Real in a browser: alert() blocks the main thread and
+#       the browser may paint behind it. NOT observable in jsdom -- alert is a
+#       synchronous mock, React batches the whole failure path into one render,
+#       and the end state is identical either way. A test that tried to catch it
+#       would be asserting on React's internal scheduling, which would pass and
+#       fail for reasons unrelated to the guard.
+#       The guard stays: it is what contract §11.3 asks for directly. This is a
+#       test gap, declared, not a covered line.
+KNOWN_UNKILLABLE_IN_JSDOM = ["if (installed) setLoading(false)"]
+
+
 MUTATIONS = [
     Mutation(
         "placeholder re-derived from media client-side", "§11.4",
@@ -125,6 +144,15 @@ MUTATIONS = [
           "      if (!opened) {\n"
           "        setLoading(false);\n"
           "      }")],
+    ),
+    Mutation(
+        "server acceptance mistaken for the studio being able to show it", "§11.3",
+        [(PAGE,
+          "      opened = await fetchActiveProject();\n"
+          "      if (!opened) {",
+          "      opened = true;\n"
+          "      await fetchActiveProject();\n"
+          "      if (!opened) {")],
     ),
     Mutation(
         "the server's refusal reason replaced by a generic one", "§11.4",

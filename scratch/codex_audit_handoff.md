@@ -159,6 +159,58 @@ the pattern these guardrails predict.
    cleared on every blur, including the no-op blur that withdraws a rejected
    value. Introduced by the round-1 fix.
 
+### Round 3 outcome — the rollback gap
+
+One High, fixed in `ec47d14`. `handleSelectProject` committed the new film's
+identity before asking the server and never put it back when the answer was no.
+`/api/project/select` calls `refuse_if_jobs_running` (`main.py:1201`) and 409s
+whenever a job is running, so a refused switch left the screen on film A while
+every request named film B — and `directorApi` keeps its own copy of the id
+(`directorApi.ts:45`) used for `isStaleReply`, so film A's own replies would
+have been discarded as stale while film B's were accepted onto its screen.
+
+Rollback is now the default: the previous id is captured, the attempt runs in a
+`try`, and a `finally` restores both pointers unless the open was confirmed.
+
+**Watch item, not a defect:** V1's filled clips paint their frame via
+`#t=0.1` with `preload="metadata"`. Chrome and Firefox seek and paint it;
+Safari is inconsistent, so a filled clip may read blank there. It degrades to a
+blank clip, never a wrong one, which is the property the change was for.
+`preload="auto"` on filled slots is the remedy if it shows up in practice — a
+one-word change, at the cost of every filled slot fetching its clip. Not done
+speculatively.
+
+### Round 4 outcome — the two reviews disagreed, and the weaker condition lost
+
+The built-in surface APPROVED `opened = true` sitting immediately after
+`/api/project/select` succeeded; the deep pass called the same line a reachable
+High. The deep pass was right, on two checkable facts: `fetchActiveProject`
+swallowed its own failures (`catch` + `finally { setLoading(false) }`, nothing
+propagating), and `bind_project_context` resolves `X-Project-Id` **over** the
+active pointer. The second is what settles it — because the header wins, rolling
+the CLIENT back to the previous film makes the client self-consistent: it
+displays that film and it talks to that film, and the server's now-stale pointer
+is consulted only by requests that name no project, which this studio does not
+make once identity is known.
+
+The category error is worth keeping: `opened` recorded **server acceptance**
+where the rollback needed **"the studio can safely display this"**. The server
+accepting a switch is not the studio being ready to show it, and using the first
+to answer the second renders one film while addressing another.
+
+`fetchActiveProject` now returns whether it *installed* identity and data.
+Returned rather than thrown: it has 34 call sites and only two of them raise the
+loading screen, so throwing would have fixed one and exposed 32 to unhandled
+rejections.
+
+**Declared test gap, not a covered line.** `if (installed) setLoading(false)`
+cannot be pinned in jsdom — `alert` is a synchronous mock, React batches the
+whole failure path into one render, and the end state is identical with or
+without the guard. The exposure it prevents is a real-browser paint behind a
+blocking `alert`. The mutation was written, run, survived, and is recorded in
+`scratch/mutate_5b.py` under `KNOWN_UNKILLABLE_IN_JSDOM` rather than deleted or
+left to rot in the pass/fail signal.
+
 **Left open, deliberately, and NOT closed by this slice:**
 `POST /api/timeline/slot/{id}/trim` accepts a `trim_in` beyond
 `intended_duration` and returns a zero-length slot. The inspector no longer

@@ -48,6 +48,8 @@ let sent: { url: string; projectId: string | null }[] = [];
 let active: FilmId = "film-a";
 /** How /api/project/select behaves. Tests set this before clicking. */
 let selectOutcome: "ok" | "refused" | "network-failure" = "ok";
+/** How /api/project/active behaves — the authoritative load after a switch. */
+let activeOutcome: "ok" | "transport" | "bad-json" = "ok";
 
 /** The coverage slot both films share — the id collision the stamp must survive. */
 const SLOT_ID = "s001::s001.1";
@@ -134,6 +136,7 @@ beforeEach(() => {
   sent = [];
   active = "film-a";
   selectOutcome = "ok";
+  activeOutcome = "ok";
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo, init?: RequestInit) => {
     const url = String(input).replace("http://localhost:5000", "");
     const headers = new Headers(init?.headers as HeadersInit);
@@ -158,6 +161,20 @@ beforeEach(() => {
         } as unknown as Response;
       }
       active = "film-b";
+    }
+
+    // The authoritative load failing AFTER the server has switched. Both shapes
+    // land in fetchActiveProject's catch, which used to swallow them.
+    if (url.startsWith("/api/project/active")) {
+      if (activeOutcome === "transport") throw new TypeError("Failed to fetch");
+      if (activeOutcome === "bad-json") {
+        return {
+          ok: true, status: 200,
+          headers: new Headers({ "X-Project-Id": target }),
+          json: async () => { throw new SyntaxError("Unexpected end of JSON input"); },
+          text: async () => "{\"ok\": tr",
+        } as unknown as Response;
+      }
     }
 
     return {
@@ -286,6 +303,53 @@ describe("a switch the server refuses leaves the studio on the film it is showin
     expect(after("/api/shot/s002").every((r) => r.projectId === "film-a")).toBe(true);
     expect(after("/api/timeline/slots").every((r) => r.projectId === "film-a")).toBe(true);
     expect(after("/api/project/active").every((r) => r.projectId === "film-a")).toBe(true);
+  });
+
+  test("a switch the server ACCEPTS but the studio cannot load rolls back too", async () => {
+    // The sharper case. /api/project/select succeeds, so the server is on film
+    // B — but the authoritative load that installs film B's identity and data
+    // fails at the transport. The retarget is already applied, so treating the
+    // server's acceptance as "the studio can display this" leaves film A on
+    // screen with film B in every header: a wrong-project WRITE, reached from a
+    // third direction. `opened` therefore records the load, not the accept.
+    await bootIntoFilmA();
+    activeOutcome = "transport";
+
+    fireEvent.click(screen.getAllByText("Film B")[0]);
+    await waitFor(() => expect(alert).toHaveBeenCalled());
+    expect((alert as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0])
+      .toContain("could not load it");
+    activeOutcome = "ok";
+
+    // Film A is on screen…
+    await waitFor(() =>
+      expect(screen.getByTestId("coverage-summary").textContent).toBe("2/2 visuals ready"));
+
+    // …so a real edit made here must reach film A, not the film the server
+    // switched to underneath it.
+    await swapTakeOnBeatSlot();
+    await waitFor(() => expect(after("/api/shot/s002").length).toBeGreaterThan(0));
+    expect(after("/api/shot/s002").every((r) => r.projectId === "film-a")).toBe(true);
+    expect(after("/api/timeline/slots").every((r) => r.projectId === "film-a")).toBe(true);
+  });
+
+  test("the same when the load returns a body that will not parse", async () => {
+    // A 200 whose body is truncated: res.json() throws inside
+    // fetchActiveProject's try, which swallowed it and cleared loading anyway.
+    await bootIntoFilmA();
+    activeOutcome = "bad-json";
+
+    fireEvent.click(screen.getAllByText("Film B")[0]);
+    await waitFor(() => expect(alert).toHaveBeenCalled());
+    activeOutcome = "ok";
+
+    await waitFor(() =>
+      expect(screen.getByTestId("coverage-summary").textContent).toBe("2/2 visuals ready"));
+
+    await swapTakeOnBeatSlot();
+    await waitFor(() => expect(after("/api/shot/s002").length).toBeGreaterThan(0));
+    expect(after("/api/shot/s002").every((r) => r.projectId === "film-a")).toBe(true);
+    expect(after("/api/timeline/slots").every((r) => r.projectId === "film-a")).toBe(true);
   });
 
   test("a late reply from the abandoned film is stale after the rollback", async () => {
