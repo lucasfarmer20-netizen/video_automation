@@ -49,6 +49,10 @@ const API_BASE = typeof window !== "undefined"
 interface Project {
   name: string;
   rel: string;
+  /** What the studio sends as `X-Project-Id` to target this project explicitly.
+   *  `/api/projects` fills it for every entry, and it is required here so that
+   *  losing it on the way to `handleSelectProject` cannot compile. */
+  project_id: string;
   rel_display: string;
   active: boolean;
   channel: string;
@@ -526,7 +530,7 @@ export default function WorkspacePage() {
   };
 
   // Action handlers
-  const handleSelectProject = async (rel: string, projectId?: string) => {
+  const handleSelectProject = async (rel: string, projectId: string) => {
     setLoading(true);
     // Retarget first. Any reply still in flight for the previous project now
     // fails the staleness check instead of repainting the studio.
@@ -1122,8 +1126,15 @@ Moved to: ${res.moved_to}`);
           <ProjectSidebar
             projects={projects}
             activeProjectId={project.id}
-            onSelectProject={(rel) => {
-              handleSelectProject(rel);
+            // Both arguments, and the second is not optional. The sidebar has
+            // always sent (rel, project_id); this wrapper took only `rel` and
+            // dropped the id, so projectIdRef never left the project already on
+            // screen and every later request carried its header — which the
+            // middleware honours over the active pointer, by design. The studio
+            // therefore could not change project at all. Typed as required so
+            // dropping it again is a compile error rather than a silent one.
+            onSelectProject={(rel, projectId) => {
+              handleSelectProject(rel, projectId);
               setMobileSidebarOpen(false);
             }}
             onCreateProject={handleCreateProject}

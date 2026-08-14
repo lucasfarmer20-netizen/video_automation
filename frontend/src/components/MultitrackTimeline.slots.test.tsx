@@ -298,7 +298,7 @@ describe("§7.1 — a take swap replaces media in the slot that already exists",
     });
 
     const frame = screen.getByTestId("slot-media-b2::b2.2");
-    expect(frame.getAttribute("src")).toBe("/media/render/b2/b2.2-takeA.mp4");
+    expect(frame.getAttribute("src")).toBe("/media/render/b2/b2.2-takeA.mp4#t=0.1");
 
     // A frame that fails to load is a broken frame, not an empty slot. If the
     // component demoted the slot on error, the cut would lose a clip to a 404.
@@ -323,10 +323,47 @@ describe("§7.1 — a take swap replaces media in the slot that already exists",
 
     const frame = screen.getByTestId("slot-media-b3::beat");
     expect(frame.tagName).toBe("VIDEO");
-    expect(frame.getAttribute("src")).toBe("/media/render/b3.mp4");
-    // The still the clip was rendered from, where the studio already has it.
-    expect(frame.getAttribute("poster")).toBe("/media/assets/b3/take1.png");
+    // A frame of the media actually in the slot — not a still borrowed from
+    // anywhere, which is why there is no poster to borrow it into.
+    expect(frame.getAttribute("src")).toBe("/media/render/b3.mp4#t=0.1");
+    expect(frame.getAttribute("poster")).toBeNull();
     expect(screen.getByTestId("slot-b3::beat").querySelector("img")).toBeNull();
+  });
+
+  test("choosing a take does not repaint the clip the slot still holds", () => {
+    // POST /api/shot/{id} reassigns draft_image synchronously, and the take
+    // strip's chosen index moves with the plan refetch — but slot.media does not
+    // move until the beat is rendered again. Painting either of those onto the
+    // clip restates, in a picture, the claim the "chosen" badge exists to avoid.
+    const props = {
+      shots: [{ ...beat("b3", 4), draft_image: "assets/b3/take1.png" }],
+      slots: [slot({
+        id: "b3::beat", beat_id: "b3", index: 0,
+        media: "render/b3.mp4", source_attempt: "att-1", placeholder: false,
+      })],
+      coverage: coverageOf(),
+      takes: { "b3::beat": { variations: ["assets/b3/take1.png", "assets/b3/take2.png"], chosen: 0 } },
+      onSelectTake: () => {},
+    };
+    const { rerender } = mount(props);
+    const before = screen.getByTestId("slot-media-b3::beat").getAttribute("src");
+
+    // The server has recorded take 2 and moved draft_image with it. The cut has
+    // not changed: slot.media is still the clip rendered from take 1.
+    rerender(
+      <MultitrackTimeline
+        {...props}
+        shots={[{ ...beat("b3", 4), draft_image: "assets/b3/take2.png" }]}
+        takes={{ "b3::beat": { variations: ["assets/b3/take1.png", "assets/b3/take2.png"], chosen: 1 } }}
+        mediaUrl={mediaUrl}
+        onUpdateCamera={() => {}}
+      />,
+    );
+
+    const frame = screen.getByTestId("slot-media-b3::beat");
+    expect(frame.getAttribute("src")).toBe(before);
+    expect(frame.getAttribute("poster")).toBeNull();
+    expect(screen.getByTestId("slot-b3::beat").getAttribute("data-media")).toBe("render/b3.mp4");
   });
 
   test("a take is chosen, not in use — the slot still holds its own media", () => {
@@ -417,6 +454,50 @@ describe("trims belong to the slot", () => {
     expect(onTrimSlot).not.toHaveBeenCalled();
     expect(screen.getByTestId("slot-trim-error").textContent)
       .toContain("trim out must be after trim in");
+  });
+
+  test("a refusal does not outlive the slot it was about", () => {
+    mount({
+      shots: [beat("b2", 9)],
+      slots: cutBeforeSwap(),
+      coverage: coverageOf(),
+      onTrimSlot: () => {},
+    });
+
+    // Refuse a trim on b2.2, whose intended duration is 4s.
+    fireEvent.click(screen.getByTestId("slot-b2::b2.2"));
+    const trimIn = screen.getByTestId("slot-trim-in") as HTMLInputElement;
+    fireEvent.change(trimIn, { target: { value: "9" } });
+    fireEvent.blur(trimIn);
+    expect(screen.getByTestId("slot-trim-error").textContent).toContain("4.00s");
+
+    // Move to b2.1, which is 3s. A message quoting b2.2's 4s under b2.1's
+    // inputs is worse than no message.
+    fireEvent.click(screen.getByTestId("slot-b2::b2.1"));
+    expect(screen.getByTestId("slot-inspector-id").textContent).toBe("b2::b2.1");
+    expect(screen.queryByTestId("slot-trim-error")).toBeNull();
+  });
+
+  test("withdrawing a refused value clears the refusal", () => {
+    mount({
+      shots: [beat("b2", 9)],
+      slots: cutBeforeSwap(),
+      coverage: coverageOf(),
+      onTrimSlot: () => {},
+    });
+
+    fireEvent.click(screen.getByTestId("slot-b2::b2.2"));
+    const trimIn = screen.getByTestId("slot-trim-in") as HTMLInputElement;
+    fireEvent.change(trimIn, { target: { value: "9" } });
+    fireEvent.blur(trimIn);
+    expect(screen.getByTestId("slot-trim-error")).toBeTruthy();
+
+    // Typing back what the server said is the user withdrawing the edit. The
+    // commit is correctly skipped as a no-op — but the complaint must go too,
+    // or the field reads as still wrong when it is not.
+    fireEvent.change(trimIn, { target: { value: "0.5" } });
+    fireEvent.blur(trimIn);
+    expect(screen.queryByTestId("slot-trim-error")).toBeNull();
   });
 });
 

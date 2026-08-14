@@ -255,9 +255,11 @@ export default function MultitrackTimeline({
   // changing how long the shot is meant to run is Director intent. Conflating
   // them is how a plan change gets hidden inside a retimed cut.
   const [slotDrag, setSlotDrag] = useState<{ id: string; dur: number } | null>(null);
-  // Why a trim was not sent. Held so the refusal is visible rather than the
-  // input silently snapping back to what the server last said.
-  const [trimError, setTrimError] = useState<string | null>(null);
+  // Why a trim was not sent, and which slot it was about. Held so the refusal is
+  // visible rather than the input silently snapping back to what the server last
+  // said — and stamped with its slot, because a message quoting slot A's
+  // intended duration sitting under slot B's inputs is worse than no message.
+  const [trimError, setTrimError] = useState<{ slotId: string; why: string } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const wheelProxyRef = React.useRef<(e: WheelEvent) => void>(() => {});
   const [trackH, setTrackH] = useState(80);              // px per track row
@@ -359,22 +361,6 @@ export default function MultitrackTimeline({
     [slots, selectedSlotId],
   );
 
-  /** The still a slot's clip was rendered from, where the studio already has it.
-   *
-   * The beat's chosen draft for a whole-beat slot; the DirectorShot's chosen
-   * take for a coverage slot, once that plan has been read. Undefined otherwise
-   * — a poster is a nicety, and reaching for the nearest available image would
-   * put a frame from another shot on this clip.
-   */
-  const posterFor = React.useCallback((slot: TimelineSlot): string | undefined => {
-    if (!slot.shot_id) {
-      const b = shots.find((s) => s.scene_id === slot.beat_id);
-      return b?.draft_image ? mediaUrl(b.draft_image) : undefined;
-    }
-    const t = takes?.[slot.id];
-    const chosen = t && typeof t.chosen === "number" ? t.variations[t.chosen] : undefined;
-    return chosen ? mediaUrl(chosen) : undefined;
-  }, [shots, takes, mediaUrl]);
 
   // Keyboard Shortcuts (Space for Play/Pause, Left/Right Arrows to jump beats, Esc to exit Fullscreen)
   useEffect(() => {
@@ -1125,15 +1111,25 @@ export default function MultitrackTimeline({
                             clip -- DirectorShot.clip is render/<beat>/<shot>.mp4
                             and the whole-beat fallback is render/<beat>.mp4 -- so
                             an <img> could not decode any of it and every filled
-                            slot would sit there having hidden its own frame. The
-                            poster is the beat's chosen still where there is one,
-                            which is the frame this clip was rendered from.
+                            slot would sit there having hidden its own frame.
+
+                            And NO poster. A poster has to come from somewhere,
+                            and the only stills the client holds are the take
+                            chosen *now* -- which stops matching the frame this
+                            clip was rendered from the moment a take is selected,
+                            because POST /api/shot/{id} reassigns draft_image
+                            synchronously while slot.media does not move until
+                            the beat is rendered again. That is the contradiction
+                            the "chosen" badge two blocks down exists to avoid,
+                            restated as a picture, and a picture is the louder
+                            claim. `#t=0.1` paints a frame of the media actually
+                            in the slot instead, which cannot be wrong about what
+                            the slot contains.
 
                             Whether it loads still says nothing about whether the
                             slot is filled. onError hides a broken frame and
                             deliberately changes no slot state (§11.4). */}
-                        <video src={mediaUrl(slot.media)} data-testid={`slot-media-${slot.id}`}
-                               poster={posterFor(slot)}
+                        <video src={`${mediaUrl(slot.media)}#t=0.1`} data-testid={`slot-media-${slot.id}`}
                                muted playsInline preload="metadata"
                                className="w-full h-full object-cover opacity-60"
                                onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} />
@@ -1621,10 +1617,20 @@ export default function MultitrackTimeline({
                   if (t.trim_out && t.trim_out <= t.trim_in) return "trim out must be after trim in";
                   return null;
                 };
-                const commit = (t: { trim_in: number; trim_out: number }) => {
-                  const bad = rejectTrim(t);
-                  if (bad) { setTrimError(bad); return; }
+                /** Every blur starts by clearing the last refusal, including the
+                 *  blur that changes nothing — typing the rejected value back to
+                 *  what the server said is the user withdrawing it, and leaving
+                 *  the message up says the field is still wrong when it is not. */
+                const onTrimBlur = (
+                  raw: string, current: number,
+                  build: (v: number) => { trim_in: number; trim_out: number },
+                ) => {
                   setTrimError(null);
+                  const v = parseFloat(raw);
+                  if (!Number.isFinite(v) || Math.abs(v - current) <= 0.001) return;
+                  const t = build(v);
+                  const bad = rejectTrim(t);
+                  if (bad) { setTrimError({ slotId: selectedSlot.id, why: bad }); return; }
                   onTrimSlot(selectedSlot, t);
                 };
                 return (
@@ -1636,11 +1642,9 @@ export default function MultitrackTimeline({
                         data-testid="slot-trim-in"
                         key={`${selectedSlot.id}-in-${selectedSlot.trim_in}`}
                         defaultValue={selectedSlot.trim_in}
-                        onBlur={(e) => {
-                          const v = parseFloat(e.target.value);
-                          if (Number.isFinite(v) && Math.abs(v - selectedSlot.trim_in) > 0.001)
-                            commit({ trim_in: v, trim_out: selectedSlot.trim_out });
-                        }}
+                        onBlur={(e) => onTrimBlur(
+                          e.target.value, selectedSlot.trim_in,
+                          (v) => ({ trim_in: v, trim_out: selectedSlot.trim_out }))}
                         className="w-20 bg-zinc-900 text-zinc-100 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-[11px] font-mono focus:border-amber-400 focus:outline-none font-bold"
                       />
                     </div>
@@ -1652,18 +1656,16 @@ export default function MultitrackTimeline({
                         data-testid="slot-trim-out"
                         key={`${selectedSlot.id}-out-${selectedSlot.trim_out}`}
                         defaultValue={selectedSlot.trim_out}
-                        onBlur={(e) => {
-                          const v = parseFloat(e.target.value);
-                          if (Number.isFinite(v) && Math.abs(v - selectedSlot.trim_out) > 0.001)
-                            commit({ trim_in: selectedSlot.trim_in, trim_out: v });
-                        }}
+                        onBlur={(e) => onTrimBlur(
+                          e.target.value, selectedSlot.trim_out,
+                          (v) => ({ trim_in: selectedSlot.trim_in, trim_out: v }))}
                         className="w-20 bg-zinc-900 text-zinc-100 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-[11px] font-mono focus:border-amber-400 focus:outline-none font-bold"
                       />
                     </div>
-                    {trimError && (
+                    {trimError?.slotId === selectedSlot.id && (
                       <span data-testid="slot-trim-error"
                             className="text-[10px] font-mono font-bold text-red-300 pb-2">
-                        {trimError}
+                        {trimError.why}
                       </span>
                     )}
                   </div>

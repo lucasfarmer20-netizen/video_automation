@@ -126,6 +126,39 @@ All four notes were taken as well: the mutation harness snapshots every file a
 mutation touches; `slotAt`/`VIDEO` are gone; `slotDuration`'s fallback is now the
 server's arithmetic clause for clause.
 
+### Round 2 outcome — one High, and it was reachability
+
+Both surfaces requested changes. Three findings, all real, all fixed in one
+push. Two of the three were caused by the round-1 remediation itself, which is
+the pattern these guardrails predict.
+
+1. **HIGH, §11.3 — the studio could not change project at all.**
+   `ProjectSidebar` has always called `onSelectProject(p.rel, p.project_id)`;
+   the page wrapper took only `rel` and `handleSelectProject`'s second parameter
+   was optional, so the id was silently always `undefined`. `projectIdRef` never
+   moved, every later request carried the previous project's `X-Project-Id`, and
+   the middleware answers about the project the client *names* over the active
+   pointer by design (`main.py:165`). **Pre-existing on main** — introduced by
+   `a5ee370`, the mobile-sidebar work, not by this slice — but it made all of
+   round 1's cross-project isolation unreachable, which is why it was fixed
+   here. `project_id` and the callback parameter are now required types, so
+   dropping the argument again is a compile error.
+
+   The lesson worth keeping: no mutation of the timeline could have caught this,
+   because the defect was in the seam between the sidebar and the page, and every
+   test mounted the timeline directly with hand-made props. There is now a
+   page-level test that clicks the sidebar entry a user clicks and watches the
+   headers that go out.
+2. **The poster restated the claim the badge fix removed.** `posterFor()`
+   resolved the take chosen *now*, not the still the clip was rendered from, and
+   `POST /api/shot/{id}` reassigns `draft_image` synchronously — so choosing take
+   2 repainted V1 with take 2's still while `slot.media` was still take 1's clip.
+   Dropped entirely for `#t=0.1` on the media itself, which is by construction
+   the media in the slot. Introduced by the round-1 fix.
+3. **`trimError` outlived its slot.** Now stamped with the slot it concerns and
+   cleared on every blur, including the no-op blur that withdraws a rejected
+   value. Introduced by the round-1 fix.
+
 **Left open, deliberately, and NOT closed by this slice:**
 `POST /api/timeline/slot/{id}/trim` accepts a `trim_in` beyond
 `intended_duration` and returns a zero-length slot. The inspector no longer

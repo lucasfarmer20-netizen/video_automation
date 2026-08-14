@@ -6,7 +6,11 @@ import { Folder, Film, CheckCircle, Lock, Plus, ChevronDown, ChevronRight, Eye, 
 interface Project {
   name: string;
   rel: string;
-  project_id?: string;
+  /** Required, because `_scan_projects` fills it for every entry and a caller
+   *  that loses it cannot retarget: the studio then keeps sending the previous
+   *  project's `X-Project-Id`, which the middleware honours over the active
+   *  pointer, and switching project silently stops working. */
+  project_id: string;
   rel_display: string;
   active: boolean;
   channel: string;
@@ -18,7 +22,7 @@ interface Project {
 interface ProjectSidebarProps {
   projects: Project[];
   activeProjectId: string | null;
-  onSelectProject: (rel: string, projectId?: string) => void;
+  onSelectProject: (rel: string, projectId: string) => void;
   onCreateProject: (name: string, channel: string) => void;
   activeChannel: "bestiary" | "calluses";
   setActiveChannel: (channel: "bestiary" | "calluses") => void;

@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = ROOT / "frontend"
 SLOTS = FRONTEND / "src" / "lib" / "slots.ts"
 TIMELINE = FRONTEND / "src" / "components" / "MultitrackTimeline.tsx"
+PAGE = FRONTEND / "src" / "app" / "page.tsx"
 
 
 @dataclass
@@ -82,8 +83,36 @@ MUTATIONS = [
     Mutation(
         "slot media drawn into an <img>, which cannot decode a clip", "§7.1",
         [(TIMELINE,
-          "                        <video src={mediaUrl(slot.media)} data-testid={`slot-media-${slot.id}`}",
-          "                        <img src={mediaUrl(slot.media)} data-testid={`slot-media-${slot.id}`}")],
+          "                        <video src={`${mediaUrl(slot.media)}#t=0.1`} data-testid={`slot-media-${slot.id}`}",
+          "                        <img src={`${mediaUrl(slot.media)}#t=0.1`} data-testid={`slot-media-${slot.id}`}")],
+    ),
+    Mutation(
+        "a poster borrowed from whichever take is chosen now", "§11.4",
+        [(TIMELINE,
+          "                        <video src={`${mediaUrl(slot.media)}#t=0.1`} data-testid={`slot-media-${slot.id}`}",
+          "                        <video src={`${mediaUrl(slot.media)}#t=0.1`} data-testid={`slot-media-${slot.id}`}\n"
+          "                               poster={(() => {\n"
+          "                                 const b = shots.find((s) => s.scene_id === slot.beat_id);\n"
+          "                                 return b?.draft_image ? mediaUrl(b.draft_image) : undefined;\n"
+          "                               })()}")],
+    ),
+    Mutation(
+        "a trim refusal that outlives the slot it was about", "§11.4",
+        [(TIMELINE,
+          "                  setTrimError(null);\n"
+          "                  const v = parseFloat(raw);",
+          "                  const v = parseFloat(raw);"),
+         (TIMELINE,
+          "                    {trimError?.slotId === selectedSlot.id && (",
+          "                    {trimError && (")],
+    ),
+    Mutation(
+        "the sidebar's project id dropped on the way to the page", "§11.3",
+        [(PAGE,
+          "            onSelectProject={(rel, projectId) => {\n"
+          "              handleSelectProject(rel, projectId);",
+          "            onSelectProject={(rel) => {\n"
+          "              handleSelectProject(rel);")],
     ),
     Mutation(
         "a held cut served for whichever film is on screen", "§11.4",
@@ -101,9 +130,9 @@ MUTATIONS = [
         "a trim the server would accept and the slot cannot survive", "§7.1",
         [(TIMELINE,
           "                  const bad = rejectTrim(t);\n"
-          "                  if (bad) { setTrimError(bad); return; }",
-          "                  const bad = null;\n"
-          "                  if (bad) { setTrimError(bad); return; }")],
+          "                  if (bad) { setTrimError({ slotId: selectedSlot.id, why: bad }); return; }",
+          "                  const bad: string | null = null;\n"
+          "                  if (bad) { setTrimError({ slotId: selectedSlot.id, why: bad }); return; }")],
     ),
     Mutation(
         "an uncleared gate left for the job log to mention", "§6.2",
