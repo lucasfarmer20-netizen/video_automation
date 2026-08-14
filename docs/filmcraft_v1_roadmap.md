@@ -25,7 +25,7 @@ sufficient, and nothing is deployed today — Cloud Run still runs `a8003ca`.
 | 3 Script → Director invalidation | built |
 | 4 Generation lineage | built, audited (two rounds) |
 | 5 Slot-based timeline | backend + API + tests built; **frontend not bound** |
-| 6 Refine routing | not started |
+| 6 Refine routing | **DEFERRED** — Superseded by vNext Phase 5 Render QC / QCFinding; do not build duplicate issue schema. |
 | 7 Frozen export | not started |
 | 8 Hardening | not started, and cannot be specified yet |
 
@@ -100,7 +100,15 @@ reopens slice 5.
 
 ---
 
-## 6 — Refine routing
+## 6 — Refine routing — DEFERRED
+
+> Superseded by vNext Phase 5 Render QC / QCFinding; do not build duplicate issue schema.
+
+Nothing below is to be built as written. The issue record, its severity/blocking
+representation and its routing are the same design problem vNext Phase 5 solves
+with `QCFinding`; building `backend/issues.py` first would produce a second issue
+schema that has to be reconciled later. The carried-forward item at the end of
+this section (a stuck paid attempt is an issue) travels with it.
 
 **Scope:** new `backend/issues.py`, `ProblemQueueDrawer.tsx`.
 
