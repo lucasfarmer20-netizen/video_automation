@@ -217,8 +217,16 @@ def _layer_source(lay, sfx_dir: Path, scene_id: str) -> Path | None:
 
 
 def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
-          out_stem: str | None = None) -> tuple[Path, Path | None, float]:
-    """Assemble the timeline and write .otio (+ .fcpxml). Returns (otio, fcpxml, runtime)."""
+          out_stem: str | None = None,
+          out_dir: Path | None = None) -> tuple[Path, Path | None, float]:
+    """Assemble the timeline and write .otio (+ .fcpxml). Returns (otio, fcpxml, runtime).
+
+    ``out_dir`` defaults to the project directory, which is where the timeline
+    stage has always written. A frozen export passes its own
+    ``exports/<version>/`` so the FCPXML lands beside the master and the snapshot
+    it was generated from -- see ``backend/exports.py``. Nothing about how the
+    timeline is assembled changes; only where it is written.
+    """
     sb = storyboard or load()
     ep = config.episode_paths(sb.title)
     render_dir = Path(render_dir) if render_dir else ep["render"]
@@ -331,7 +339,7 @@ def build(storyboard: Storyboard | None = None, render_dir: Path | None = None,
     # mount. These used to go to config.ROOT — /app inside the container, which
     # is ephemeral in-memory storage: the export was unreachable by any route and
     # evaporated on the next cold start, while the UI reported it as ready.
-    out_dir_root = config.project_dir()
+    out_dir_root = Path(out_dir) if out_dir is not None else config.project_dir()
     out_dir_root.mkdir(parents=True, exist_ok=True)
     otio_path = out_dir_root / f"{slug}.otio"
     fcpxml_path: Path | None = out_dir_root / f"{slug}.fcpxml"

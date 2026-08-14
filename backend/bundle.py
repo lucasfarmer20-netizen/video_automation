@@ -63,16 +63,61 @@ def _arcname(p: Path) -> str:
     return f"media/{p.name}"
 
 
-def build(storyboard: Storyboard | None = None, log=print) -> Path:
-    """Write ``<slug>_bundle.zip`` beside the manifest and return its path."""
+def _provenance(version: str | None) -> str:
+    """One line saying where the XML in this ZIP came from.
+
+    A bundle is the artifact a human actually carries to Resolve, so "which cut
+    is this?" has to be answerable from inside it. Two honest answers only: it
+    came from frozen export ``<version>``, snapshot ``<id>``; or it was packed
+    from the project's live timeline output and its provenance is unverifiable.
+    There is no third answer, and in particular a bundle with no frozen export
+    behind it does not get a manufactured one -- see backend/exports.py.
+    """
+    if not version:
+        return ("PROVENANCE: packed from this project's live timeline output.\n"
+                "No frozen export snapshot stands behind it, so it cannot be\n"
+                "verified against an approved cut. Run a frozen export for a\n"
+                "deliverable that can.\n")
+    from . import exports
+    try:
+        snap = exports.load_snapshot(version)
+    except (exports.ExportError, OSError, ValueError) as exc:
+        return (f"PROVENANCE: frozen export {version}, snapshot UNREADABLE ({exc}).\n"
+                "Treat this bundle as unverifiable.\n")
+    return (f"PROVENANCE: frozen export {version} — {snap.get('label', '')}\n"
+            f"snapshot {snap.get('snapshot_id', '')}\n"
+            f"frozen at {snap.get('created_at', '')}\n"
+            "The .fcpxml in this ZIP was generated from that snapshot, as was\n"
+            "the master rendered beside it.\n")
+
+
+def build(storyboard: Storyboard | None = None, log=print,
+          version: str | None = None) -> Path:
+    """Write ``<slug>_bundle.zip`` and return its path.
+
+    Beside the manifest by default, which is where it has always gone. Given a
+    frozen export ``version``, it packs THAT version's FCPXML from
+    ``exports/<version>/`` and lands the ZIP there too — so the bundle is the
+    frozen cut rather than whatever the timeline stage last wrote from live
+    state. Either way the README says which it is; see ``_provenance``.
+    """
     sb = storyboard or load()
     ep = config.episode_paths(sb.title)
     slug = ep["slug"]
     proj_dir = config.project_dir()
-    xml_path = proj_dir / f"{slug}.fcpxml"
+    if version:
+        from . import exports
+        src_dir = exports.version_dir(version)
+        stem = exports.STEM
+    else:
+        src_dir = proj_dir
+        stem = slug
+    xml_path = src_dir / f"{stem}.fcpxml"
     if not xml_path.is_file():
         raise FileNotFoundError(
-            f"No {slug}.fcpxml yet — run the timeline stage before bundling."
+            f"No {xml_path.name} yet — "
+            + (f"frozen export {version} has no FCPXML." if version
+               else "run the timeline stage before bundling.")
         )
 
     tree = ET.parse(xml_path)
@@ -104,7 +149,7 @@ def build(storyboard: Storyboard | None = None, log=print) -> Path:
         for m in missing[:5]:
             log(f"  !! {m}")
 
-    out_zip = proj_dir / f"{slug}_bundle.zip"
+    out_zip = src_dir / f"{slug}_bundle.zip"
     tmp_zip = out_zip.with_suffix(".zip.tmp")
 
     total = sum(p.stat().st_size for p in to_pack.values())
@@ -119,7 +164,7 @@ def build(storyboard: Storyboard | None = None, log=print) -> Path:
         for arc, p in sorted(to_pack.items()):
             z.write(p, arc)
 
-        otio = proj_dir / f"{slug}.otio"
+        otio = src_dir / f"{stem}.otio"
         if otio.is_file():
             z.write(otio, f"{slug}.otio")
 
@@ -139,6 +184,7 @@ def build(storyboard: Storyboard | None = None, log=print) -> Path:
             "Unzip anywhere, then import the .fcpxml into DaVinci Resolve.\n"
             "Media paths are relative to this folder, so keep the media/\n"
             "directory beside the .fcpxml.\n\n"
+            + _provenance(version) + "\n"
             f"{len(to_pack)} media file(s), {total/1024/1024:.1f} MB.\n"
             + (f"\nWARNING: {len(missing)} referenced file(s) were missing when this\n"
                "bundle was built and are not included:\n"
