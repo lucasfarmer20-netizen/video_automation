@@ -310,3 +310,5 @@ a terminal record, and look for races between concurrent
 beat until someone calls it from Python. Flagged when the change was made;
 intended for the Slice 6 issue model. Worth confirming whether it is merely
 awkward or actually unrecoverable.
+
+<!-- reviewer-harness probe; delete with this branch -->
