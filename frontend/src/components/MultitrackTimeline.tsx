@@ -3,7 +3,11 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { GainPill, FxPills } from "./ClipBadges";
-import { Lock, Unlock, Film, Mic, Waves, Music, ZoomIn, ZoomOut, RefreshCw, Play, Pause, AlertTriangle, Plus, Trash2, Maximize2, Minimize2, Crosshair } from "lucide-react";
+import {
+  TimelineSlot, SlotCoverage, SlotBlock, SlotTakes,
+  isFilled, isTrimmed, layoutSlots, slotLabel, waitingFor, STILL,
+} from "../lib/slots";
+import { Lock, Unlock, Film, Mic, Waves, Music, ZoomIn, ZoomOut, RefreshCw, Play, Pause, AlertTriangle, Plus, Trash2, Maximize2, Minimize2, Crosshair, ImageOff, Layers } from "lucide-react";
 
 export interface SfxLayer {
   id: string;
@@ -37,8 +41,35 @@ export interface Shot {
   fx?: string[];
 }
 
+export type { SlotTakes };
+
 export interface MultitrackTimelineProps {
+  /** The beats. Still the source for the AUDIO tracks, which are per-beat. */
   shots: Shot[];
+  /**
+   * The cut, from `GET /api/timeline/slots` (§7.1). `null` while it is being
+   * read or after a failure — never a beat-derived stand-in, because a video
+   * track built from `shots[].draft_image` is a list of file paths wearing a
+   * timeline's clothes, which is the model §7.1 exists to replace.
+   */
+  slots?: TimelineSlot[] | null;
+  /** `coverage` from the same reply. `summary` is rendered verbatim (§6.2). */
+  coverage?: SlotCoverage | null;
+  /** Why the cut could not be read, if it could not. Stated, never guessed. */
+  slotsError?: string | null;
+  /** Takes available per slot id, for the take swap in the inspector. */
+  takes?: Record<string, SlotTakes>;
+  /** Selecting a different take. Writes through the server, then re-reads. */
+  onSelectTake?: (slot: TimelineSlot, index: number) => void;
+  /** Trim one slot. The trim belongs to the SLOT, so it survives a take swap. */
+  onTrimSlot?: (slot: TimelineSlot, trim: { trim_in: number; trim_out: number }) => void;
+  /** Told which slot the editor is on, so lineage can follow it (§7.2). */
+  onSelectSlot?: (slot: TimelineSlot | null) => void;
+  /** §6.2's primary action. Stays available while coverage is incomplete. */
+  onBuildDraft1?: () => void;
+  /** Why a Draft 1 run will not reach a draft — an uncleared gate, stated so it
+   *  is not discovered in the job log. Never a reason to disable the action. */
+  draftGateNote?: string | null;
   /** { scene_id: { narration?: number[], sfx?: number[] } } from /api/audio/peaks */
   peaks?: Record<string, { narration?: number[]; sfx?: number[] }>;
   musicTrack?: string;
@@ -67,14 +98,6 @@ export interface MultitrackTimelineProps {
 }
 
 const MOVES = ["static", "push_in", "push_out", "pan_left", "pan_right"];
-
-const MOVE_BADGES: Record<string, string> = {
-  push_in: "↘ Push In",
-  push_out: "↖ Push Out",
-  pan_left: "◄ Pan L",
-  pan_right: "► Pan R",
-  static: "▪ Static",
-};
 
 const TIER_COLOR: Record<string, string> = {
   parallax: "bg-gradient-to-r from-blue-950 via-blue-900 to-slate-900 border-blue-400 text-blue-100",
@@ -211,7 +234,8 @@ function ClipAudio({ label, tone, url, present, wanted, gain, busy, onGain, onRe
 }
 
 export default function MultitrackTimeline({
-  shots, musicTrack, mediaUrl, onUpdateCamera, peaks,
+  shots, slots, coverage, slotsError, takes, onSelectTake, onTrimSlot, onSelectSlot,
+  onBuildDraft1, draftGateNote, musicTrack, mediaUrl, onUpdateCamera, peaks,
   onUpdateGain, onRegenNarration, onRegenSfx, busy, previewUrl, previewMeta, mix, onSetMix,
   onPatchNarration, onPatchLayer, onAddLayer, onDeleteLayer, onGenerateLayer, onAssemble
 }: MultitrackTimelineProps) {
@@ -220,7 +244,22 @@ export default function MultitrackTimeline({
   const [playing, setPlaying] = useState(false);
   const [pxPerSec, setPxPerSec] = useState(4);
   const [selected, setSelected] = useState<string | null>(null);
-  const [drag, setDrag] = useState<{ id: string; dur: number } | null>(null);
+  // Selection is held as a SLOT ID, not as a position in the array. A slot id is
+  // stable across a re-plan; an index is not, so an index-held selection quietly
+  // moves to whatever slot later occupies that position — the editor would then
+  // be trimming and swapping takes on a clip they did not choose.
+  const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
+  // Live trim gesture on V1. The trim belongs to the slot (§7.1), which is why
+  // it is keyed by slot id and committed through onTrimSlot rather than through
+  // the beat's camera duration: shortening a clip in the cut is an EDIT, and
+  // changing how long the shot is meant to run is Director intent. Conflating
+  // them is how a plan change gets hidden inside a retimed cut.
+  const [slotDrag, setSlotDrag] = useState<{ id: string; dur: number } | null>(null);
+  // Why a trim was not sent, and which slot it was about. Held so the refusal is
+  // visible rather than the input silently snapping back to what the server last
+  // said — and stamped with its slot, because a message quoting slot A's
+  // intended duration sitting under slot B's inputs is worse than no message.
+  const [trimError, setTrimError] = useState<{ slotId: string; why: string } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const wheelProxyRef = React.useRef<(e: WheelEvent) => void>(() => {});
   const [trackH, setTrackH] = useState(80);              // px per track row
@@ -290,16 +329,38 @@ export default function MultitrackTimeline({
     dur: number;
   } | null>(null);
 
-  const { blocks, total } = useMemo(() => {
+  // The BEAT layout, which the audio tracks are cut against.
+  const { blocks, total: beatTotal } = useMemo(() => {
     let acc = 0;
     const b = shots.map((s) => {
       const start = acc;
-      const dur = (drag && drag.id === s.scene_id ? drag.dur : s.camera?.duration) || 0;
+      const dur = s.camera?.duration || 0;
       acc += dur;
       return { shot: s, start, dur };
     });
     return { blocks: b, total: acc };
-  }, [shots, drag]);
+  }, [shots]);
+
+  // The SLOT layout, which V1 is cut against, anchored to the beats above so the
+  // two tracks share one timebase (see layoutSlots).
+  const beatStarts = useMemo(() => {
+    const m: Record<string, number> = {};
+    blocks.forEach((b) => { m[b.shot.scene_id] = b.start; });
+    return m;
+  }, [blocks]);
+
+  const { blocks: slotBlocks, total: slotTotal } = useMemo(
+    () => layoutSlots(slots || [], beatStarts),
+    [slots, beatStarts],
+  );
+
+  const total = Math.max(beatTotal, slotTotal);
+
+  const selectedSlot = useMemo(
+    () => (slots || []).find((s) => s.id === selectedSlotId) || null,
+    [slots, selectedSlotId],
+  );
+
 
   // Keyboard Shortcuts (Space for Play/Pause, Left/Right Arrows to jump beats, Esc to exit Fullscreen)
   useEffect(() => {
@@ -727,7 +788,9 @@ export default function MultitrackTimeline({
           </span>
         </div>
         <div className="flex items-center gap-3 text-[11px] font-mono flex-wrap">
-          <span className="text-zinc-400 font-semibold">{shots.length} beats</span>
+          <span className="text-zinc-400 font-semibold">
+            {shots.length} beats{slots ? ` · ${slots.length} slots` : ""}
+          </span>
           <span className="text-amber-400 font-extrabold bg-amber-500/15 px-3 py-1 rounded-full border border-amber-500/30">{tc(total)} ({(total / 60).toFixed(1)} min)</span>
           
           {/* Zoom Presets & Controls */}
@@ -814,6 +877,56 @@ export default function MultitrackTimeline({
         </div>
       </div>
 
+      {/* Coverage (§6.2). The sentence is the server's, verbatim — the counts
+          are not recomputed here, because a client that counts for itself
+          eventually disagrees with the server and the disagreement is a false
+          claim about the film (§11.4). Draft 1 stays buildable while coverage
+          is incomplete: a partially covered cut is not a blocked cut. */}
+      {(coverage || slotsError) && (
+        <div data-testid="slot-coverage"
+             className="px-5 py-2.5 border-b border-white/10 flex items-center gap-3 flex-wrap bg-zinc-950/60">
+          <Layers className="h-3.5 w-3.5 text-blue-400 shrink-0" />
+          {coverage ? (
+            <span data-testid="coverage-summary"
+                  className={`text-[11px] font-mono font-bold ${
+                    coverage.placeholders ? "text-amber-300" : "text-emerald-300"}`}>
+              {coverage.summary}
+            </span>
+          ) : (
+            <span data-testid="coverage-unread" className="text-[11px] font-mono font-bold text-red-300">
+              coverage unknown — the cut could not be read{slotsError ? `: ${slotsError}` : ""}
+            </span>
+          )}
+          {/* Incomplete coverage never blocks Draft 1 (§6.2). A gate that is
+              genuinely uncleared is a different matter and is said out loud
+              rather than discovered in the job log — the run starts, reaches
+              the gate and stops there, and "started in background" on its own
+              reads as though a draft is coming. Stated, not disabled: Gate 1 is
+              cleared elsewhere, and greying this out would misattribute the
+              block to coverage. */}
+          {onBuildDraft1 && (
+            <span className="ml-auto flex items-center gap-2.5">
+              {draftGateNote && (
+                <span data-testid="draft-gate-note"
+                      className="flex items-center gap-1.5 text-[10px] font-mono font-bold text-amber-300/90">
+                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                  {draftGateNote}
+                </span>
+              )}
+              <button
+                data-testid="build-draft-1"
+                onClick={onBuildDraft1}
+                title="Build Draft 1 from the cut as it stands — placeholders hold their slots"
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border border-amber-400 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 text-[11px] font-mono font-bold transition-all hover:scale-[1.02] active:scale-[0.98] shadow-sm"
+              >
+                <Film className="h-3.5 w-3.5" />
+                Build Draft 1
+              </button>
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Floating Picture-in-Picture Preview Player Widget */}
       {playerNode && (playerFloats && mounted
         ? createPortal(playerNode, document.body)
@@ -830,7 +943,7 @@ export default function MultitrackTimeline({
           {/* V1 Header */}
           <div style={{ height: trackH }} className="flex items-center gap-2 px-3 border-b border-zinc-900 text-[10px] font-mono text-blue-300 font-extrabold bg-blue-950/20">
             <Film className="h-3.5 w-3.5 shrink-0 text-blue-400" />
-            <span className="truncate">V1 Stills</span>
+            <span className="truncate" title="One clip per timeline slot (§7.1)">V1 Slots</span>
           </div>
 
           {/* A1 Header */}
@@ -920,73 +1033,180 @@ export default function MultitrackTimeline({
               ))}
             </div>
 
-            {/* V1 — Stills Track */}
-            <div style={{ height: trackH }} className="border-b border-zinc-900 relative bg-slate-950/40">
-              {blocks.map(({ shot, start, dur }) => {
-                const moveBadge = MOVE_BADGES[shot.camera?.move] || shot.camera?.move;
+            {/* V1 — the cut, as slots (§7.1). Each clip is a slot tied to a
+                DirectorShot; none of them is a file path, and a slot with no
+                media yet is still a clip in the cut, holding its place. */}
+            <div style={{ height: trackH }} className="border-b border-zinc-900 relative bg-slate-950/40"
+                 data-testid="v1-track">
+              {!slots ? (
+                // Not "no clips" — we have not been told yet, and saying nothing
+                // is here would be a claim the server never made (§11.4).
+                <span data-testid="slots-unread"
+                      className="absolute left-3 top-4 text-[10px] font-mono text-zinc-500">
+                  {slotsError
+                    ? `the cut could not be read — ${slotsError}`
+                    : "reading the cut…"}
+                </span>
+              ) : slotBlocks.length === 0 ? (
+                <span data-testid="slots-empty"
+                      className="absolute left-3 top-4 text-[10px] font-mono text-zinc-500">
+                  no slots in this cut yet
+                </span>
+              ) : slotBlocks.map(({ slot, start, dur: laidOut }: SlotBlock) => {
+                // The server's flag, never re-derived from whether media is set
+                // and never from whether the image loaded.
+                const filled = isFilled(slot);
+                const dragging = slotDrag?.id === slot.id;
+                const dur = dragging ? slotDrag.dur : laidOut;
+                const isSel = selectedSlotId === slot.id;
                 return (
                   <button
-                    key={shot.scene_id}
+                    // Keyed on slot identity. `beat_id::shot_id` is derived, so
+                    // a re-plan hands back the SAME slot and React keeps this
+                    // clip rather than rebuilding the row under the editor.
+                    key={slot.id}
+                    data-testid={`slot-${slot.id}`}
+                    data-slot-id={slot.id}
+                    data-beat-id={slot.beat_id}
+                    data-shot-id={slot.shot_id}
+                    data-index={slot.index}
+                    data-placeholder={filled ? "false" : "true"}
+                    data-expected-media={slot.expected_media}
+                    data-intended-duration={slot.intended_duration}
+                    data-media={slot.media}
+                    data-source-attempt={slot.source_attempt}
+                    data-trim-in={slot.trim_in}
+                    data-trim-out={slot.trim_out}
+                    data-selected={isSel ? "true" : "false"}
+                    aria-pressed={isSel}
                     onClick={() => {
-                      setSelected(shot.scene_id === selected ? null : shot.scene_id);
+                      const next = isSel ? null : slot.id;
+                      setSelectedSlotId(next);
+                      // Keep the beat context with the slot (§7.2): the audio
+                      // tracks and their inspector are per-beat.
+                      setSelected(next ? slot.beat_id : null);
+                      onSelectSlot?.(next ? slot : null);
                       seekToBeat(start);
                     }}
-                    title={`${shot.scene_id} · ${shot.motion_type} · ${shot.camera.move} · ${dur.toFixed(1)}s — Click to select & seek`}
+                    title={
+                      `${slot.id} · ${slot.shot_id || `${slot.beat_id} whole beat`}` +
+                      ` · expects ${slot.expected_media} · intended ${slot.intended_duration.toFixed(2)}s` +
+                      ` · ${filled ? `media ${slot.media}` : waitingFor(slot)}` +
+                      (isTrimmed(slot) ? ` · trim ${slot.trim_in}→${slot.trim_out || "end"}` : "")
+                    }
                     className={`absolute top-1 bottom-1 rounded-lg border overflow-hidden transition-all duration-200 ${
-                      TIER_COLOR[shot.motion_type] || TIER_COLOR.static
+                      filled
+                        ? (slot.expected_media === STILL ? TIER_COLOR.static : TIER_COLOR.parallax)
+                        : "bg-zinc-950/70 border-dashed border-amber-500/60 text-amber-100"
                     } ${
-                      selected === shot.scene_id
+                      isSel
                         ? "border-2 border-amber-400 shadow-[0_0_20px_rgba(245,158,11,0.4)] z-10 scale-[1.01]"
                         : "hover:border-blue-400/80 hover:brightness-110 hover:shadow-lg"
                     }`}
                     style={{ left: start * pxPerSec, width: Math.max(dur * pxPerSec - 2, 3) }}
                   >
-                    {shot.draft_image && (
+                    {filled && slot.media && (
                       <div className="absolute inset-0">
-                        <img src={mediaUrl(shot.draft_image)} alt="" className="w-full h-full object-cover opacity-60" />
+                        {/* A VIDEO element, not an image. Slot media is always a
+                            clip -- DirectorShot.clip is render/<beat>/<shot>.mp4
+                            and the whole-beat fallback is render/<beat>.mp4 -- so
+                            an <img> could not decode any of it and every filled
+                            slot would sit there having hidden its own frame.
+
+                            And NO poster. A poster has to come from somewhere,
+                            and the only stills the client holds are the take
+                            chosen *now* -- which stops matching the frame this
+                            clip was rendered from the moment a take is selected,
+                            because POST /api/shot/{id} reassigns draft_image
+                            synchronously while slot.media does not move until
+                            the beat is rendered again. That is the contradiction
+                            the "chosen" badge two blocks down exists to avoid,
+                            restated as a picture, and a picture is the louder
+                            claim. `#t=0.1` paints a frame of the media actually
+                            in the slot instead, which cannot be wrong about what
+                            the slot contains.
+
+                            Whether it loads still says nothing about whether the
+                            slot is filled. onError hides a broken frame and
+                            deliberately changes no slot state (§11.4). */}
+                        <video src={`${mediaUrl(slot.media)}#t=0.1`} data-testid={`slot-media-${slot.id}`}
+                               muted playsInline preload="metadata"
+                               className="w-full h-full object-cover opacity-60"
+                               onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} />
                         <div className="absolute inset-0 bg-gradient-to-t from-zinc-950/90 via-zinc-950/20 to-transparent" />
                       </div>
                     )}
-                    <div className="relative flex flex-col justify-between h-full p-1.5 z-10">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[9px] font-mono text-zinc-100 font-extrabold drop-shadow-md">
-                          {shot.scene_id}
+                    <div className="relative flex flex-col justify-between h-full p-1.5 z-10 text-left">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[9px] font-mono text-zinc-100 font-extrabold drop-shadow-md truncate">
+                          {slotLabel(slot)}
                         </span>
-                        <FxPills fx={shot.fx} wide={dur * pxPerSec > 90} />
-                        {shot.camera?.duration_locked && (
-                          <Lock className="h-2.5 w-2.5 text-amber-300 shrink-0 drop-shadow" />
+                        {isTrimmed(slot) && (
+                          <span data-testid={`slot-trim-${slot.id}`}
+                                className="text-[8px] font-mono font-bold text-amber-300 bg-zinc-950/90 border border-amber-400/50 px-1 rounded shrink-0">
+                            trim {slot.trim_in.toFixed(1)}→{slot.trim_out ? slot.trim_out.toFixed(1) : "end"}
+                          </span>
                         )}
                       </div>
-                      {moveBadge && (
-                        <span className="text-[8px] font-mono text-amber-300 font-bold bg-zinc-950/90 px-1.5 py-0.5 rounded-md border border-amber-400/50 shadow-sm w-fit drop-shadow">
-                          {moveBadge}
+                      {filled ? (
+                        <span data-testid={`slot-ready-${slot.id}`}
+                              className="text-[8px] font-mono text-blue-200 font-bold bg-zinc-950/90 px-1.5 py-0.5 rounded-md border border-blue-400/50 w-fit truncate max-w-full">
+                          {slot.expected_media} · {dur.toFixed(1)}s
+                          {slot.source_attempt ? ` · ${slot.source_attempt}` : ""}
+                        </span>
+                      ) : (
+                        // C5: what is missing, and what it is waiting for. A grey
+                        // rectangle carries none of this and is the failure the
+                        // slot model exists to prevent.
+                        <span data-testid={`slot-placeholder-${slot.id}`}
+                              className="flex flex-col text-[8px] font-mono text-amber-200 font-bold bg-zinc-950/90 px-1.5 py-0.5 rounded-md border border-amber-400/50 w-fit max-w-full">
+                          <span className="flex items-center gap-1 truncate">
+                            <ImageOff className="h-2.5 w-2.5 shrink-0" />
+                            {waitingFor(slot)}
+                          </span>
+                          <span className="truncate text-amber-300/90">
+                            {slot.intended_duration.toFixed(1)}s · from beat {slot.beat_id} · slot {slot.id}
+                          </span>
                         </span>
                       )}
                     </div>
-                    {/* Trim handle */}
-                    <span
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        (e.target as HTMLElement).setPointerCapture(e.pointerId);
-                        setDrag({ id: shot.scene_id, dur });
-                      }}
-                      onPointerMove={(e) => {
-                        if (!drag || drag.id !== shot.scene_id) return;
-                        const delta = e.movementX / pxPerSec;
-                        setDrag({ id: shot.scene_id, dur: Math.max(0.5, drag.dur + delta) });
-                      }}
-                      onPointerUp={(e) => {
-                        e.stopPropagation();
-                        if (drag && drag.id === shot.scene_id) {
-                          const v = Math.round(drag.dur * 10) / 10;
-                          if (Math.abs(v - (shot.camera?.duration || 0)) > 0.05)
-                            onUpdateCamera(shot.scene_id, { duration: v });
-                        }
-                        setDrag(null);
-                      }}
-                      title="Drag to trim duration"
-                      className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-amber-400/0 hover:bg-amber-400/60 transition-colors"
-                    />
+                    {/* Trim handle. Writes the SLOT's trim, not the beat's
+                        duration — see slotDrag. */}
+                    {onTrimSlot && (
+                      <span
+                        data-testid={`slot-trim-handle-${slot.id}`}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+                          setSlotDrag({ id: slot.id, dur: laidOut });
+                        }}
+                        onPointerMove={(e) => {
+                          if (!slotDrag || slotDrag.id !== slot.id) return;
+                          const delta = e.movementX / pxPerSec;
+                          setSlotDrag({ id: slot.id, dur: Math.max(0.2, slotDrag.dur + delta) });
+                        }}
+                        onPointerUp={(e) => {
+                          e.stopPropagation();
+                          if (slotDrag && slotDrag.id === slot.id) {
+                            const v = Math.round(slotDrag.dur * 10) / 10;
+                            if (Math.abs(v - laidOut) > 0.05) {
+                              // trim_out is an out-point in media time and 0
+                              // means "to the end", so dragging back out to full
+                              // length CLEARS the trim rather than pinning one at
+                              // the intended length.
+                              const full = slot.intended_duration - slot.trim_in;
+                              const trimOut = v >= full - 0.05
+                                ? 0
+                                : Math.round((slot.trim_in + v) * 1000) / 1000;
+                              onTrimSlot(slot, { trim_in: slot.trim_in, trim_out: trimOut });
+                            }
+                          }
+                          setSlotDrag(null);
+                        }}
+                        title="Drag to trim this slot — the trim belongs to the slot and survives a take swap"
+                        className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-amber-400/0 hover:bg-amber-400/60 transition-colors"
+                      />
+                    )}
                   </button>
                 );
               })}
@@ -1338,6 +1558,172 @@ export default function MultitrackTimeline({
         </div>
       </div>
 
+      {/* Inspector for the selected SLOT (§7.1, §7.2). Everything shown here is
+          reported by the server; nothing about whether the slot is filled is
+          decided in this component. */}
+      {selectedSlot && (() => {
+        const slotFilled = isFilled(selectedSlot);
+        const slotTakes = takes?.[selectedSlot.id];
+        return (
+          <div data-testid="slot-inspector"
+               className="px-5 py-4 border-t border-zinc-900 bg-zinc-950 flex flex-col gap-3">
+            <div className="flex items-end gap-5 flex-wrap">
+              <div>
+                <span className="block text-[10px] text-zinc-400 font-mono mb-1 font-semibold">
+                  Selected slot
+                </span>
+                <span data-testid="slot-inspector-id"
+                      className="text-sm font-mono text-blue-300 font-bold bg-blue-500/15 px-2.5 py-1 rounded-md border border-blue-400/40 shadow-sm">
+                  {selectedSlot.id}
+                </span>
+              </div>
+              <div className="text-[10px] font-mono text-zinc-400 leading-5">
+                <div>
+                  shot <span className="text-zinc-100 font-bold">{selectedSlot.shot_id || "— (whole beat)"}</span>
+                  {" · "}beat <span className="text-zinc-100 font-bold">{selectedSlot.beat_id}</span>
+                  {" · "}position <span className="text-zinc-100 font-bold">{selectedSlot.index + 1}</span>
+                </div>
+                <div>
+                  expects <span className="text-zinc-100 font-bold">{selectedSlot.expected_media}</span>
+                  {" · "}intended <span className="text-zinc-100 font-bold">{selectedSlot.intended_duration.toFixed(2)}s</span>
+                  {" · "}in the cut <span className="text-zinc-100 font-bold">
+                    {(selectedSlot.duration ?? selectedSlot.intended_duration).toFixed(2)}s
+                  </span>
+                </div>
+              </div>
+              <div>
+                <span className="block text-[10px] text-zinc-400 font-mono mb-1 font-semibold">Media</span>
+                <span data-testid="slot-inspector-media"
+                      className={`text-[11px] font-mono font-bold px-2.5 py-1 rounded-md border ${
+                        slotFilled
+                          ? "text-emerald-300 bg-emerald-500/15 border-emerald-400/40"
+                          : "text-amber-300 bg-amber-500/15 border-amber-400/40"}`}>
+                  {slotFilled
+                    ? `${selectedSlot.media}${selectedSlot.source_attempt ? ` · attempt ${selectedSlot.source_attempt}` : ""}`
+                    : waitingFor(selectedSlot)}
+                </span>
+              </div>
+              {/* A trim this UI will not author: trim_in at or past the intended
+                  duration leaves the slot occupying nothing, and trim_out at or
+                  before trim_in is rejected by the server anyway. The endpoint
+                  accepts the first of those without complaint — a pre-existing
+                  gap this inspector is the first thing to make reachable, so it
+                  is refused here and named rather than sent and regretted. */}
+              {onTrimSlot && (() => {
+                const rejectTrim = (t: { trim_in: number; trim_out: number }) => {
+                  if (t.trim_in < 0 || t.trim_out < 0) return "a trim cannot be negative";
+                  if (t.trim_in >= selectedSlot.intended_duration)
+                    return `trim in must be under the intended ${selectedSlot.intended_duration.toFixed(2)}s`;
+                  if (t.trim_out && t.trim_out <= t.trim_in) return "trim out must be after trim in";
+                  return null;
+                };
+                /** Every blur starts by clearing the last refusal, including the
+                 *  blur that changes nothing — typing the rejected value back to
+                 *  what the server said is the user withdrawing it, and leaving
+                 *  the message up says the field is still wrong when it is not. */
+                const onTrimBlur = (
+                  raw: string, current: number,
+                  build: (v: number) => { trim_in: number; trim_out: number },
+                ) => {
+                  setTrimError(null);
+                  const v = parseFloat(raw);
+                  if (!Number.isFinite(v) || Math.abs(v - current) <= 0.001) return;
+                  const t = build(v);
+                  const bad = rejectTrim(t);
+                  if (bad) { setTrimError({ slotId: selectedSlot.id, why: bad }); return; }
+                  onTrimSlot(selectedSlot, t);
+                };
+                return (
+                  <div className="flex items-end gap-2">
+                    <div>
+                      <label className="block text-[10px] text-zinc-400 font-mono mb-1 font-semibold">Trim in (s)</label>
+                      <input
+                        type="number" step={0.1} min={0} max={selectedSlot.intended_duration}
+                        data-testid="slot-trim-in"
+                        key={`${selectedSlot.id}-in-${selectedSlot.trim_in}`}
+                        defaultValue={selectedSlot.trim_in}
+                        onBlur={(e) => onTrimBlur(
+                          e.target.value, selectedSlot.trim_in,
+                          (v) => ({ trim_in: v, trim_out: selectedSlot.trim_out }))}
+                        className="w-20 bg-zinc-900 text-zinc-100 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-[11px] font-mono focus:border-amber-400 focus:outline-none font-bold"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-zinc-400 font-mono mb-1 font-semibold"
+                             title="0 means to the end of the media">Trim out (s)</label>
+                      <input
+                        type="number" step={0.1} min={0} max={selectedSlot.intended_duration}
+                        data-testid="slot-trim-out"
+                        key={`${selectedSlot.id}-out-${selectedSlot.trim_out}`}
+                        defaultValue={selectedSlot.trim_out}
+                        onBlur={(e) => onTrimBlur(
+                          e.target.value, selectedSlot.trim_out,
+                          (v) => ({ trim_in: selectedSlot.trim_in, trim_out: v }))}
+                        className="w-20 bg-zinc-900 text-zinc-100 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-[11px] font-mono focus:border-amber-400 focus:outline-none font-bold"
+                      />
+                    </div>
+                    {trimError?.slotId === selectedSlot.id && (
+                      <span data-testid="slot-trim-error"
+                            className="text-[10px] font-mono font-bold text-red-300 pb-2">
+                        {trimError.why}
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Takes. Choosing one is a write to the server followed by a re-read
+                of the cut: the take lands in THIS slot, and the slot keeps its
+                id, its position and its trims because the edit was never made of
+                files. Nothing is marked chosen here until the server says so. */}
+            {onSelectTake && (
+              <div className="flex items-center gap-2 flex-wrap border-t border-zinc-900 pt-3">
+                <span className="text-[10px] font-mono text-zinc-400 font-semibold">Takes</span>
+                {slotTakes && slotTakes.variations.length > 0 ? (
+                  <div data-testid="slot-takes" className="flex items-center gap-2 flex-wrap">
+                    {slotTakes.variations.map((v, i) => (
+                      <button
+                        key={`${selectedSlot.id}::take${i}`}
+                        data-testid={`slot-take-${i}`}
+                        aria-pressed={slotTakes.chosen === i}
+                        onClick={() => onSelectTake(selectedSlot, i)}
+                        title={`Use take ${i + 1} in slot ${selectedSlot.id}`}
+                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[10px] font-mono font-bold transition-all hover:scale-[1.02] active:scale-[0.98] ${
+                          slotTakes.chosen === i
+                            ? "border-purple-400 bg-purple-500/20 text-purple-200"
+                            : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-500"}`}
+                      >
+                        <img src={mediaUrl(v)} alt="" className="w-8 h-5 object-cover rounded-sm"
+                             onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} />
+                        {/* "chosen", not "in use". Take selection records which
+                            draft still the shot uses; the media in the slot is
+                            DirectorShot.clip, which only changes when the beat is
+                            rendered again. Saying "in use" here would claim the
+                            slot holds this take while the Media field two rows up
+                            still shows the previous one (§11.4). */}
+                        Take {i + 1}{slotTakes.chosen === i ? " · chosen" : ""}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <span data-testid="slot-takes-none" className="text-[10px] font-mono text-zinc-500 italic">
+                    no takes generated for this slot yet
+                  </span>
+                )}
+                {slotTakes && slotTakes.variations.length > 0 && (
+                  <span data-testid="slot-takes-note"
+                        className="text-[10px] font-mono text-zinc-500 basis-full">
+                    the chosen take applies the next time this beat is rendered —
+                    the slot holds the media named above until then
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Inspector for the selected beat */}
       {sel ? (
         <div className="px-5 py-4 border-t border-zinc-900 flex items-end gap-5 flex-wrap bg-zinc-950">
@@ -1345,7 +1731,12 @@ export default function MultitrackTimeline({
             <span className="block text-[10px] text-zinc-400 font-mono mb-1 font-semibold">
               {selIsAuto ? "Beat at playhead" : "Selected Beat"}
             </span>
-            <span className="text-sm font-mono text-amber-400 font-bold bg-amber-500/15 px-2.5 py-1 rounded-md border border-amber-500/40 shadow-sm">{sel.shot.scene_id}</span>
+            <span className="flex items-center gap-2">
+              <span className="text-sm font-mono text-amber-400 font-bold bg-amber-500/15 px-2.5 py-1 rounded-md border border-amber-500/40 shadow-sm">{sel.shot.scene_id}</span>
+              {/* The procedural FX belong to the beat, which is where they are
+                  now shown: V1 carries slots, and a slot has no motion tier. */}
+              <FxPills fx={sel.shot.fx} wide />
+            </span>
           </div>
           <div>
             <label className="block text-[10px] text-zinc-400 font-mono mb-1 font-semibold">Duration (s)</label>

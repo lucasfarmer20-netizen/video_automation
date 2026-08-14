@@ -38,6 +38,8 @@ import DirectorWorkspace from "../components/DirectorWorkspace";
 import LockedCoverageModal from "../components/LockedCoverageModal";
 import CoverageSurveyPanel from "../components/CoverageSurveyPanel";
 import { MOCK_SCENES , setActiveProjectId } from "../lib/directorApi";
+import { NO_SLOT_VIEW, viewForProject } from "../lib/slots";
+import type { SlotTakes, SlotView, TimelineSlot } from "../lib/slots";
 
 // Setup API URL mapping
 const API_BASE = typeof window !== "undefined"
@@ -47,6 +49,10 @@ const API_BASE = typeof window !== "undefined"
 interface Project {
   name: string;
   rel: string;
+  /** What the studio sends as `X-Project-Id` to target this project explicitly.
+   *  `/api/projects` fills it for every entry, and it is required here so that
+   *  losing it on the way to `handleSelectProject` cannot compile. */
+  project_id: string;
   rel_display: string;
   active: boolean;
   channel: string;
@@ -122,6 +128,14 @@ export default function WorkspacePage() {
   const [loading, setLoading] = useState(true);
   const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [peaks, setPeaks] = useState<Record<string, any>>({});
+  // The cut, as slots (§7.1), stamped with the project it was read for.
+  // `slots: null` means "not read yet", which is not the same claim as "there
+  // are no clips" — see MultitrackTimeline's V1 track. The stamp matters
+  // because slot ids are `beat_id::shot_id`, unique within a film and not
+  // across them: held unstamped, film A's takes are served for film B's
+  // identically-named slot until the new read lands. `viewForProject` is what
+  // makes that impossible; see lib/slots.ts.
+  const [slotView, setSlotView] = useState<SlotView>(NO_SLOT_VIEW);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const [voiceStudioOpen, setVoiceStudioOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -164,10 +178,25 @@ export default function WorkspacePage() {
     if (action === "export:master") { await post("/api/assemble/timeline"); return; }
   };
 
-  const fetchActiveProject = async () => {
+  /**
+   * Load the active project and install it.
+   *
+   * Returns whether the authoritative load actually **installed** this
+   * project's identity and data — not whether the request was made. Callers
+   * that switch project gate on this, because "the server accepted the switch"
+   * and "the studio can safely display it" are different conditions, and using
+   * the first to answer the second renders one film while addressing another.
+   *
+   * This does not touch the loading screen. Callers that raise it own lowering
+   * it — see `whileLoading` — because a loader that sometimes lowers a screen it
+   * never raised is precisely how one caller came to depend on a side effect
+   * that later changed underneath it.
+   */
+  const fetchActiveProject = async (): Promise<boolean> => {
+    let installed = false;
     try {
       const res = await fetch(`${API_BASE}/api/project/active`, { headers: authHeaders() });
-      if (isStaleReply(res)) return;
+      if (isStaleReply(res)) return false;
       const data = await res.json();
       if (data.ok) {
         // Adopt the server's id for this project; every later request names it
@@ -178,6 +207,9 @@ export default function WorkspacePage() {
         }
         setActiveProject(data);
         setActiveChannel(data.project.channel);
+        // Identity and data are both in place from here; everything below is
+        // best-effort detail that a switch does not need to have succeeded.
+        installed = true;
         if (data.project?.shots && data.project.shots.length > 0) {
           const firstBeatId = data.project.shots[0].scene_id;
           if (firstBeatId) {
@@ -206,11 +238,168 @@ export default function WorkspacePage() {
         const pj = await getJson("/api/audio/peaks");
         if (pj) setPeaks(pj.ok ? (pj.peaks || {}) : {});
       } catch { setPeaks({}); }
+      // The cut. Rebuilt from the plan and folded onto the saved edit server-
+      // side, so this is the only thing the timeline's V1 track is drawn from.
+      await fetchSlots();
     } catch (e) {
       console.error("Failed to load active project details", e);
+    }
+    return installed;
+  };
+
+  /**
+   * Run something that replaces the workspace with the loading screen.
+   *
+   * Raising the screen and lowering it are ONE responsibility, and it lives
+   * here. Splitting them is what broke `handleCreateProject`: it raised the
+   * screen and relied on `fetchActiveProject` to lower it, which silently
+   * stopped being true when that lowering became conditional, and a create
+   * whose follow-up load failed sat on the spinner until someone reloaded.
+   *
+   * `fetchActiveProject` no longer touches `loading` at all — it loads and says
+   * whether it installed, which is all it should ever have done. The screen
+   * comes down here on every exit: success, failure, or throw. A caller that
+   * wants it to stay up after success does not exist, because success means the
+   * film is installed and ready to show.
+   */
+  const whileLoading = async <T,>(run: () => Promise<T>): Promise<T> => {
+    setLoading(true);
+    try {
+      return await run();
     } finally {
       setLoading(false);
     }
+  };
+
+  /**
+   * Re-read the cut from `GET /api/timeline/slots`.
+   *
+   * Called after anything that can change what is in a slot. The client never
+   * writes slot state of its own: a take swap is a write to the server followed
+   * by this read, which is what keeps the UI from claiming media the server has
+   * not reported (§11.4) — and why the slot keeps its id, index and trims, since
+   * the server reconciles them rather than the client rebuilding them.
+   */
+  const fetchSlots = async () => {
+    // Whose cut this read is for, captured before the request goes out so the
+    // reply is stamped with the project that asked, not the one on screen when
+    // it lands.
+    const forProject = projectIdRef.current;
+    try {
+      const res = await fetch(`${API_BASE}/api/timeline/slots`, { headers: authHeaders() });
+      // Another film answered a request we issued before switching. Keep what is
+      // on screen rather than repainting this cut with someone else's.
+      if (isStaleReply(res)) return;
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.ok) {
+        setSlotView((prev) => ({
+          projectId: forProject,
+          slots: data.slots || [],
+          coverage: data.coverage || null,
+          error: null,
+          // Takes already read for this project survive the refresh; a read for
+          // a different one starts from nothing rather than inheriting them.
+          takes: prev.projectId === forProject ? prev.takes : {},
+        }));
+        return;
+      }
+      // Say the cut could not be read. An empty list here would read as "this
+      // film has no clips", which is a different and false statement.
+      setSlotView({
+        projectId: forProject, slots: null, coverage: null,
+        error: data?.error || `server error (${res.status})`, takes: {},
+      });
+    } catch (e) {
+      setSlotView({
+        projectId: forProject, slots: null, coverage: null,
+        error: e instanceof Error ? e.message : "the cut could not be read", takes: {},
+      });
+    }
+  };
+
+  /** As much of a DirectorShot as the takes strip needs. */
+  interface DirectorShotTakes {
+    id: string;
+    draft_variations?: string[];
+    chosen_variation?: number | null;
+  }
+
+  /** Load the takes for a coverage slot's DirectorShot, on selection (§7.2). */
+  const handleSelectSlot = async (slot: TimelineSlot | null) => {
+    if (!slot?.shot_id) return;
+    const forProject = projectIdRef.current;
+    try {
+      const data = await getJson(`/api/director/plan/${slot.beat_id}`);
+      const coverage: DirectorShotTakes[] | undefined = data?.plan?.coverage;
+      if (!Array.isArray(coverage)) return;
+      setSlotView((prev) => {
+        // The plan we asked for belongs to the project we asked from. If the
+        // studio has moved on, these takes are not this film's and are dropped.
+        if (prev.projectId !== forProject) return prev;
+        const takes = { ...prev.takes };
+        coverage.forEach((ds) => {
+          takes[`${slot.beat_id}::${ds.id}`] = {
+            variations: ds.draft_variations || [],
+            chosen: typeof ds.chosen_variation === "number" ? ds.chosen_variation : null,
+          };
+        });
+        return { ...prev, takes };
+      });
+    } catch { /* the takes strip says "no takes" rather than inventing any */ }
+  };
+
+  /**
+   * Select a different take for a slot's shot.
+   *
+   * Writes through the endpoint that owns take selection — the client does not
+   * touch the slot — then re-reads the cut. Whatever media the server then
+   * reports for that slot is what is drawn, in the slot that was already there.
+   */
+  const handleSelectTake = async (slot: TimelineSlot, index: number) => {
+    const url = slot.shot_id
+      ? `/api/director/shot/${slot.shot_id}`
+      : `/api/shot/${slot.beat_id}`;
+    const res = await post(url, { chosen_variation: index });
+    if (!res.ok) {
+      alert("Take not selected: " + (res.error || "unknown error"));
+      return;
+    }
+    await handleSelectSlot(slot);
+    await fetchSlots();
+    if (!slot.shot_id) fetchActiveProject();
+  };
+
+  /**
+   * §6.2's primary action.
+   *
+   * Deliberately not `handleAssemble`, whose alert says the process started and
+   * stops there. `/api/assemble/rough_cut` runs to the storyboard gate and halts
+   * if Gate 1 is uncleared — true and invisible, since only the job log says so.
+   * The button stays available either way; what changes is that the reply is
+   * reported for what it is.
+   */
+  const handleBuildDraft1 = async () => {
+    const r = await post("/api/assemble/rough_cut");
+    if (!r.ok) {
+      alert("Draft 1 not started: " + (r.error || "unknown error"));
+      return;
+    }
+    alert(activeProject?.project?.storyboard_approved
+      ? "Building Draft 1 in the background. Placeholders hold their slots; "
+        + "watch the job banner for progress."
+      : "Started — but the storyboard gate is not cleared, so this run will "
+        + "stop there rather than produce a draft. Approve the storyboard to "
+        + "let it through.");
+  };
+
+  /** Trim one slot. The trim belongs to the slot, so it outlives its media. */
+  const handleTrimSlot = async (
+    slot: TimelineSlot,
+    trim: { trim_in: number; trim_out: number },
+  ) => {
+    const res = await post(`/api/timeline/slot/${encodeURIComponent(slot.id)}/trim`, trim);
+    if (!res.ok) alert("Trim rejected: " + (res.error || "unknown error"));
+    await fetchSlots();
   };
 
   // Poll assembly job status
@@ -272,7 +461,11 @@ export default function WorkspacePage() {
 
   useEffect(() => {
     fetchProjects();
-    fetchActiveProject();
+    // The first render raises the screen via useState(true), so this owns
+    // lowering it — on BOTH outcomes, or a failed first fetch sits on the
+    // spinner instead of reaching the "no active project" recovery below.
+    // (Not whileLoading: the screen is already up before this effect runs.)
+    fetchActiveProject().finally(() => setLoading(false));
     pollJobs();
 
     // Setup polling intervals
@@ -382,23 +575,72 @@ export default function WorkspacePage() {
   };
 
   // Action handlers
-  const handleSelectProject = async (rel: string, projectId?: string) => {
-    setLoading(true);
+  const handleSelectProject = (rel: string, projectId: string) => whileLoading(async () => {
     // Retarget first. Any reply still in flight for the previous project now
     // fails the staleness check instead of repainting the studio.
-    if (projectId) {
-      projectIdRef.current = projectId;
-      setActiveProjectId(projectId);
-    }
-    const data = await post("/api/project/select", { rel });
-    if (data.ok) {
-      await fetchActiveProject();
+    //
+    // Which is to say the identity is committed before the server has agreed to
+    // it, so the path where it never agrees has to put it back. It did not:
+    // /api/project/select refuses while any job is running, and a refusal left
+    // the studio showing this film while every later request named the other
+    // one — so the next edit made on screen was written into a film the user
+    // was not looking at. The retarget stays; the rollback is what was missing.
+    //
+    // Rollback is the DEFAULT rather than a branch of its own. Only a confirmed
+    // open keeps the new identity, so a refusal, a network failure and a throw
+    // from anywhere in here all land in the same place — including whatever
+    // failure this function grows next.
+    const previousId = projectIdRef.current;
+    projectIdRef.current = projectId;
+    setActiveProjectId(projectId);
+
+    // `opened` is "the studio can safely display this film", NOT "the server
+    // accepted the switch". They are different conditions and the second is
+    // weaker: the server can accept while the authoritative load that installs
+    // the new identity and data then fails — a dropped connection, a truncated
+    // body that fails to parse — and with the retarget already applied that
+    // leaves the previous film on screen and the new one in every header. So
+    // this is set only once /api/project/active has returned and installed.
+    let opened = false;
+    try {
+      const data = await post("/api/project/select", { rel });
+      if (!data.ok) {
+        // The server's reason, not a stand-in for it. A 409 names the job that
+        // is running and says to wait, which the user can act on; "Failed to
+        // load storyboard project" told them only that something went wrong.
+        alert("Could not open that project: " + (data.error || "unknown error"));
+        return;
+      }
+      opened = await fetchActiveProject();
+      if (!opened) {
+        // The server HAS switched; the studio has not, and cannot be shown as
+        // though it had. Of the two coherent outcomes -- hold a blocking retry
+        // state on the new film, or return the studio to the film it is still
+        // displaying -- this takes the second, deliberately:
+        //
+        //  * the view never moved, so restoring the identity is all it takes to
+        //    make the whole studio consistent again, with no new UI state and
+        //    no new claim to get wrong;
+        //  * every request names its project explicitly, so nothing resolves
+        //    through the server's active pointer. That pointer now says the new
+        //    film while the studio works on the previous one, which is inert:
+        //    it is consulted only for requests that name no project, and the
+        //    studio does not make those once identity is known.
+        //
+        // What must never happen -- the previous film on screen while requests
+        // target the new one -- is exactly what the rollback below prevents.
+        alert("Opened that project, but could not load it. The studio is still "
+              + "showing the previous film — try again.");
+        return;
+      }
       await fetchProjects();
-    } else {
-      alert("Failed to load storyboard project");
-      setLoading(false);
+    } finally {
+      if (!opened) {
+        projectIdRef.current = previousId;
+        setActiveProjectId(previousId);
+      }
     }
-  };
+  });
 
   const openImage = (sceneId: string, images: string[], index: number, chosen: number | null) =>
     setLightbox({ sceneId, images, index, chosen });
@@ -426,17 +668,21 @@ Moved to: ${res.moved_to}`);
     }
   };
 
-  const handleCreateProject = async (name: string, channel: string) => {
-    setLoading(true);
+  const handleCreateProject = (name: string, channel: string) => whileLoading(async () => {
     const data = await post("/api/project/new", { name, channel });
-    if (data.ok) {
-      await fetchActiveProject();
-      await fetchProjects();
-    } else {
-      alert("Failed to create project");
-      setLoading(false);
+    if (!data.ok) {
+      alert("Failed to create project: " + (data.error || "unknown error"));
+      return;
     }
-  };
+    // Says what happened rather than leaving the studio to be interpreted. The
+    // project exists on the server either way; what failed is reading it back.
+    if (await fetchActiveProject()) {
+      await fetchProjects();
+      return;
+    }
+    alert("Created that project, but could not load it. Reload the studio to "
+          + "pick it up.");
+  });
 
   const handleUpdateField = async (sceneId: string, field: string, value: any) => {
     const data = await post(`/api/shot/${sceneId}`, { [field]: value });
@@ -800,6 +1046,28 @@ Moved to: ${res.moved_to}`);
     beats: project.shots?.length ?? 0, stills: 0, narration: 0, sfx: 0, rendered: 0,
   };
   const effectiveTiers = tiers || {};
+  // The cut, but only if it is this film's. Anything held for another project
+  // reads as unread rather than as this one's — slot ids collide across films.
+  const cut = viewForProject(slotView, activeProject.project_id ?? null);
+  // Takes per slot, keyed by slot id. A whole-beat slot's takes are the beat's
+  // draft variations, which the manifest already carries; a coverage slot's come
+  // from its DirectorShot's plan, loaded when the slot is selected. Both are the
+  // server's answer about which take is chosen — nothing is marked chosen here.
+  const takesBySlot: Record<string, SlotTakes> = {};
+  (cut.slots || []).forEach((s) => {
+    if (s.shot_id) {
+      const t = cut.takes[s.id];
+      if (t) takesBySlot[s.id] = t;
+      return;
+    }
+    const beat = (project.shots || []).find((b: Shot) => b.scene_id === s.beat_id);
+    if (beat?.draft_variations?.length) {
+      takesBySlot[s.id] = {
+        variations: beat.draft_variations,
+        chosen: typeof beat.chosen_variation === "number" ? beat.chosen_variation : null,
+      };
+    }
+  });
   const canAssemble = Boolean(project.storyboard_approved);
   // Approval refuses unless every beat has a chosen image, so this is what
   // stands between a drafted script and the rest of the pipeline.
@@ -956,8 +1224,15 @@ Moved to: ${res.moved_to}`);
           <ProjectSidebar
             projects={projects}
             activeProjectId={project.id}
-            onSelectProject={(rel) => {
-              handleSelectProject(rel);
+            // Both arguments, and the second is not optional. The sidebar has
+            // always sent (rel, project_id); this wrapper took only `rel` and
+            // dropped the id, so projectIdRef never left the project already on
+            // screen and every later request carried its header — which the
+            // middleware honours over the active pointer, by design. The studio
+            // therefore could not change project at all. Typed as required so
+            // dropping it again is a compile error rather than a silent one.
+            onSelectProject={(rel, projectId) => {
+              handleSelectProject(rel, projectId);
               setMobileSidebarOpen(false);
             }}
             onCreateProject={handleCreateProject}
@@ -1043,6 +1318,17 @@ Moved to: ${res.moved_to}`);
           ) : activeStage === "roughcut" ? (
             <MultitrackTimeline
               shots={project.shots || []}
+              slots={cut.slots}
+              coverage={cut.coverage}
+              slotsError={cut.error}
+              takes={takesBySlot}
+              onSelectSlot={handleSelectSlot}
+              onSelectTake={handleSelectTake}
+              onTrimSlot={handleTrimSlot}
+              onBuildDraft1={handleBuildDraft1}
+              draftGateNote={project.storyboard_approved
+                ? null
+                : "Gate 1 not cleared — this run stops at the storyboard gate"}
               peaks={peaks}
               musicTrack={project.music_track}
               onUpdateGain={handleUpdateGain}
