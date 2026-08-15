@@ -139,8 +139,19 @@ class Mutation:
 
 BILLED = "    return a.paid and (a.status == SUCCEEDED or bool(a.output) or a.cost > 0)"
 AT_RISK = (
-    "    return a.paid and not billed(a) and (\n"
-    "        a.status == RUNNING or a.outcome_unknown or a.error.startswith(ABANDONED))"
+    "    return a.paid and not billed(a) and (a.status == RUNNING or a.outcome_unknown)"
+)
+MIGRATE = (
+    "    for a in rows:\n"
+    "        if a.error.startswith(ABANDONED):\n"
+    "            a.outcome_unknown = True"
+)
+UNKNOWN_SPENT = '        "spent": None,'
+UNKNOWN_RISK = '        "at_risk": None,'
+PLAN_UNREADABLE = (
+    "        d[\"spend\"] = generation.unknown_spend(\"the generation ledger for this \"\n"
+    "                                              \"beat could not be read\")\n"
+    "        d[\"at_risk\"] = None"
 )
 AMOUNT = "    return a.cost if a.cost else a.estimated_cost"
 SPENT_KEY = '        "spent": spent,'
@@ -237,8 +248,7 @@ MUTATIONS = [
         "the shape nothing can distinguish from a live one — a process killed "
         "between the provider call and in_doubt() records no flag at all",
         [(GEN, AT_RISK,
-          "    return a.paid and not billed(a) and (  # MUTANT\n"
-          "        a.outcome_unknown or a.error.startswith(ABANDONED))")],
+          "    return a.paid and not billed(a) and a.outcome_unknown  # MUTANT")],
         expect=["a_running_attempt_is_money_at_risk"],
     ),
     Mutation(
@@ -252,12 +262,29 @@ MUTATIONS = [
     ),
     Mutation(
         "a ledger written before outcome_unknown loses its exposure", "§6.1",
-        "the fallback for old records — every attempt abandoned before this "
-        "slice silently drops to $0.00",
-        [(GEN, AT_RISK,
-          "    return a.paid and not billed(a) and (  # MUTANT\n"
-          "        a.status == RUNNING or a.outcome_unknown)")],
-        expect=["a_legacy_abandoned_record_is_still_money_at_risk"],
+        "the read-time migration — every attempt abandoned before this slice "
+        "silently drops to $0.00, AND stops being re-abandonable, because its "
+        "shape no longer matches what abandon() now writes",
+        [(GEN, MIGRATE, "    pass  # MUTANT: no migration")],
+        expect=["a_legacy_abandoned_record_is_still_money_at_risk",
+                "a_legacy_abandoned_record_can_still_be_abandoned_again"],
+    ),
+    Mutation(
+        "an unreadable ledger reports no exposure instead of an unknown one",
+        "§6.1",
+        "the difference between $0.00 and 'could not tell' on the one path "
+        "where the exposure is least known",
+        [(GEN, UNKNOWN_SPENT, '        "spent": 0.0,  # MUTANT'),
+         (GEN, UNKNOWN_RISK, '        "at_risk": 0.0,  # MUTANT')],
+        expect=["an_unreadable_ledger_states_the_exposure_is_unknown"],
+    ),
+    Mutation(
+        "the plan payload omits the figures when the ledger cannot be read",
+        "§6.1",
+        "the stated answer on the error path — an absent key reads as $0.00 "
+        "through the `?? 0` every client eventually writes",
+        [(MAIN, PLAN_UNREADABLE, "        pass  # MUTANT")],
+        expect=["an_unreadable_ledger_states_the_exposure_is_unknown"],
     ),
     Mutation(
         "recorded media stops being evidence the clip was bought", "§6.1",

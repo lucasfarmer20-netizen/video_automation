@@ -2713,14 +2713,22 @@ def _plan_payload(plan) -> dict:
     try:
         d["unresolved_attempts"] = [asdict(a) for a in generation.load_attempts(plan.beat_id)
                                     if a.status == generation.RUNNING]
-        # A stuck paid attempt is money, not just a blocked beat. The screen that
-        # reports the block reports the exposure with it, so nobody has to open a
-        # second view to find out what it might have cost (§6.1).
+        # A stuck paid attempt is money, not just a blocked beat, so the payload
+        # that reports the block carries the exposure with it. Nothing in the UI
+        # renders either one yet -- `unresolved_attempts` has been unrendered
+        # since S4-R01 -- but the plan payload is where a screen will read it
+        # from, and the two belong in the same answer (§6.1).
         d["spend"] = generation.spend(plan.beat_id)
         d["at_risk"] = d["spend"]["at_risk"]
     except generation.LedgerUnreadable as exc:
         d["unresolved_attempts"] = []
         d["lineage_error"] = str(exc)
+        # Stated, not omitted. An absent key reads as $0.00 through the `?? 0`
+        # every client eventually writes, and this is the path where the
+        # exposure is least known, not most settled.
+        d["spend"] = generation.unknown_spend("the generation ledger for this "
+                                              "beat could not be read")
+        d["at_risk"] = None
     return d
 
 

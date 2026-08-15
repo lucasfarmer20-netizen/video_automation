@@ -121,6 +121,15 @@ def load_attempts(beat_id: str) -> list[GenerationAttempt]:
     new list over the real one. The atomic write preserved the wrong answer
     perfectly. Failing closed costs a retry; failing open costs money and the
     record that would have prevented the next one.
+
+    Rows written before ``outcome_unknown`` existed are migrated here, once, on
+    the way in: an ``ABANDONED`` reason already MEANT the outcome was unknown, so
+    setting the field states what the row always said rather than adding to it.
+    Doing it here and not in the money code matters twice over. It keeps spend
+    classification reading one recorded field instead of a field plus a sniff at
+    prose; and it keeps a legacy row's shape identical to a new one, which is
+    what stops ``_finish`` seeing a replayed ``abandon()`` as a conflicting claim
+    and refusing a recovery it used to accept.
     """
     p = ledger_path(beat_id)
     try:
@@ -138,8 +147,12 @@ def load_attempts(beat_id: str) -> list[GenerationAttempt]:
             f"It has NOT been overwritten; inspect it before generating again."
         ) from exc
     known = set(GenerationAttempt.__dataclass_fields__)
-    return [GenerationAttempt(**{k: v for k, v in a.items() if k in known})
+    rows = [GenerationAttempt(**{k: v for k, v in a.items() if k in known})
             for a in (raw.get("attempts") or [])]
+    for a in rows:
+        if a.error.startswith(ABANDONED):
+            a.outcome_unknown = True
+    return rows
 
 
 def _save_attempts(beat_id: str, attempts: list[GenerationAttempt]) -> Path:
@@ -380,20 +393,18 @@ def billed(a: GenerationAttempt) -> bool:
 def at_risk(a: GenerationAttempt) -> bool:
     """Paid, not known to be billed, and nobody recorded what the provider did.
 
-    Three shapes, all meaning the same thing for money:
+    Two shapes, both meaning the same thing for money:
 
     * still RUNNING -- either live right now or killed before it could record an
       outcome; ``begin()`` cannot tell the two apart and neither can this;
-    * ``outcome_unknown`` -- ``in_doubt()`` or ``abandon()`` said so explicitly;
-    * an ``ABANDONED`` marker with no flag -- a ledger written before that field
-      existed.
+    * ``outcome_unknown`` -- ``in_doubt()`` or ``abandon()`` said so explicitly,
+      or ``load_attempts()`` migrated a row that said it in prose.
 
     A plain ``fail()`` is excluded on purpose: the module reserves it for
     failures it can support as unbilled, which is exactly why ``in_doubt()``
     exists beside it.
     """
-    return a.paid and not billed(a) and (
-        a.status == RUNNING or a.outcome_unknown or a.error.startswith(ABANDONED))
+    return a.paid and not billed(a) and (a.status == RUNNING or a.outcome_unknown)
 
 
 def spend(beat_id: str, shot_id: str | None = None) -> dict:
@@ -433,4 +444,30 @@ def spend(beat_id: str, shot_id: str | None = None) -> dict:
         "at_risk_attempts": len(unsettled),
         "spend_is_certain": not unsettled,
         "summary": summary,
+    }
+
+
+def unknown_spend(reason: str) -> dict:
+    """The honest answer when the ledger could not be read at all.
+
+    The same shape as :func:`spend`, with ``None`` where every figure would be.
+    Deliberately not zeros, and deliberately not an absent key: this is the one
+    path where the exposure is LEAST known, and both of those render as $0.00 to
+    a caller -- the first directly, the second through the ``?? 0`` that every
+    client eventually writes. That is this PR's own defect, relocated to the
+    error path.
+
+    ``summary`` states the block rather than substituting a number for it, so a
+    caller that renders the summary verbatim says what is wrong instead of
+    quietly reporting nothing at stake.
+    """
+    return {
+        "attempts": None,
+        "failed": None,
+        "paid_attempts": None,
+        "spent": None,
+        "at_risk": None,
+        "at_risk_attempts": None,
+        "spend_is_certain": False,
+        "summary": f"spend is unknown: {reason}",
     }

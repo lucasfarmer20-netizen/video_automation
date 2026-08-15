@@ -854,6 +854,35 @@ def test_a_legacy_abandoned_record_is_still_money_at_risk():
     assert generation.spend("s001")["at_risk"] == 0.60
 
 
+def test_a_legacy_abandoned_record_can_still_be_abandoned_again():
+    """Recognised for reporting and rejected for recovery is not a pair a
+    ledger may hold.
+
+    ``abandon()`` sends outcome_unknown through _finish, and _finish treats a
+    terminal call as a replay only when EVERY field already matches. A row
+    abandoned before that field existed reconstructs it as False, so a repeated
+    abandon -- a double-click, a retried POST -- read as a conflicting claim
+    about a finished attempt and answered 409 where it used to be a no-op. The
+    migration on read is what keeps the two shapes identical.
+    """
+    _record("s001", status=generation.FAILED, paid=True, estimated_cost=0.60,
+            error=generation.ABANDONED + "checked the dashboard, no answer")
+
+    again = generation.abandon("s001", "s001.01.a1", "checked the dashboard, no answer")
+
+    assert again is not None and again.status == generation.FAILED
+    assert generation.spend("s001")["at_risk"] == 0.60
+
+
+def test_a_recorded_failure_still_cannot_be_abandoned_over():
+    """The migration must not soften the guard it rides on: an ordinary
+    failure is a different claim, and abandon() must still refuse it."""
+    att, _ = _begin(idempotency_key="k1")
+    generation.fail("s001", att.id, "provider failed")
+    with pytest.raises(generation.TerminalConflict):
+        generation.abandon("s001", att.id, "human abandoned")
+
+
 def test_a_free_attempt_is_never_money_at_risk():
     """Tier A and B are local and cost nothing. An unfinished free render is a
     render problem, not a billing one."""
@@ -901,6 +930,28 @@ def test_the_plan_payload_reports_the_money_at_risk(api):
     assert plan["spend"]["spent"] == 0.0
 
 
+def test_an_unreadable_ledger_states_the_exposure_is_unknown(api):
+    """The path where the exposure is LEAST known must not be the one that
+    reports nothing at stake.
+
+    Omitting the keys is not neutral: a client reads undefined, and `?? 0`
+    renders $0.00 -- this PR's own defect, moved to the error path. So the
+    figures are present and null, and the summary says what is wrong instead of
+    substituting a number for it.
+    """
+    client, director, sb, render_dir, calls = api
+    _strand(director, sb, render_dir, calls)
+    generation.ledger_path("s011").write_text("{not json", encoding="utf-8")
+
+    plan = client.get("/api/director/plan/s011").json()["plan"]
+    assert plan["at_risk"] is None, "an unreadable ledger reported no exposure"
+    assert plan["spend"]["spent"] is None
+    assert plan["spend"]["at_risk"] is None
+    assert plan["spend"]["spend_is_certain"] is False
+    assert "unknown" in plan["spend"]["summary"]
+    assert plan["lineage_error"]
+
+
 def test_no_caller_can_read_the_billed_total_without_the_risk():
     """A new field is only a fix if a caller cannot quietly ignore it.
 
@@ -910,14 +961,21 @@ def test_no_caller_can_read_the_billed_total_without_the_risk():
     that has not been written yet.
     """
     root = Path(__file__).resolve().parent.parent
-    files = list((root / "backend").glob("*.py"))
+    files = list((root / "backend").rglob("*.py")) + list(root.glob("*.py"))
     src = root / "frontend" / "src"
     if src.is_dir():
         files += [p for p in src.rglob("*.ts*") if ".test." not in p.name]
 
+    def code(text: str) -> str:
+        # Comment lines do not count. A file that mentions at_risk only while
+        # explaining something satisfies the letter of this guard and none of
+        # its point.
+        return "\n".join(ln for ln in text.splitlines()
+                         if not ln.lstrip().startswith(("#", "//", "*", "/*")))
+
     offenders = []
     for p in files:
-        text = p.read_text(encoding="utf-8", errors="replace")
+        text = code(p.read_text(encoding="utf-8", errors="replace"))
         reads_total = ("generation.spend(" in text or '["spent"]' in text
                        or "['spent']" in text or ".spent" in text)
         if reads_total and "at_risk" not in text:
