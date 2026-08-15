@@ -1,5 +1,15 @@
 # Antigravity — UI work handoff
 
+> **SUPERSEDED 2026-08-14.** Antigravity's role changed from frontend
+> *implementer* to *designer*: it produces specifications, not code.
+> **Current brief: `docs/antigravity_design_brief.md`.**
+>
+> Kept because the invariants and house rules below still hold and each came
+> from a bug that shipped — the design brief carries them forward. What is out
+> of date is the role, the build instructions, the phase status and the
+> component line counts.
+
+
 Written 2026-08-05. Claude Code owns the backend, API contracts, persistence and
 deployment. This document is the current contract; where anything here conflicts
 with an older instruction, this wins.
