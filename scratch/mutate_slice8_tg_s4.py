@@ -37,6 +37,14 @@ GEN = ROOT / "backend" / "generation.py"
 WORKER = ROOT / "backend" / "pipeline_worker.py"
 MAIN = ROOT / "backend" / "main.py"
 
+# Paths inside the repository that a MUTATED run can write a real project's
+# records to, because ROOT is itself a project (config.MANIFEST_PATH defaults to
+# ROOT/storyboard_manifest.json). Neither is gitignored and s011 is a live beat
+# id, so these are never assumed to be scratch: the run refuses to start if
+# either already exists, and only removes what it created.
+ROOT_ARTIFACTS = (ROOT / "generation" / "s011.json",
+                  ROOT / "director" / "s011.json")
+
 
 # --------------------------------------------------------------------------- #
 # probes: the production paths, driven for real and printed
@@ -151,12 +159,28 @@ config.MANIFEST_PATH = a.manifest_path
 # The third place a ledger can land. backend/config.py calls set_active_manifest
 # at import, which points projects' process fallback at the REPOSITORY's own
 # manifest -- so a job that resolves identity late binds that and writes here.
-# Cleared first so a leftover from a previous mutation cannot be read as this
-# one's evidence.
+#
+# These paths are NOT scratch. The repository root is itself a project, both
+# directories exist there, neither is gitignored, and s011 is a real beat id --
+# backend/main.py names s011 and s017 as the beats that were silently dropped.
+# A file here can be a real generation ledger: the record of what was paid.
+#
+# So this probe deletes by OWNERSHIP, never by existence. It refuses to run at
+# all if either path is already present, rather than clearing it -- clearing was
+# the previous behaviour and it would have destroyed a money record without a
+# prompt or a backup. Refusing also protects the file from being *appended to*:
+# begin() loads an existing ledger and writes the list back, so a pre-existing
+# s011 ledger would be rewritten, not merely read.
 STRAY_LEDGER = Path(r"__ROOT__") / "generation" / "s011.json"
 STRAY_PLAN = Path(r"__ROOT__") / "director" / "s011.json"
-for stray in (STRAY_LEDGER, STRAY_PLAN):
-    stray.unlink(missing_ok=True)
+OCCUPIED = [p for p in (STRAY_LEDGER, STRAY_PLAN) if p.exists()]
+if OCCUPIED:
+    print("PROBE_IDENTITY_REFUSED_TO_RUN="
+          + json.dumps([str(p) for p in OCCUPIED]))
+    print("PROBE_IDENTITY_REFUSED_REASON=these exist and were not written by "
+          "this probe; a generation ledger is a money record. Move them aside "
+          "and re-run.")
+    raise SystemExit(3)
 
 def board():
     return Storyboard(title="T", script_locked=True, storyboard_approved=True,
@@ -243,11 +267,13 @@ else:
     where = "nowhere"
 print("PROBE_IDENTITY_LEDGER_LOCATION=" + where)
 
-# Leave no artifact behind. Under a mutation this probe really does write into
-# the repository, and a leftover would make the NEXT mutation's probe report
-# "repository" for a ledger it never wrote.
+# Leave no artifact behind -- but only OUR artifact. Both paths were verified
+# absent at the top of this probe, so anything at them now was written by this
+# run and nothing else. That check is what makes the unlink safe; without it
+# this line is a delete of a money record on a path the probe never wrote.
 for stray in (STRAY_LEDGER, STRAY_PLAN):
-    stray.unlink(missing_ok=True)
+    if stray.is_file():
+        stray.unlink()
 
 # The whole finding in one line: the film that paid is not the film that holds
 # the record of paying.
@@ -435,8 +461,17 @@ MUTATIONS = [
         "the LedgerUnreadable its callers are promised",
         [(GEN, ROW_TYPES, "        if False:  # MUTANT")],
         probes=[("contract", "PROBE_CONTRACT_ESCAPED=true"),
+                ("contract", "PROBE_CONTRACT_OVERWROTE=true"),
+                ("contract", "PROBE_CONTRACT_begin=returned+overwrote"),
                 ("contract", "PROBE_CONTRACT_spend=raised:TypeError")],
-        expect=["every_entry_point_answers_a_broken_ledger_with_the_promised_error"],
+        # The overwrite test is named here deliberately. Before it stopped
+        # wrapping the call in pytest.raises it COULD NOT fail for the right
+        # reason under this mutation -- begin() returns rather than raising, so
+        # the wrapper failed with DID NOT RAISE and read_bytes() was never
+        # compared. Naming it is what proves the fix: the harness fails the run
+        # if this specific test does not die here.
+        expect=["every_entry_point_answers_a_broken_ledger_with_the_promised_error",
+                "no_entry_point_overwrites_the_ledger_it_could_not_read"],
     ),
     Mutation(
         "TG-S4-06 faithful: one money field drops out of the shape table",
@@ -460,6 +495,10 @@ MUTATIONS = [
 
 _ENV = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
 
+# How many times each ROOT project file was written by a mutated run and taken
+# back. Reported in the summary rather than swept quietly.
+_RECLAIMED: dict[Path, int] = {}
+
 
 def run_suite() -> tuple[bool, str]:
     proc = subprocess.run(
@@ -469,7 +508,36 @@ def run_suite() -> tuple[bool, str]:
     return proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
 
 
+def reclaim_root_artifacts() -> list[Path]:
+    """Remove ROOT project files THIS RUN created. Returns what it removed.
+
+    Ownership is established once, per harness run, by the check at the top of
+    ``main()``: both paths were verified absent before anything ran, so anything
+    at them afterwards was written by this harness -- and under a mutation it is
+    not only the probe that writes them, it is the mutated *suite*, which runs
+    first. That ordering is why this is not folded into the probe: a probe that
+    refuses on existence would refuse on the file the suite just left, and four
+    signatures would go missing for a mutation that had reproduced its defect
+    perfectly.
+
+    MUST NOT be called before that start-up check. Everything protecting a real
+    generation ledger from this function is that one precondition.
+    """
+    removed = [p for p in ROOT_ARTIFACTS if p.is_file()]
+    for p in removed:
+        p.unlink()
+        # Counted, not silently swept. That a mutated run writes a generation
+        # ledger into the repository is a fact about the mutation worth stating
+        # -- it is the defect, seen from the filesystem -- and reporting it is
+        # what keeps the cleanup from reading as "nothing happened here".
+        _RECLAIMED[p] = _RECLAIMED.get(p, 0) + 1
+    return removed
+
+
 def run_probe(name: str) -> tuple[bool, str]:
+    # Clear first: a mutated suite may have left this run's artifact at ROOT,
+    # and the probe refuses to start on a ROOT file it did not write.
+    reclaim_root_artifacts()
     script = PROBES[name].replace("__ROOT__", str(ROOT))
     proc = subprocess.run(
         [sys.executable, "-c", script], cwd=ROOT, env=_ENV,
@@ -541,6 +609,22 @@ def main() -> int:
     touched = sorted({p for m in MUTATIONS for p, _, _ in m.edits})
     pristine = {p: _read(p) for p in touched}
     before = digest(touched)
+
+    # The repository root is itself a project, and under a mutation this harness
+    # really does write a generation ledger into it. Refuse to start if either
+    # path is already occupied, rather than clearing it: these are not scratch
+    # paths -- neither is gitignored, s011 is a real beat id, and a generation
+    # ledger is the record of what was paid. Deleting one to make room for a
+    # test artifact is the failure backend/generation.py's own docstring argues
+    # against, and it is not a decision a harness may make unattended.
+    occupied = [p for p in ROOT_ARTIFACTS if p.exists()]
+    if occupied:
+        print("refusing to run: these exist and are not this harness's to touch:")
+        for p in occupied:
+            print(f"  - {p.relative_to(ROOT)}")
+        print("A generation ledger is a money record. Move them aside, confirm "
+              "they are not real, and re-run.")
+        return 1
 
     ok, out = run_suite()
     print(f"baseline suite: {'PASS' if ok else 'FAIL'}")
@@ -615,20 +699,26 @@ def main() -> int:
             _write(p, pristine[p])
 
     # A mutated run really can write a ledger into the repository itself (see the
-    # late-resolve mutation). The probe clears its own, but a crash between the
-    # write and the cleanup would leave real money records in the source tree,
-    # so the run says so rather than leaving them to be found by `git status`.
-    strays = [p for p in (ROOT / "generation" / "s011.json",
-                          ROOT / "director" / "s011.json") if p.is_file()]
-    for p in strays:
-        p.unlink()
+    # late-resolve mutation). The probe removes its own, but a crash between the
+    # write and the cleanup would leave one behind, so the run says so rather
+    # than leaving it to be found by `git status`.
+    #
+    # Safe to unlink only because every one of these paths was verified ABSENT
+    # before the first suite ran: anything here now was written by this harness.
+    # Ownership, not existence -- the check above is what earns this line.
+    strays = reclaim_root_artifacts()
     if strays:
-        dirty += [str(p.relative_to(ROOT)) + " (removed)" for p in strays]
+        dirty += [str(p.relative_to(ROOT)) + " (written by a mutated run, removed)"
+                  for p in strays]
 
     ok, _ = run_suite()
     print(f"\nrestored suite: {'PASS' if ok else 'FAIL'}")
     print(f"mutations: {len(MUTATIONS)} defined, {len(survived)} survived, "
           f"{len(MUTATIONS) - len(survived)} killed")
+    for p, n in sorted(_RECLAIMED.items(), key=lambda kv: str(kv[0])):
+        print(f"  reclaimed {p.relative_to(ROOT)} {n}x — a mutated run wrote a "
+              f"real project's records into the repository; removed, and only "
+              f"because this run created them")
     if dirty:
         print(f"  TREE NOT RESTORED — was still modified: {', '.join(dirty)}")
     if survived:

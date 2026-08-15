@@ -1097,12 +1097,28 @@ def test_no_entry_point_overwrites_the_ledger_it_could_not_read(caller):
     them reached its write with a partially-parsed list, the unreadable file
     would be replaced by a tidy one that had quietly dropped the rows it could
     not understand -- and the atomic write would preserve that perfectly.
+
+    The outcome is deliberately not asserted here, and NOT via
+    ``pytest.raises`` of any type. This test and the one above check two
+    properties that fail independently -- a caller can answer with the wrong
+    exception type without overwriting, and can overwrite while answering with
+    the right one -- so this one has to be able to reach its own assertion under
+    the regression it guards. Wrapping the call in ``pytest.raises`` defeats
+    that twice over: ``LedgerUnreadable`` lets an incidental ``TypeError``
+    propagate out of the block, and ``Exception`` fails with DID NOT RAISE
+    against a caller that returns. Measured, not supposed: with the type gate
+    removed, ``begin()`` does not raise at all -- it opens a new paid attempt
+    and writes over the file. Either wrapper would have skipped the comparison
+    in exactly the case it exists for.
     """
     _write_raw("s001", STRUCTURALLY_INVALID)
     before = generation.ledger_path("s001").read_bytes()
-    with pytest.raises(generation.LedgerUnreadable):
+    try:
         LEDGER_CALLERS[caller]()
-    assert generation.ledger_path("s001").read_bytes() == before
+    except Exception:                 # noqa: BLE001 - the type is the test above
+        pass
+    assert generation.ledger_path("s001").read_bytes() == before, (
+        f"{caller}() wrote over a ledger it could not read")
 
 
 def test_the_gate_validates_every_field_an_attempt_can_carry():

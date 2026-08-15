@@ -125,7 +125,15 @@ def two_projects(tmp_path, monkeypatch):
     original_fallback = projects.current()
     client = TestClient(M.app, raise_server_exceptions=False)
     try:
-        yield client, a, b, at_the_gate, proceed, paid
+        # `real_compile` is yielded because `M.director` IS `backend.director`
+        # -- one module object -- so after the patch above, the name
+        # `director.compile_coverage` resolves to `held_compile` inside the
+        # tests too. A test meaning to drive a compile directly would take the
+        # barrier instead, and pass only for as long as `proceed` happened to be
+        # set: re-arm the hold, or reorder the helper, and it blocks for the
+        # full timeout and then runs anyway. A slow pass gets diagnosed as flake
+        # rather than as a test calling something it did not mean to.
+        yield client, a, b, at_the_gate, proceed, paid, real_compile
     finally:
         proceed.set()
         me = threading.current_thread()
@@ -156,7 +164,7 @@ def _compile_on_a_then_switch_to_b(client, a, b, at_the_gate, proceed):
 
 def test_a_background_generation_ledger_lands_in_the_captured_project(two_projects):
     """TG-S4-05. The ledger belongs to the film that was compiling, full stop."""
-    client, a, b, at_the_gate, proceed, paid = two_projects
+    client, a, b, at_the_gate, proceed, paid, _real = two_projects
 
     _compile_on_a_then_switch_to_b(client, a, b, at_the_gate, proceed)
     assert paid["calls"] == 1, "the paid clip was never generated; nothing to file"
@@ -174,7 +182,7 @@ def test_the_project_that_paid_is_the_project_that_reports_the_spend(two_project
     Reading spend from both sides is what makes that visible: A must carry the
     $0.60, and B must carry nothing at all.
     """
-    client, a, b, at_the_gate, proceed, paid = two_projects
+    client, a, b, at_the_gate, proceed, paid, _real = two_projects
 
     _compile_on_a_then_switch_to_b(client, a, b, at_the_gate, proceed)
 
@@ -206,7 +214,7 @@ def test_the_captured_project_still_blocks_a_second_charge_after_the_switch(
     landed correctly is not enough on its own -- what has to hold is that the
     re-bill guard in the paying project can still see it.
     """
-    client, a, b, at_the_gate, proceed, paid = two_projects
+    client, a, b, at_the_gate, proceed, paid, real_compile = two_projects
 
     _compile_on_a_then_switch_to_b(client, a, b, at_the_gate, proceed)
     assert paid["calls"] == 1
@@ -220,9 +228,12 @@ def test_the_captured_project_still_blocks_a_second_charge_after_the_switch(
         plan.coverage[0].paid_signature = ""
         director.save_plan(plan)
 
-        director.compile_coverage(director.load_plan(BEAT), _board(),
-                                  a.root / "render", log=lambda m: None,
-                                  skip_existing=False)
+        # `real_compile`, NOT `director.compile_coverage` -- that name is the
+        # fixture's barrier-wrapped stand-in, and taking it here would make this
+        # test depend on `proceed` still being set by the helper above.
+        real_compile(director.load_plan(BEAT), _board(),
+                     a.root / "render", log=lambda m: None,
+                     skip_existing=False)
 
     assert paid["calls"] == 1, \
         "the clip was bought again because its ledger was filed elsewhere"
