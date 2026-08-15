@@ -951,7 +951,50 @@ MALFORMED = {
                                       "attempts": [_good_row()]},
     "a row names another beat": {"beat_id": "s001",
                                  "attempts": [_good_row(beat_id="s999")]},
+
+    # --- TG-S4-06: shapes the gate already rejects that nothing pinned --------
+    #
+    # Each one is a field the money code reads and a JSON type it must not hold.
+    # They were reachable through the same routes as the cases above -- a
+    # truncated write, a hand repair, a half-finished migration -- and the gate
+    # covering them today is not the same as a test noticing if it stopped.
+    "attempts is null": {"beat_id": "s001", "attempts": None},
+    # `beat_id` and `attempt` are the two required keys the sweep never removed;
+    # without them a row cannot be reconciled against a bill at all.
+    "a row has no beat_id": {"beat_id": "s001",
+                             "attempts": [{k: v for k, v in _good_row().items()
+                                           if k != "beat_id"}]},
+    "a row has no attempt number": {"beat_id": "s001",
+                                    "attempts": [{k: v for k, v in _good_row().items()
+                                                  if k != "attempt"}]},
+    # `billed()` reads `bool(a.output)`, so a non-string here decides whether a
+    # bought clip counts -- 0 and "" are both falsy and mean different things.
+    "output is a number": {"beat_id": "s001", "attempts": [_good_row(output=123)]},
+    "output is null": {"beat_id": "s001", "attempts": [_good_row(output=None)]},
+    # load_attempts calls .startswith on this to migrate legacy abandons.
+    "error is null": {"beat_id": "s001", "attempts": [_good_row(error=None)]},
+    # Distinct from "cancelled": null takes the type check, not the vocabulary
+    # check, and only one of the two branches would survive a partial revert.
+    "status is null": {"beat_id": "s001", "attempts": [_good_row(status=None)]},
+    "an id is null": {"beat_id": "s001", "attempts": [_good_row(id=None)]},
+    # `at_risk()` reads outcome_unknown directly; any truthy string would pass
+    # for True and any empty one for False, which is not a decision about money.
+    "outcome_unknown is a string": {"beat_id": "s001",
+                                    "attempts": [_good_row(outcome_unknown="yes")]},
+    # Infinity survives json.loads exactly as NaN does, and poisons a total the
+    # same way -- but through the isfinite branch rather than the NaN one.
+    "cost is Infinity": {"beat_id": "s001",
+                         "attempts": [_good_row(cost=float("inf"))]},
+    "estimated_cost is negative": {"beat_id": "s001",
+                                   "attempts": [_good_row(estimated_cost=-1.0)]},
+    "estimated_cost is NaN": {"beat_id": "s001",
+                              "attempts": [_good_row(estimated_cost=float("nan"))]},
+    "attempt is negative": {"beat_id": "s001", "attempts": [_good_row(attempt=-3)]},
 }
+
+# The shape the audit named in its own words: right syntax, wrong types, and a
+# cost that would reach a sum. Used wherever one representative case is enough.
+STRUCTURALLY_INVALID = {"beat_id": "s001", "attempts": [_good_row(cost="0.60")]}
 
 
 @pytest.mark.parametrize("case", sorted(MALFORMED))
@@ -998,6 +1041,149 @@ def test_an_unknown_field_from_a_newer_writer_is_ignored_not_fatal():
                         "attempts": [_good_row(settled_by="a later slice")]})
     rows = generation.load_attempts("s001")
     assert len(rows) == 1 and rows[0].cost == 0.60
+
+
+# --- TG-S4-06: the promised error contract, and the gate's own blind spot ---------
+#
+# The audit's complaint was never that structurally invalid ledgers failed open
+# -- it said explicitly that they did not. It was that callers are promised
+# LedgerUnreadable and used to get an incidental AttributeError or TypeError, so
+# the contract held for one kind of corruption and not another.
+#
+# The schema gate closes that. What the tests above do not cover is who it holds
+# FOR: they exercise load_attempts() and spend(), and every other public entry
+# point reaches the same file by its own route. `begin()` is the one that decides
+# whether money may be spent, and `succeed`/`fail`/`abandon`/`in_doubt` are the
+# ones that record what a provider did. A gate that covered the read path and
+# not those would be a contract that holds for reporting and not for spending.
+
+# Every public entry point that touches the ledger, with an argument list that
+# reaches the file. A key or signature must be non-empty: both functions answer
+# without reading when they are blank, which is correct and not what is measured
+# here.
+LEDGER_CALLERS = {
+    "load_attempts": lambda: generation.load_attempts("s001"),
+    "for_shot": lambda: generation.for_shot("s001", "s001.01"),
+    "history": lambda: generation.history("s001", "s001.01"),
+    "find_by_key": lambda: generation.find_by_key("s001", "req-1"),
+    "reusable": lambda: generation.reusable("s001", "s001.01", "sig-a"),
+    "spend": lambda: generation.spend("s001"),
+    "begin": lambda: _begin(idempotency_key="k1"),
+    "succeed": lambda: generation.succeed("s001", "s001.01.a1", "a.mp4", cost=0.60),
+    "fail": lambda: generation.fail("s001", "s001.01.a1", "boom"),
+    "in_doubt": lambda: generation.in_doubt("s001", "s001.01.a1", "no answer"),
+    "abandon": lambda: generation.abandon("s001", "s001.01.a1", "wrote it off"),
+}
+
+
+@pytest.mark.parametrize("caller", sorted(LEDGER_CALLERS))
+def test_every_entry_point_answers_a_broken_ledger_with_the_promised_error(caller):
+    """One exception type, whoever asks. That is the whole of TG-S4-06.
+
+    An incidental TypeError out of `begin()` is not merely untidy: callers that
+    catch LedgerUnreadable -- the two routes and the plan payload -- would let it
+    through as a 500, and a 500 is what a client retries.
+    """
+    _write_raw("s001", STRUCTURALLY_INVALID)
+    with pytest.raises(generation.LedgerUnreadable):
+        LEDGER_CALLERS[caller]()
+
+
+@pytest.mark.parametrize("caller", sorted(LEDGER_CALLERS))
+def test_no_entry_point_overwrites_the_ledger_it_could_not_read(caller):
+    """Failing closed is only half of it; the bytes are the evidence.
+
+    `begin()` and the `_finish` family all save the list they loaded. If any of
+    them reached its write with a partially-parsed list, the unreadable file
+    would be replaced by a tidy one that had quietly dropped the rows it could
+    not understand -- and the atomic write would preserve that perfectly.
+
+    The outcome is deliberately not asserted here, and NOT via
+    ``pytest.raises`` of any type. This test and the one above check two
+    properties that fail independently -- a caller can answer with the wrong
+    exception type without overwriting, and can overwrite while answering with
+    the right one -- so this one has to be able to reach its own assertion under
+    the regression it guards. Wrapping the call in ``pytest.raises`` defeats
+    that twice over: ``LedgerUnreadable`` lets an incidental ``TypeError``
+    propagate out of the block, and ``Exception`` fails with DID NOT RAISE
+    against a caller that returns. Measured, not supposed: with the type gate
+    removed, ``begin()`` does not raise at all -- it opens a new paid attempt
+    and writes over the file. Either wrapper would have skipped the comparison
+    in exactly the case it exists for.
+    """
+    _write_raw("s001", STRUCTURALLY_INVALID)
+    before = generation.ledger_path("s001").read_bytes()
+    try:
+        LEDGER_CALLERS[caller]()
+    except Exception:                 # noqa: BLE001 - the type is the test above
+        pass
+    assert generation.ledger_path("s001").read_bytes() == before, (
+        f"{caller}() wrote over a ledger it could not read")
+
+
+def test_the_gate_validates_every_field_an_attempt_can_carry():
+    """The gate's own blind spot, and the reason this is a test and not a fix.
+
+    `_row` validates a field only if `_SHAPE` names it, and then hands whatever
+    is left to `GenerationAttempt(**...)`. So the gate is exactly as complete as
+    that table, and nothing makes the table follow the dataclass: add a field to
+    `GenerationAttempt` and forget the table, and it arrives from JSON with no
+    type check at all. If it is a money field -- and the last two added were
+    `estimated_cost` and `outcome_unknown`, both money fields -- the ledger goes
+    back to reporting a total it cannot support.
+
+    This is a structural test on purpose. No fixture can exercise a field that
+    does not exist yet; the coupling is the only thing that can be asserted
+    before the mistake is made.
+    """
+    fields = set(generation.GenerationAttempt.__dataclass_fields__)
+    unvalidated = fields - set(generation._SHAPE)
+    assert not unvalidated, (
+        f"GenerationAttempt carries {sorted(unvalidated)}, which _SHAPE does not "
+        f"validate. Values for these reach the dataclass straight from JSON, so "
+        f"a string lands where a float is expected and the first total that "
+        f"touches it is wrong or raises.")
+
+    stale = set(generation._SHAPE) - fields
+    assert not stale, (
+        f"_SHAPE validates {sorted(stale)}, which is not a field of "
+        f"GenerationAttempt. _row drops unknown keys before construction, so "
+        f"these entries check nothing and read as coverage that is not there.")
+
+
+def test_the_two_shapes_the_gate_lets_through_still_fail_closed():
+    """Recorded, not fixed: the gate is not exhaustive and does not claim to be.
+
+    Two JSON-valid shapes load without complaint -- two rows sharing one id, and
+    a row with an empty id. Both were checked against the money path rather than
+    assumed:
+
+    * duplicate ids OVER-report. `spend()` counts both rows, so one $0.60 clip
+      reads as $1.20, and `_finish` refuses the second as a terminal conflict.
+    * a running duplicate makes `begin()` answer `in_flight`, which refuses to
+      spend.
+
+    Over-reporting exposure and refusing to spend are both the safe direction, so
+    tightening the gate here would be a behaviour change made during a test-gap
+    round for no money gained. It is pinned instead, so that if either shape ever
+    starts under-reporting, this test is what says so.
+    """
+    row = _good_row(cost=0.60)
+    _write_raw("s001", {"beat_id": "s001", "attempts": [dict(row), dict(row)]})
+
+    s = generation.spend("s001")
+    assert s["spent"] == 1.20, "a duplicated row started UNDER-reporting"
+    assert s["paid_attempts"] == 2
+    with pytest.raises(generation.TerminalConflict):
+        generation.fail("s001", row["id"], "a late callback")
+
+    running = _good_row(status="running", cost=0.0, output="",
+                        estimated_cost=0.60, signature="sig-a")
+    _write_raw("s001", {"beat_id": "s001",
+                        "attempts": [dict(running), dict(running)]})
+    _, how = _begin(idempotency_key="")
+    assert how == "in_flight", "a duplicated running attempt stopped blocking a re-buy"
+    assert generation.spend("s001")["at_risk"] == 1.20
 
 
 # --- S8-01: and no caller may read the total without the risk ---------------------
