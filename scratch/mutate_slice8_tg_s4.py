@@ -355,6 +355,16 @@ class Mutation:
     # must NOT appear pristine. Required for every mutation.
     probes: list[tuple[str, str]] = field(default_factory=list)
     expect: list[str] = field(default_factory=list)
+    # Assertion messages that must appear in the mutated suite's output.
+    #
+    # `expect` proves the right test died. This proves the right ASSERTION
+    # inside it ran. The two are not the same, and the gap between them is how
+    # this round's finding survived every earlier check: the concurrency tests
+    # asserted the status split before the dispatch count, so under the
+    # regression they failed on the status and aborted, and the money assertion
+    # -- the whole point of TG-S4-04 -- was never evaluated. The test died, the
+    # table went red, and nothing had been demonstrated.
+    proves: list[str] = field(default_factory=list)
 
 
 # --- anchors ----------------------------------------------------------------------
@@ -386,6 +396,10 @@ MUTATIONS = [
                 ("race", "PROBE_RACE_COMPILE_CALLS=2"),
                 ("race", "PROBE_RACE_CODES=[200, 200]")],
         expect=["two_concurrent_compiles_dispatch_exactly_one"],
+        # The dispatch count, not the status split. Before the assertions were
+        # reordered this phrase never appeared: the test aborted on [200, 200]
+        # and the money assertion below it never ran.
+        proves=["compiles were dispatched for one beat"],
     ),
     Mutation(
         "TG-S4-04 faithful: the endpoint stops honouring the refusal",
@@ -398,6 +412,11 @@ MUTATIONS = [
                 ("race", "PROBE_RACE_CODES=[200, 200]")],
         expect=["two_concurrent_compiles_dispatch_exactly_one",
                 "the_refused_caller_is_never_told_its_compile_started"],
+        # Asserted over every body, so it survives there being no 409 to index
+        # by. The old `bodies[codes.index(409)]` raised ValueError here -- an
+        # error, not a failure, reporting nothing about the two callers who were
+        # both told their compile had started.
+        proves=["were told their compile started"],
     ),
 
     # ---- TG-S4-05: the ledger belongs to the project that paid ----------------
@@ -416,6 +435,12 @@ MUTATIONS = [
                 ("identity", "PROBE_IDENTITY_SPEND_B=0.6")],
         expect=["a_background_generation_ledger_lands_in_the_captured_project",
                 "the_project_that_paid_is_the_project_that_reports_the_spend"],
+        # The money sentence. Before the reorder, `len(rows) == 1` was checked
+        # against A first, failed there, and this never ran -- so the suite
+        # reported that A had no rows and never once said another film had been
+        # charged $0.60.
+        proves=["for another film's clip",
+                "another film was billed for a clip it did not buy"],
     ),
     Mutation(
         "TG-S4-05 faithful: identity is resolved when the job RUNS, not at enqueue",
@@ -676,6 +701,16 @@ def main() -> int:
         for want in mut.expect:
             if not any(want in t for t in failed):
                 unproven.append(f"{mut.name}: expected {want} to fail")
+
+        # And that the assertion which NAMES the defect is the one that ran.
+        for phrase in mut.proves:
+            shown = phrase in suite_out
+            print(f"    assertion {'FIRED' if shown else 'NEVER RAN'}: {phrase!r}")
+            if not shown:
+                unproven.append(
+                    f"{mut.name}: no failing assertion said {phrase!r} — the test "
+                    f"died on a cheaper assertion first, so the defect was never "
+                    f"demonstrated")
 
         for name in sorted({n for n, _ in mut.probes}):
             lines = probe_lines(probe_out.get(name, ""))

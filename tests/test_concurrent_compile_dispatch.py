@@ -24,6 +24,20 @@ Nothing about the dispatch path is faked: real `start_job`, real worker threads,
 real requests through the ASGI app and both middlewares. Only `compile_coverage`
 itself is replaced, because it is both the thing being counted and the thing
 that would otherwise call a paid API.
+
+ASSERTION ORDER IS PART OF THE TEST, and this file is where that rule was
+learned the expensive way. These tests originally asserted the 200/409 split
+first and the dispatch count after it. Under the regression they exist for the
+codes are [200, 200], so the status assertion failed, the run aborted, and the
+dispatch count -- the money-relevant half, the entire point of TG-S4-04 -- was
+never evaluated once. The test reproduced the exact flaw its own docstring
+warns about, two paragraphs up.
+
+So: within a test, the assertion that demonstrates the defect runs FIRST, and
+anything cheaper or more cosmetic runs after it. Read every value you intend to
+assert on before asserting on any of them, and never index one result by
+another (`bodies[codes.index(409)]` raises ValueError under the very regression
+being guarded, which is an error, not a failure, and reports nothing).
 """
 
 from __future__ import annotations
@@ -125,7 +139,10 @@ def _race(client, n=2):
     """Fire `n` compiles for the same beat as simultaneously as threads allow."""
     at_the_line = threading.Barrier(n, timeout=10)
     codes: list[int | None] = [None] * n
-    bodies: list[dict] = [{}] * n
+    # Per-slot dicts, not `[{}] * n` -- that is n references to ONE dict, and a
+    # future reader who mutates a slot instead of replacing it would silently
+    # write to every slot at once.
+    bodies: list[dict] = [{} for _ in range(n)]
 
     def fire(i):
         at_the_line.wait()
@@ -153,6 +170,19 @@ def test_two_concurrent_compiles_dispatch_exactly_one(studio):
 
     codes, bodies = _race(client)
 
+    # The dispatch count goes FIRST, and the order is the test. Asserting the
+    # status split first was this test committing the error its own docstring
+    # warns about: remove the dedupe and the codes are [200, 200], so the status
+    # assertion fails and the money assertion never runs -- the test would have
+    # reported a status mismatch and never once demonstrated the second
+    # dispatch. A cheaper assertion that fails first hides the expensive one.
+    assert compiles.entered.wait(timeout=10), "the accepted compile never ran"
+    compiles.release_and_settle()
+    assert compiles.calls == 1, (
+        f"{compiles.calls} compiles were dispatched for one beat; every dispatch "
+        f"past the first re-buys that beat's ai_video shots")
+
+    # Only then how it was reported.
     assert sorted(codes) == [200, 409], f"expected one 200 and one 409, got {codes}"
 
     winner = bodies[codes.index(200)]
@@ -161,12 +191,6 @@ def test_two_concurrent_compiles_dispatch_exactly_one(studio):
     assert loser["ok"] is False
     assert "already running" in loser["error"]
 
-    assert compiles.entered.wait(timeout=10), "the accepted compile never ran"
-    compiles.release_and_settle()
-    assert compiles.calls == 1, (
-        f"{compiles.calls} compiles were dispatched for one beat; every dispatch "
-        f"past the first re-buys that beat's ai_video shots")
-
 
 def test_the_refused_caller_is_never_told_its_compile_started(studio):
     """The older shape of this defect: 409's content, not just its code.
@@ -174,14 +198,29 @@ def test_the_refused_caller_is_never_told_its_compile_started(studio):
     `start_job` returned False and the endpoint reported `{"started": true}`
     anyway, so beats were silently dropped while the caller believed they had
     begun. A refusal that reads as an acceptance is worse than either.
+
+    Asserted over ALL the bodies before anything is indexed by status. Picking
+    the loser out with `codes.index(409)` is the same ordering trap as above and
+    a worse version of it: under the regression this test exists for there is no
+    409 to find, so `index` raises ValueError and neither content assertion runs.
+    The test would error out instead of reporting that two callers were both
+    told their compile had started.
     """
     client, compiles = studio
 
     codes, bodies = _race(client)
-    loser = bodies[codes.index(409)]
 
-    assert loser.get("started") is not True
-    assert loser.get("ok") is False
+    claimed = [b for b in bodies if b.get("started") is True]
+    assert len(claimed) == 1, (
+        f"{len(claimed)} of {len(bodies)} callers were told their compile "
+        f"started; exactly one beat was dispatched, so any other claim is a "
+        f"beat silently dropped while its caller was told it had begun")
+
+    # Then, separately, that the refusal reads as one.
+    refused = [b for b in bodies if b.get("started") is not True]
+    assert len(refused) == 1
+    assert refused[0].get("ok") is False
+    assert 409 in codes, f"the refused caller was not answered 409: {codes}"
 
 
 def test_the_guard_is_a_dedupe_and_not_a_permanent_block(studio):
@@ -190,20 +229,24 @@ def test_the_guard_is_a_dedupe_and_not_a_permanent_block(studio):
     Once the first compile has finished the beat must be compilable again --
     a re-compile after an edit is ordinary work, and a guard that refused it
     would score perfectly on the race above while breaking the product.
+
+    Dispatch before status here too, for the same reason as above: a guard stuck
+    refusing answers 409, and asserting that first would report a status
+    mismatch rather than the fact that matters -- the second compile never ran.
     """
     client, compiles = studio
 
     first = client.post(f"/api/director/compile/{BEAT}")
-    assert first.status_code == 200
     assert compiles.entered.wait(timeout=10)
     compiles.release_and_settle()
     assert compiles.calls == 1
+    assert first.status_code == 200
 
     compiles.entered.clear()
     compiles.proceed.clear()
 
     second = client.post(f"/api/director/compile/{BEAT}")
-    assert second.status_code == 200, "a finished compile still blocked its beat"
-    assert compiles.entered.wait(timeout=10)
+    compiles.entered.wait(timeout=10)
     compiles.release_and_settle()
-    assert compiles.calls == 2
+    assert compiles.calls == 2, "a finished compile still blocked its beat"
+    assert second.status_code == 200

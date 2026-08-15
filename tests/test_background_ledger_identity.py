@@ -163,16 +163,23 @@ def _compile_on_a_then_switch_to_b(client, a, b, at_the_gate, proceed):
 
 
 def test_a_background_generation_ledger_lands_in_the_captured_project(two_projects):
-    """TG-S4-05. The ledger belongs to the film that was compiling, full stop."""
+    """TG-S4-05. The ledger belongs to the film that was compiling, full stop.
+
+    Both locations are read before either is asserted, and the wrong-account
+    half is asserted first -- it is the sharper sentence, and ordering the
+    missing-record half ahead of it would report "A has no ledger" while never
+    saying where the money actually went.
+    """
     client, a, b, at_the_gate, proceed, paid, _real = two_projects
 
     _compile_on_a_then_switch_to_b(client, a, b, at_the_gate, proceed)
     assert paid["calls"] == 1, "the paid clip was never generated; nothing to file"
 
-    assert (a.root / "generation" / f"{BEAT}.json").is_file(), \
-        "the project that paid for the clip has no record of it"
-    assert not (b.root / "generation" / f"{BEAT}.json").exists(), \
-        "another film was billed for a clip it did not buy"
+    in_a = (a.root / "generation" / f"{BEAT}.json").is_file()
+    in_b = (b.root / "generation" / f"{BEAT}.json").is_file()
+
+    assert not in_b, "another film was billed for a clip it did not buy"
+    assert in_a, "the project that paid for the clip has no record of it"
 
 
 def test_the_project_that_paid_is_the_project_that_reports_the_spend(two_projects):
@@ -181,28 +188,38 @@ def test_the_project_that_paid_is_the_project_that_reports_the_spend(two_project
     A ledger in the wrong project is a charge reported against the wrong film.
     Reading spend from both sides is what makes that visible: A must carry the
     $0.60, and B must carry nothing at all.
+
+    Every reading is taken BEFORE anything is asserted, and the money is
+    asserted before the lineage. Interleaving them hid the half that matters:
+    `len(rows) == 1` is checked against A, fails first under the regression --
+    A has no rows, because they went to B -- and `spend_b["spent"] == 0.0`, the
+    assertion that actually says another film was billed, never ran at all.
     """
     client, a, b, at_the_gate, proceed, paid, _real = two_projects
 
     _compile_on_a_then_switch_to_b(client, a, b, at_the_gate, proceed)
 
     with projects.use(a):
-        rows = generation.for_shot(BEAT, SHOT)
-        assert len(rows) == 1, f"expected one attempt in the paying project, got {len(rows)}"
-        assert rows[0].status == generation.SUCCEEDED
-        assert rows[0].paid is True
+        rows_a = generation.for_shot(BEAT, SHOT)
         spend_a = generation.spend(BEAT)
-
     with projects.use(b):
-        assert generation.load_attempts(BEAT) == [], \
-            "the other film's lineage was written into this one"
+        rows_b = generation.load_attempts(BEAT)
         spend_b = generation.spend(BEAT)
 
+    # Money first, and the wrong-account half first within it: that is the
+    # sentence this whole test exists to be able to say.
+    assert spend_b["spent"] == 0.0, \
+        f"a film was billed ${spend_b['spent']:.2f} for another film's clip"
     assert spend_a["spent"] == director.PAID_CLIP_COST, \
         f"the paying project reports {spend_a['spent']}, not what it was billed"
-    assert spend_a["paid_attempts"] == 1
-    assert spend_b["spent"] == 0.0, "a film was billed for another film's clip"
     assert spend_b["paid_attempts"] == 0
+    assert spend_a["paid_attempts"] == 1
+
+    # Then the lineage the figures were computed from.
+    assert rows_b == [], "the other film's lineage was written into this one"
+    assert len(rows_a) == 1, f"expected one attempt in the paying project, got {len(rows_a)}"
+    assert rows_a[0].status == generation.SUCCEEDED
+    assert rows_a[0].paid is True
 
 
 def test_the_captured_project_still_blocks_a_second_charge_after_the_switch(
