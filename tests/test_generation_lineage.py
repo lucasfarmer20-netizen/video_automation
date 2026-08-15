@@ -611,6 +611,9 @@ def test_a_failure_before_dispatch_is_an_ordinary_retryable_failure(scene):
     rows = generation.for_shot("s011", "s011.01")
     assert rows[0].status == "failed", "a pre-dispatch failure was left in doubt"
     assert "before dispatch" in rows[0].error
+    # And therefore no money is exposed: the risk this attempt reports is the
+    # risk it actually took, which is none.
+    assert generation.spend("s011")["at_risk"] == 0.0
 
 
 def test_a_pre_dispatch_failure_does_not_strand_the_beat(scene):
@@ -681,3 +684,245 @@ def test_an_exact_replay_is_still_a_no_op():
     again = generation.succeed("s001", att.id, "first.mp4", cost=0.60)
     assert again.status == "succeeded"
     assert generation.spend("s001")["paid_attempts"] == 1
+
+
+# --- S8-01: money that may have left the account must never report zero -----------
+#
+# spend() counted paid AND succeeded, so a paid attempt closed any other way
+# contributed 0.00 -- including one whose clip was bought and used. The fix
+# separates two facts that the old predicate ran together, and keeps them in
+# separate keys because merging them would trade one inaccuracy for another:
+#
+#   spent   -- the record says the provider produced media. Certain.
+#   at_risk -- the provider was called and nobody recorded what it did. Not.
+#
+# The direction of error is deliberate. Over-reporting exposure is recoverable;
+# reporting $0.00 for a charge that happened is not, because nobody goes looking.
+
+def _record(beat_id: str, **fields) -> None:
+    """Put a ledger record on disk directly.
+
+    Some of the shapes below cannot be produced through the API any more -- the
+    S4-03 terminal guard stops a succeeded attempt being rewritten as failed.
+    They are still on disk in every ledger written before that guard landed, and
+    the money in them is no less real for being unreachable to new code. A
+    ledger is a file, and this is what the file can contain.
+    """
+    fields.setdefault("id", beat_id + ".01.a1")
+    fields.setdefault("shot_id", beat_id + ".01")
+    fields.setdefault("attempt", 1)
+    generation._save_attempts(
+        beat_id, [generation.GenerationAttempt(beat_id=beat_id, **fields)])
+
+
+def test_a_bought_clip_that_was_abandoned_still_reports_what_it_cost():
+    """The reported defect, in its own words: a clip bought and used reports $0.
+
+    The record carries a provider success -- an output path and a cost. The
+    attempt was then closed as abandoned. Abandoning is a local decision to stop
+    waiting; it does not un-buy the clip, and the bill does not care what status
+    this row ended up with.
+    """
+    _record("s001", status=generation.FAILED, paid=True, cost=0.60,
+            output="render/s001/s001.01.mp4",
+            error=generation.ABANDONED + "wrote it off after the timeout")
+
+    s = generation.spend("s001")
+    assert s["spent"] == 0.60, "a clip that was bought and used reported $0.00"
+    assert s["paid_attempts"] == 1
+
+
+def test_a_bought_clip_left_in_doubt_still_reports_what_it_cost():
+    """Same fact, the other unclosed shape: the media landed and the attempt was
+    never closed at all."""
+    _record("s001", status=generation.RUNNING, paid=True, cost=0.60,
+            output="render/s001/s001.01.mp4", outcome_unknown=True,
+            error="provider timeout after submit")
+
+    s = generation.spend("s001")
+    assert s["spent"] == 0.60, "a recorded provider success was ignored"
+    assert s["at_risk"] == 0.0, "money the record accounts for was double-counted"
+
+
+def test_recorded_media_alone_counts_as_bought():
+    """A record can carry the clip without the invoice. The output path is the
+    provider's success; the price then falls back to what the attempt was opened
+    for, because $0.00 is the one answer that is certainly wrong."""
+    _record("s001", status=generation.FAILED, paid=True,
+            output="render/s001/s001.01.mp4", estimated_cost=0.60,
+            error=generation.ABANDONED + "the cost never came back")
+    s = generation.spend("s001")
+    assert s["paid_attempts"] == 1
+    assert s["spent"] == 0.60
+
+
+def test_a_recorded_cost_alone_counts_as_bought():
+    """The provider billed and returned nothing usable. The clip is lost; the
+    money is not, and the ledger is the only place that still knows."""
+    _record("s001", status=generation.FAILED, paid=True, cost=0.60,
+            error=generation.ABANDONED + "billed, no usable output")
+    assert generation.spend("s001")["spent"] == 0.60
+
+
+def test_an_unrecorded_outcome_is_money_at_risk_not_money_ignored(scene):
+    """The reachable half. The provider was called, it never answered, and
+    nothing in the system knows whether it billed."""
+    director, _, sb, render_dir, calls = scene
+    _strand(director, sb, render_dir, calls)
+
+    s = generation.spend("s011")
+    assert s["at_risk"] == 0.60, "money that may have gone reported as nothing"
+    assert s["at_risk_attempts"] == 1
+    assert s["spent"] == 0.0, "an unrecorded outcome was reported as billed"
+    assert s["spend_is_certain"] is False
+    assert "at risk" in s["summary"]
+
+
+def test_abandoning_the_attempt_does_not_settle_the_bill(scene):
+    """Closing the attempt is what unblocks the beat. It answers nothing about
+    the money, so the exposure must survive it."""
+    director, _, sb, render_dir, calls = scene
+    _strand(director, sb, render_dir, calls)
+    stuck = [a for a in generation.for_shot("s011", "s011.01")
+             if a.status == "running"][0]
+
+    generation.abandon("s011", stuck.id, "checked the dashboard, no answer")
+
+    s = generation.spend("s011")
+    assert s["at_risk"] == 0.60, "closing the attempt made the exposure vanish"
+    assert s["at_risk_attempts"] == 1
+    assert s["spent"] == 0.0
+
+
+def test_at_risk_money_is_never_folded_into_the_billed_total(scene):
+    """§6.1: spent is what has ACTUALLY been billed. The retry that follows an
+    abandon is billed; the abandoned attempt is not known to be. One number
+    covering both would be accurate about neither."""
+    director, _, sb, render_dir, calls = scene
+    _strand(director, sb, render_dir, calls)
+    stuck = [a for a in generation.for_shot("s011", "s011.01")
+             if a.status == "running"][0]
+    generation.abandon("s011", stuck.id, "no answer from the provider")
+
+    director.compile_coverage(director.load_plan("s011"), sb, render_dir,
+                              log=lambda m: None, skip_existing=False)
+    assert calls["paid"] == 2
+
+    s = generation.spend("s011")
+    assert s["spent"] == 0.60, "the certain total absorbed the uncertain one"
+    assert s["at_risk"] == 0.60
+    assert s["paid_attempts"] == 1
+    assert s["at_risk_attempts"] == 1
+
+
+def test_the_price_is_recorded_before_the_provider_is_called(scene):
+    """Without it the at-risk figure is $0.00, which is the original defect
+    wearing a new key. After a crash there is no later moment to record it."""
+    director, _, sb, render_dir, calls = scene
+    _strand(director, sb, render_dir, calls)
+    rows = generation.for_shot("s011", "s011.01")
+    assert rows[0].estimated_cost == director.PAID_CLIP_COST
+
+
+def test_a_running_attempt_is_money_at_risk():
+    """Killed mid-generation looks exactly like live, and nothing here can tell
+    them apart -- begin() already refuses a second attempt on that basis. The
+    money is reported on the same footing."""
+    _begin(idempotency_key="k1", estimated_cost=0.60)
+    s = generation.spend("s001")
+    assert s["spent"] == 0.0
+    assert s["at_risk"] == 0.60
+
+
+def test_an_ordinary_failure_is_not_money_at_risk():
+    """fail() is reserved for failures the module can support as unbilled --
+    which is the entire reason in_doubt() exists beside it. Reporting every
+    failure as exposure would make the figure mean nothing."""
+    att, _ = _begin(idempotency_key="k1", estimated_cost=0.60)
+    generation.fail("s001", att.id, "rejected before dispatch")
+    s = generation.spend("s001")
+    assert s["at_risk"] == 0.0
+    assert s["at_risk_attempts"] == 0
+    assert s["spend_is_certain"] is True
+
+
+def test_a_legacy_abandoned_record_is_still_money_at_risk():
+    """Written before outcome_unknown existed. The marker abandon() leaves in
+    the reason is all such a row has, and the money is no less at risk for it."""
+    _record("s001", status=generation.FAILED, paid=True, estimated_cost=0.60,
+            error=generation.ABANDONED + "resolved by hand months ago")
+    assert generation.spend("s001")["at_risk"] == 0.60
+
+
+def test_a_free_attempt_is_never_money_at_risk():
+    """Tier A and B are local and cost nothing. An unfinished free render is a
+    render problem, not a billing one."""
+    _begin(idempotency_key="k1", paid=False, estimated_cost=0.60)
+    s = generation.spend("s001")
+    assert s["at_risk"] == 0.0
+    assert s["spent"] == 0.0
+
+
+# --- S8-01: and no caller may read the total without the risk ---------------------
+
+def test_the_lineage_api_reports_what_is_at_risk_beside_the_total(api):
+    client, director, sb, render_dir, calls = api
+    _strand(director, sb, render_dir, calls)
+
+    body = client.get("/api/generation/s011").json()
+    assert body["spend"]["spent"] == 0.0
+    assert body["spend"]["at_risk"] == 0.60
+    assert body["at_risk"] == 0.60, "a client reading the total alone sees nothing"
+    assert "at risk" in body["spend"]["summary"]
+
+
+def test_abandoning_answers_with_the_money_it_put_at_risk(api):
+    """The act that creates the exposure is the one that must report it. A reply
+    carrying only the billed total tells the human who just wrote off a possible
+    charge that nothing happened."""
+    client, director, sb, render_dir, calls = api
+    _strand(director, sb, render_dir, calls)
+    stuck = client.get("/api/generation/s011").json()["unresolved"][0]
+
+    body = client.post("/api/generation/s011/" + stuck["id"] + "/abandon",
+                       json={"reason": "no answer from the provider"}).json()
+    assert body["ok"] is True
+    assert body["at_risk"] == 0.60
+    assert body["spend"]["spent"] == 0.0
+
+
+def test_the_plan_payload_reports_the_money_at_risk(api):
+    """A stuck paid attempt is money, not just a blocked beat, and the plan
+    screen is where the block is already reported."""
+    client, director, sb, render_dir, calls = api
+    _strand(director, sb, render_dir, calls)
+    plan = client.get("/api/director/plan/s011").json()["plan"]
+    assert plan["at_risk"] == 0.60
+    assert plan["spend"]["spent"] == 0.0
+
+
+def test_no_caller_can_read_the_billed_total_without_the_risk():
+    """A new field is only a fix if a caller cannot quietly ignore it.
+
+    Every module that reads a spend total must also name the at-risk figure.
+    This is a source check on purpose: the failure it guards is a FUTURE caller
+    that renders `spent` on its own, and no behavioural test can see a caller
+    that has not been written yet.
+    """
+    root = Path(__file__).resolve().parent.parent
+    files = list((root / "backend").glob("*.py"))
+    src = root / "frontend" / "src"
+    if src.is_dir():
+        files += [p for p in src.rglob("*.ts*") if ".test." not in p.name]
+
+    offenders = []
+    for p in files:
+        text = p.read_text(encoding="utf-8", errors="replace")
+        reads_total = ("generation.spend(" in text or '["spent"]' in text
+                       or "['spent']" in text or ".spent" in text)
+        if reads_total and "at_risk" not in text:
+            offenders.append(str(p.relative_to(root)))
+
+    assert not offenders, (
+        "these read a spend total without the at-risk figure beside it, which "
+        f"is how a charge reports $0.00 again: {offenders}")

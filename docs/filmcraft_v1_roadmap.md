@@ -181,8 +181,13 @@ and Pass I exist for this.
 Cannot be fully specified until 5b, 6 and 7 land; its content is what they turn
 up, plus the standing backlog:
 
-- an abandoned-then-succeeded attempt under-reports spend (`generation.spend()`
-  counts only paid+succeeded, so a clip bought and used reports $0)
+- ~~an abandoned-then-succeeded attempt under-reports spend (`generation.spend()`
+  counts only paid+succeeded, so a clip bought and used reports $0)~~ **closed.**
+  A record carrying a provider success counts as `spent` however the attempt was
+  later closed, and a paid attempt whose outcome nobody recorded is reported in
+  its own `at_risk` field rather than folded into the total or silently dropped.
+  Attempts now record `estimated_cost` before dispatch, because an at-risk figure
+  that always reads $0.00 would be the same defect in a new key
 - TG-S4-04 concurrent HTTP compile
 - TG-S4-05 background-job generation identity
 - TG-S4-06 structurally invalid ledger shapes (JSON-valid, wrong shape)
