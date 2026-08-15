@@ -77,6 +77,26 @@ caused it.
   the builder changed failure semantics (`fail` → `in_doubt`) while fixing
   S4-01. Behaviour changes belong in a build round; a fix round fixes.
 
+## Reporting the baseline honestly
+
+A round's result is only meaningful against a known baseline, so:
+
+- **State the suite result with every hand-off**, as passed / skipped / failed.
+  A pass count alone has twice been read as a clean run when it was not.
+- **A red suite may be merged, but never silently.** If failures are left in
+  place, the commit or hand-off MUST name them and say why they are acceptable.
+  Slice 7 landed at `5a0d37a` with seven failing tests and no mention; the work
+  was correct and the failures were environmental, but establishing that cost a
+  diagnosis that the commit message could have saved.
+- **Environmental failures are not product defects, and the distinction is the
+  reporter's job to make.** `tests/conftest.py` prints an ENVIRONMENT INCOMPLETE
+  banner naming the interpreter and the missing capability; if that banner is
+  present, fix the environment before reporting a defect.
+- **Check the interpreter before concluding a dependency is installed.** `pip
+  install` reporting "already satisfied" is evidence about whichever Python it
+  ran under, which on a multi-profile or multi-machine setup is routinely not
+  the one running the tests.
+
 ## Loop breakers
 
 - **The builder rejecting a finding is a human decision, not another round.**

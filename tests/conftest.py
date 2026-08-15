@@ -31,6 +31,17 @@ The banner also has to be honest about what it did not run. `-k`, `-m`, a
 `--lf` with a stored cache and a collection error all produce a partial run, so
 deselected/error counts are reported and the words "full suite ran" are held
 back unless the run was genuinely complete.
+
+The third concern is the environment the suite runs in. Twice now a dependency
+that requirements.txt DECLARES has been absent from the interpreter actually
+running the tests, and both times the failures read as product defects. ffmpeg
+was the first; the OTIO fcpx_xml adapter was the second, where seven frozen-
+export tests failed with FileNotFoundError on a .fcpxml that nothing could have
+written -- against a machine where `pip install` had reported "already
+satisfied", because it had been installed into a different Python. Neither the
+skip banner nor the xfail banner catches this: the tests genuinely ran and
+genuinely failed. So the preflight below states, before anything runs, which
+interpreter is in use and which declared dependencies are missing from it.
 """
 
 from __future__ import annotations
@@ -260,6 +271,19 @@ def _coverage_line(stats, stop_reason: str = "") -> tuple[str, bool]:
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Reprint skips as their own banner — the status line hides them too well."""
+    # Environment first. A declared dependency missing from THIS interpreter
+    # produces failures that read as product defects, and pytest_report_header
+    # is suppressed under -q, which is how this suite is always run.
+    gaps = _capability_gaps()
+    if gaps:
+        terminalreporter.write_sep("=", "ENVIRONMENT INCOMPLETE", red=True)
+        terminalreporter.write_line(f"  interpreter: {sys.executable}", red=True)
+        for gap in gaps:
+            terminalreporter.write_line(f"  MISSING {gap}", red=True)
+        terminalreporter.write_line(
+            "  Failures below may be this, not the code. Install into the "
+            "interpreter named above.", red=True)
+
     stats = terminalreporter.stats
     skipped = stats.get("skipped", [])
     passed = len(stats.get("passed", []))
@@ -302,3 +326,60 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         f"  {passed} passed is NOT a full pass - {len(skipped)} test(s) above were "
         f"never executed.", yellow=True)
     _report_xfails(terminalreporter)
+
+
+# --- environment preflight ------------------------------------------------------
+#
+# Declared-but-absent dependencies have twice produced failures that looked like
+# product defects. This does not fail the run -- a missing optional tool should
+# still let the rest of the suite report -- but it names the interpreter and the
+# gap up front, so nobody spends a diagnosis on it.
+
+def _capability_gaps() -> list[str]:
+    """Environment gaps that make tests fail for reasons that are not the code.
+
+    Deliberately NOT a scan of requirements.txt. Six of those packages -- the
+    Firestore client, elevenlabs, librosa, moviepy, onnxruntime, opencv -- are
+    absent here on purpose and stubbed by the fixtures below, so reporting them
+    would fire on every run, and a warning that always fires is one nobody
+    reads. What is listed here is the narrower thing: a capability some test
+    genuinely needs, whose absence produces a failure that looks like a defect.
+
+    Both entries were learned the same way. ffmpeg's absence skipped twelve
+    tests and hard-failed five on a WinError 2 raised from a log line. The OTIO
+    fcpx_xml adapter's absence failed seven frozen-export tests on a .fcpxml
+    that nothing could have written -- on a machine where `pip install` had said
+    "already satisfied", because it had gone into a different Python.
+    """
+    gaps = []
+
+    try:
+        from backend.ffmpeg_bin import have_ffmpeg
+        if not have_ffmpeg():
+            gaps.append("ffmpeg/ffprobe are not on PATH. They are a system "
+                        "install, not a pip package; media tests will skip or "
+                        "fail on FileNotFoundError.")
+    except Exception:  # noqa: BLE001 - the module itself is under test
+        pass
+
+    try:
+        import opentimelineio as otio
+        names = {a.name for a in otio.plugins.ActiveManifest().adapters}
+        if "fcpx_xml" not in names:
+            gaps.append(
+                f"OTIO adapter 'fcpx_xml' is not registered (have: "
+                f"{', '.join(sorted(names))}). requirements.txt pins "
+                f"otio-fcpx-xml-adapter; it is missing from THIS interpreter. "
+                f"FCPXML export cannot be written, so frozen-export tests fail "
+                f"on a file nothing could have produced.")
+    except Exception:  # noqa: BLE001
+        gaps.append("opentimelineio is not importable; timeline tests cannot run.")
+
+    return gaps
+
+
+def pytest_report_header(config):
+    """Printed before the run -- but suppressed under -q, so the summary
+    banner repeats it."""
+    return [f"interpreter: {sys.executable}"] + [
+        "MISSING " + gap for gap in _capability_gaps()]
