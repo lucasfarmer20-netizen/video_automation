@@ -41,6 +41,11 @@ RUNNING = "running"
 SUCCEEDED = "succeeded"
 FAILED = "failed"
 
+# The marker abandon() writes into `error`. It is a sentinel, not prose: a
+# FAILED attempt carrying it was closed by a human who did NOT know what the
+# provider did, which is a different money fact from an ordinary fail().
+ABANDONED = "abandoned: "
+
 
 def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
@@ -61,6 +66,16 @@ class GenerationAttempt:
     backend: str = ""
     paid: bool = False
     cost: float = 0.0
+    # What this attempt was expected to cost, recorded BEFORE the provider was
+    # called. It is the only figure available for an attempt whose outcome
+    # nobody ever recorded -- and reporting the price we were about to pay is
+    # the whole difference between "$0.60 may have gone" and a silent $0.00.
+    estimated_cost: float = 0.0
+    # The provider was called and never told us what it did. Written by
+    # in_doubt() and abandon(), which are the two ways that happens. Kept as a
+    # recorded fact rather than inferred from an error string, because money
+    # must not be classified by parsing prose.
+    outcome_unknown: bool = False
     idempotency_key: str = ""
     signature: str = ""             # the inputs this attempt was made for
     output: str = ""                # media-root-relative path when it succeeded
@@ -173,6 +188,7 @@ def reusable(beat_id: str, shot_id: str, signature: str,
 
 def begin(*, beat_id: str, shot_id: str, signature: str, idempotency_key: str = "",
           kind: str = "video", backend: str = "", paid: bool = False,
+          estimated_cost: float = 0.0,
           exists=None) -> tuple[GenerationAttempt, str]:
     """Open an attempt, or hand back one that already covers this request.
 
@@ -229,6 +245,9 @@ def begin(*, beat_id: str, shot_id: str, signature: str, idempotency_key: str = 
             id=f"{shot_id}.a{n}.{uuid.uuid4().hex[:8]}",
             shot_id=shot_id, beat_id=beat_id, attempt=n, parent_attempt=parent,
             kind=kind, backend=backend, paid=paid, signature=signature,
+            # Recorded here, before the provider is reachable, because after a
+            # crash there is no other moment left to record it.
+            estimated_cost=float(estimated_cost or 0.0),
             idempotency_key=idempotency_key,
         )
         attempts.append(att)
@@ -303,6 +322,10 @@ def in_doubt(beat_id: str, attempt_id: str, reason: str) -> GenerationAttempt | 
         if target is None or target.terminal:
             return target
         target.error = str(reason)[:2000]
+        # The provider was reached. Whatever it did was never recorded, so this
+        # attempt's price is money that may already have gone -- and spend()
+        # must be able to say so without re-reading the reason text.
+        target.outcome_unknown = True
         _save_attempts(beat_id, attempts)
         return target
 
@@ -315,8 +338,13 @@ def abandon(beat_id: str, attempt_id: str,
     decision precisely because the money may already have been spent: the
     machine cannot tell, so it must not choose. Recorded as a failure with the
     reason, which keeps it in the lineage and unblocks a retry.
+
+    Closing it does not settle the bill. ``outcome_unknown`` stays on the record
+    so :func:`spend` keeps reporting the money as at risk: abandoning is a
+    decision to stop waiting, not evidence that nothing was charged.
     """
-    return _finish(beat_id, attempt_id, status=FAILED, error=f"abandoned: {reason}")
+    return _finish(beat_id, attempt_id, status=FAILED,
+                   error=f"{ABANDONED}{reason}", outcome_unknown=True)
 
 
 def fail(beat_id: str, attempt_id: str, error: str) -> GenerationAttempt | None:
@@ -329,14 +357,80 @@ def fail(beat_id: str, attempt_id: str, error: str) -> GenerationAttempt | None:
     return _finish(beat_id, attempt_id, status=FAILED, error=str(error)[:2000])
 
 
+def _amount(a: GenerationAttempt) -> float:
+    """The best figure this record carries for what it cost.
+
+    The real one when the provider reported it, otherwise the price the attempt
+    was opened for. Never zero merely because nobody wrote the invoice down.
+    """
+    return a.cost if a.cost else a.estimated_cost
+
+
+def billed(a: GenerationAttempt) -> bool:
+    """The record already says the provider produced media for this attempt.
+
+    Deliberately NOT "status == succeeded". A clip that was bought is billed
+    however the attempt was later closed: an output path or a cost on the record
+    is a provider success that somebody wrote down, and a local decision to
+    abandon or doubt the attempt does not un-buy it (§6.1).
+    """
+    return a.paid and (a.status == SUCCEEDED or bool(a.output) or a.cost > 0)
+
+
+def at_risk(a: GenerationAttempt) -> bool:
+    """Paid, not known to be billed, and nobody recorded what the provider did.
+
+    Three shapes, all meaning the same thing for money:
+
+    * still RUNNING -- either live right now or killed before it could record an
+      outcome; ``begin()`` cannot tell the two apart and neither can this;
+    * ``outcome_unknown`` -- ``in_doubt()`` or ``abandon()`` said so explicitly;
+    * an ``ABANDONED`` marker with no flag -- a ledger written before that field
+      existed.
+
+    A plain ``fail()`` is excluded on purpose: the module reserves it for
+    failures it can support as unbilled, which is exactly why ``in_doubt()``
+    exists beside it.
+    """
+    return a.paid and not billed(a) and (
+        a.status == RUNNING or a.outcome_unknown or a.error.startswith(ABANDONED))
+
+
 def spend(beat_id: str, shot_id: str | None = None) -> dict:
-    """What has actually been billed, per §6.1. Only paid, succeeded attempts."""
+    """What has been billed, and what may have been, per §6.1.
+
+    ``spent`` is money the ledger says actually left the account. ``at_risk`` is
+    money that may have and whose outcome nobody recorded -- reported beside it,
+    never folded into it, because a total that mixes certain with uncertain is
+    accurate about nothing.
+
+    The two are separate keys and the pair is stated again in ``summary``, so a
+    caller that renders a total to a human has the at-risk figure in hand
+    without having to know it exists. ``spend_is_certain`` is the one-line
+    version of the same question.
+
+    This used to count paid AND succeeded only, so a clip that was bought and
+    then locally abandoned -- or one still in doubt -- reported $0.00. Silence is
+    the one answer money must never get.
+    """
     rows = [a for a in load_attempts(beat_id)
             if (shot_id is None or a.shot_id == shot_id)]
-    billed = [a for a in rows if a.paid and a.status == SUCCEEDED]
+    paid_for = [a for a in rows if billed(a)]
+    unsettled = [a for a in rows if at_risk(a)]
+    spent = round(sum(_amount(a) for a in paid_for), 4)
+    risk = round(sum(_amount(a) for a in unsettled), 4)
+    summary = f"${spent:.2f} billed"
+    if unsettled:
+        summary += (f" • ${risk:.2f} at risk on {len(unsettled)} attempt"
+                    f"{'s' if len(unsettled) != 1 else ''} whose provider "
+                    f"outcome was never recorded")
     return {
         "attempts": len(rows),
         "failed": sum(1 for a in rows if a.status == FAILED),
-        "paid_attempts": len(billed),
-        "spent": round(sum(a.cost for a in billed), 4),
+        "paid_attempts": len(paid_for),
+        "spent": spent,
+        "at_risk": risk,
+        "at_risk_attempts": len(unsettled),
+        "spend_is_certain": not unsettled,
+        "summary": summary,
     }
