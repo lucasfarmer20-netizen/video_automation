@@ -181,8 +181,23 @@ and Pass I exist for this.
 Cannot be fully specified until 5b, 6 and 7 land; its content is what they turn
 up, plus the standing backlog:
 
-- an abandoned-then-succeeded attempt under-reports spend (`generation.spend()`
-  counts only paid+succeeded, so a clip bought and used reports $0)
+- ~~an abandoned-then-succeeded attempt under-reports spend (`generation.spend()`
+  counts only paid+succeeded, so a clip bought and used reports $0)~~ **closed.**
+  A record carrying a provider success counts as `spent` however the attempt was
+  later closed, and a paid attempt whose outcome nobody recorded is reported in
+  its own `at_risk` field rather than folded into the total or silently dropped.
+  Attempts now record `estimated_cost` before dispatch, because an at-risk figure
+  that always reads $0.00 would be the same defect in a new key
+- **follow-up from that fix:** `at_risk` has no settlement path. Nothing can
+  record that the provider dashboard was checked and nothing was billed, or that
+  it billed after all, so `spend_is_certain` stays `False` forever for any beat
+  that once crashed mid-generation and the figure accumulates monotonically. A
+  number nobody can resolve drifts toward noise and then gets ignored, which is
+  how it stops being a control. Wants a `settle(attempt_id, billed: bool)`
+  recording who decided and why, on the same footing as `abandon()`. Also closes
+  the narrow window between `begin()` and dispatch — the `target.unlink()` block
+  in `director.py` — where a kill books money at risk that could not have been
+  charged
 - TG-S4-04 concurrent HTTP compile
 - TG-S4-05 background-job generation identity
 - TG-S4-06 structurally invalid ledger shapes (JSON-valid, wrong shape)

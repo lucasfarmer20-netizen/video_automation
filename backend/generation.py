@@ -30,6 +30,7 @@ second charge, the second stops a *new* request re-buying an unchanged shot.
 from __future__ import annotations
 
 import datetime as _dt
+import math
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -40,6 +41,11 @@ from . import atomic, config
 RUNNING = "running"
 SUCCEEDED = "succeeded"
 FAILED = "failed"
+
+# The marker abandon() writes into `error`. It is a sentinel, not prose: a
+# FAILED attempt carrying it was closed by a human who did NOT know what the
+# provider did, which is a different money fact from an ordinary fail().
+ABANDONED = "abandoned: "
 
 
 def _now() -> str:
@@ -61,6 +67,16 @@ class GenerationAttempt:
     backend: str = ""
     paid: bool = False
     cost: float = 0.0
+    # What this attempt was expected to cost, recorded BEFORE the provider was
+    # called. It is the only figure available for an attempt whose outcome
+    # nobody ever recorded -- and reporting the price we were about to pay is
+    # the whole difference between "$0.60 may have gone" and a silent $0.00.
+    estimated_cost: float = 0.0
+    # The provider was called and never told us what it did. Written by
+    # in_doubt() and abandon(), which are the two ways that happens. Kept as a
+    # recorded fact rather than inferred from an error string, because money
+    # must not be classified by parsing prose.
+    outcome_unknown: bool = False
     idempotency_key: str = ""
     signature: str = ""             # the inputs this attempt was made for
     output: str = ""                # media-root-relative path when it succeeded
@@ -94,6 +110,87 @@ class LedgerUnreadable(RuntimeError):
     """The lineage exists but could not be read. NOT the same as no lineage."""
 
 
+# --- schema ---------------------------------------------------------------------
+#
+# A ledger is accounting data, so "JSON parsed" is not the same as "readable".
+# `{}` is valid JSON and used to yield an empty attempt list, indistinguishable
+# from a beat that never generated anything -- and once spend() started reporting
+# `spend_is_certain`, that shape stopped being merely wrong and became a
+# CONFIDENT zero on data nobody could read. A file on persistent storage that was
+# truncated, hand-repaired or half-migrated is syntactically valid and reaches
+# exactly this path.
+#
+# So every structural and type failure below raises LedgerUnreadable, which
+# callers already handle: begin() refuses to spend, and the routes answer 409.
+# Failing closed costs a retry. Failing open prices a bill nobody can check.
+#
+# (This closes the core of TG-S4-06, which recorded these shapes raising
+# incidental AttributeError/TypeError instead of LedgerUnreadable.)
+
+_STATUSES = (RUNNING, SUCCEEDED, FAILED)
+
+# Every field a row may carry, and the JSON type it must hold. Money and status
+# are here for the same reason the ids are: a total computed over a cost of
+# "0.60" is not a smaller number, it is a wrong bill or a TypeError.
+_SHAPE: dict[str, type] = {
+    "id": str, "shot_id": str, "beat_id": str, "parent_attempt": str,
+    "status": str, "kind": str, "backend": str, "signature": str,
+    "idempotency_key": str, "output": str, "error": str,
+    "started_at": str, "finished_at": str,
+    "attempt": int, "paid": bool, "outcome_unknown": bool,
+    "cost": float, "estimated_cost": float,
+}
+_REQUIRED = ("id", "shot_id", "beat_id", "attempt")
+
+
+def _valid(kind: type, value) -> bool:
+    if kind is bool:
+        return isinstance(value, bool)
+    if kind is int:
+        # bool is an int in Python, and paid=True must not pass as attempt=1.
+        return isinstance(value, int) and not isinstance(value, bool)
+    if kind is float:
+        # NaN and Infinity survive json.loads and would poison every total they
+        # touch -- silently, since NaN compares false against every threshold.
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and value >= 0)
+    return isinstance(value, str)
+
+
+def _row(beat_id: str, index: int, raw) -> GenerationAttempt:
+    """One validated row, or LedgerUnreadable. Never an incidental TypeError."""
+    where = f"attempt {index} in the generation ledger for {beat_id}"
+    if not isinstance(raw, dict):
+        raise LedgerUnreadable(
+            f"{where} is {type(raw).__name__}, not an object. Refusing to "
+            f"report spend from a ledger whose rows are not attempts.")
+    for key in _REQUIRED:
+        if key not in raw:
+            raise LedgerUnreadable(
+                f"{where} has no {key!r}. A row that cannot be identified "
+                f"cannot be reconciled against a bill.")
+    for key, value in raw.items():
+        if key in _SHAPE and not _valid(_SHAPE[key], value):
+            raise LedgerUnreadable(
+                f"{where}: {key}={value!r} is not a valid "
+                f"{_SHAPE[key].__name__}. Inspect the file; it has NOT been "
+                f"overwritten.")
+    if raw.get("status", RUNNING) not in _STATUSES:
+        raise LedgerUnreadable(
+            f"{where} has status {raw.get('status')!r}, which no guard here "
+            f"recognises -- it would count as neither billed, nor at risk, nor "
+            f"in flight, and so would drop out of every check at once.")
+    if raw["attempt"] < 1:
+        raise LedgerUnreadable(f"{where} is numbered {raw['attempt']}; "
+                               f"attempts are 1-based.")
+    if raw["beat_id"] != beat_id:
+        raise LedgerUnreadable(
+            f"{where} belongs to beat {raw['beat_id']!r}. Counting it here "
+            f"would bill this beat for another one's generation.")
+    known = set(GenerationAttempt.__dataclass_fields__)
+    return GenerationAttempt(**{k: v for k, v in raw.items() if k in known})
+
+
 def load_attempts(beat_id: str) -> list[GenerationAttempt]:
     """Every attempt recorded for a beat, oldest first.
 
@@ -106,6 +203,15 @@ def load_attempts(beat_id: str) -> list[GenerationAttempt]:
     new list over the real one. The atomic write preserved the wrong answer
     perfectly. Failing closed costs a retry; failing open costs money and the
     record that would have prevented the next one.
+
+    Rows written before ``outcome_unknown`` existed are migrated here, once, on
+    the way in: an ``ABANDONED`` reason already MEANT the outcome was unknown, so
+    setting the field states what the row always said rather than adding to it.
+    Doing it here and not in the money code matters twice over. It keeps spend
+    classification reading one recorded field instead of a field plus a sniff at
+    prose; and it keeps a legacy row's shape identical to a new one, which is
+    what stops ``_finish`` seeing a replayed ``abandon()`` as a conflicting claim
+    and refusing a recovery it used to accept.
     """
     p = ledger_path(beat_id)
     try:
@@ -122,9 +228,31 @@ def load_attempts(beat_id: str) -> list[GenerationAttempt]:
             f"the generation ledger for {beat_id} is corrupt: {exc}. "
             f"It has NOT been overwritten; inspect it before generating again."
         ) from exc
-    known = set(GenerationAttempt.__dataclass_fields__)
-    return [GenerationAttempt(**{k: v for k, v in a.items() if k in known})
-            for a in (raw.get("attempts") or [])]
+    if not isinstance(raw, dict):
+        raise LedgerUnreadable(
+            f"the generation ledger for {beat_id} is a "
+            f"{type(raw).__name__}, not an object. It has NOT been "
+            f"overwritten; inspect it before generating again.")
+    if raw.get("beat_id") != beat_id:
+        raise LedgerUnreadable(
+            f"the generation ledger at {ledger_path(beat_id).name} says it "
+            f"belongs to beat {raw.get('beat_id')!r}. Refusing to report one "
+            f"beat's spend from another's lineage.")
+    listed = raw.get("attempts")
+    if not isinstance(listed, list):
+        # The reachable shape: `{}`, or a file truncated to its header. It used
+        # to read as an empty list, which is what "this beat never generated
+        # anything" looks like -- a certain $0.00 on unreadable accounting.
+        raise LedgerUnreadable(
+            f"the generation ledger for {beat_id} has no attempts list "
+            f"({type(listed).__name__}). Refusing to treat it as an empty "
+            f"lineage -- that reports $0.00 as a settled fact about a file "
+            f"nobody could read.")
+    rows = [_row(beat_id, i, a) for i, a in enumerate(listed)]
+    for a in rows:
+        if a.error.startswith(ABANDONED):
+            a.outcome_unknown = True
+    return rows
 
 
 def _save_attempts(beat_id: str, attempts: list[GenerationAttempt]) -> Path:
@@ -173,6 +301,7 @@ def reusable(beat_id: str, shot_id: str, signature: str,
 
 def begin(*, beat_id: str, shot_id: str, signature: str, idempotency_key: str = "",
           kind: str = "video", backend: str = "", paid: bool = False,
+          estimated_cost: float = 0.0,
           exists=None) -> tuple[GenerationAttempt, str]:
     """Open an attempt, or hand back one that already covers this request.
 
@@ -229,6 +358,9 @@ def begin(*, beat_id: str, shot_id: str, signature: str, idempotency_key: str = 
             id=f"{shot_id}.a{n}.{uuid.uuid4().hex[:8]}",
             shot_id=shot_id, beat_id=beat_id, attempt=n, parent_attempt=parent,
             kind=kind, backend=backend, paid=paid, signature=signature,
+            # Recorded here, before the provider is reachable, because after a
+            # crash there is no other moment left to record it.
+            estimated_cost=float(estimated_cost or 0.0),
             idempotency_key=idempotency_key,
         )
         attempts.append(att)
@@ -303,6 +435,10 @@ def in_doubt(beat_id: str, attempt_id: str, reason: str) -> GenerationAttempt | 
         if target is None or target.terminal:
             return target
         target.error = str(reason)[:2000]
+        # The provider was reached. Whatever it did was never recorded, so this
+        # attempt's price is money that may already have gone -- and spend()
+        # must be able to say so without re-reading the reason text.
+        target.outcome_unknown = True
         _save_attempts(beat_id, attempts)
         return target
 
@@ -315,8 +451,13 @@ def abandon(beat_id: str, attempt_id: str,
     decision precisely because the money may already have been spent: the
     machine cannot tell, so it must not choose. Recorded as a failure with the
     reason, which keeps it in the lineage and unblocks a retry.
+
+    Closing it does not settle the bill. ``outcome_unknown`` stays on the record
+    so :func:`spend` keeps reporting the money as at risk: abandoning is a
+    decision to stop waiting, not evidence that nothing was charged.
     """
-    return _finish(beat_id, attempt_id, status=FAILED, error=f"abandoned: {reason}")
+    return _finish(beat_id, attempt_id, status=FAILED,
+                   error=f"{ABANDONED}{reason}", outcome_unknown=True)
 
 
 def fail(beat_id: str, attempt_id: str, error: str) -> GenerationAttempt | None:
@@ -329,14 +470,107 @@ def fail(beat_id: str, attempt_id: str, error: str) -> GenerationAttempt | None:
     return _finish(beat_id, attempt_id, status=FAILED, error=str(error)[:2000])
 
 
+def _amount(a: GenerationAttempt) -> float:
+    """The best figure this record carries for what it cost.
+
+    The real one when the provider reported it, otherwise the price the attempt
+    was opened for. Never zero merely because nobody wrote the invoice down.
+    """
+    return a.cost if a.cost else a.estimated_cost
+
+
+def billed(a: GenerationAttempt) -> bool:
+    """The record already says the provider produced media for this attempt.
+
+    Deliberately NOT "status == succeeded". A clip that was bought is billed
+    however the attempt was later closed: an output path or a cost on the record
+    is a provider success that somebody wrote down, and a local decision to
+    abandon or doubt the attempt does not un-buy it (§6.1).
+    """
+    return a.paid and (a.status == SUCCEEDED or bool(a.output) or a.cost > 0)
+
+
+def at_risk(a: GenerationAttempt) -> bool:
+    """Paid, not known to be billed, and nobody recorded what the provider did.
+
+    Two shapes, both meaning the same thing for money:
+
+    * still RUNNING -- either live right now or killed before it could record an
+      outcome; ``begin()`` cannot tell the two apart and neither can this;
+    * ``outcome_unknown`` -- ``in_doubt()`` or ``abandon()`` said so explicitly,
+      or ``load_attempts()`` migrated a row that said it in prose.
+
+    A plain ``fail()`` is excluded on purpose: the module reserves it for
+    failures it can support as unbilled, which is exactly why ``in_doubt()``
+    exists beside it.
+    """
+    return a.paid and not billed(a) and (a.status == RUNNING or a.outcome_unknown)
+
+
 def spend(beat_id: str, shot_id: str | None = None) -> dict:
-    """What has actually been billed, per §6.1. Only paid, succeeded attempts."""
+    """What has been billed, and what may have been, per §6.1.
+
+    ``spent`` is money the ledger says actually left the account. ``at_risk`` is
+    money that may have and whose outcome nobody recorded -- reported beside it,
+    never folded into it, because a total that mixes certain with uncertain is
+    accurate about nothing.
+
+    The two are separate keys and the pair is stated again in ``summary``, so a
+    caller that renders a total to a human has the at-risk figure in hand
+    without having to know it exists. ``spend_is_certain`` is the one-line
+    version of the same question.
+
+    This used to count paid AND succeeded only, so a clip that was bought and
+    then locally abandoned -- or one still in doubt -- reported $0.00. Silence is
+    the one answer money must never get.
+    """
     rows = [a for a in load_attempts(beat_id)
             if (shot_id is None or a.shot_id == shot_id)]
-    billed = [a for a in rows if a.paid and a.status == SUCCEEDED]
+    paid_for = [a for a in rows if billed(a)]
+    unsettled = [a for a in rows if at_risk(a)]
+    # float() because sum([]) is the integer 0, so an empty ledger reported
+    # `"spent": 0` while a populated one reported `"spent": 0.6`. Harmless in
+    # JSON and confusing everywhere else; a money field should have one type.
+    spent = round(float(sum(_amount(a) for a in paid_for)), 4)
+    risk = round(float(sum(_amount(a) for a in unsettled)), 4)
+    summary = f"${spent:.2f} billed"
+    if unsettled:
+        summary += (f" • ${risk:.2f} at risk on {len(unsettled)} attempt"
+                    f"{'s' if len(unsettled) != 1 else ''} whose provider "
+                    f"outcome was never recorded")
     return {
         "attempts": len(rows),
         "failed": sum(1 for a in rows if a.status == FAILED),
-        "paid_attempts": len(billed),
-        "spent": round(sum(a.cost for a in billed), 4),
+        "paid_attempts": len(paid_for),
+        "spent": spent,
+        "at_risk": risk,
+        "at_risk_attempts": len(unsettled),
+        "spend_is_certain": not unsettled,
+        "summary": summary,
+    }
+
+
+def unknown_spend(reason: str) -> dict:
+    """The honest answer when the ledger could not be read at all.
+
+    The same shape as :func:`spend`, with ``None`` where every figure would be.
+    Deliberately not zeros, and deliberately not an absent key: this is the one
+    path where the exposure is LEAST known, and both of those render as $0.00 to
+    a caller -- the first directly, the second through the ``?? 0`` that every
+    client eventually writes. That is this PR's own defect, relocated to the
+    error path.
+
+    ``summary`` states the block rather than substituting a number for it, so a
+    caller that renders the summary verbatim says what is wrong instead of
+    quietly reporting nothing at stake.
+    """
+    return {
+        "attempts": None,
+        "failed": None,
+        "paid_attempts": None,
+        "spent": None,
+        "at_risk": None,
+        "at_risk_attempts": None,
+        "spend_is_certain": False,
+        "summary": f"spend is unknown: {reason}",
     }

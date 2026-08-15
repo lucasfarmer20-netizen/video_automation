@@ -2425,13 +2425,21 @@ def get_generation_lineage(beat_id: str):
     """
     try:
         attempts = [asdict(a) for a in generation.load_attempts(beat_id)]
+        # Inside the same guard: this is a second read of the same file, and a
+        # ledger that turns unreadable between the two must answer 409 like any
+        # other unreadable ledger rather than 500 out of the money report.
+        spend = generation.spend(beat_id)
     except generation.LedgerUnreadable as exc:
         # Fail closed and say so, rather than reporting an empty lineage that
         # would read as "nothing was ever generated here".
         return JSONResponse(status_code=409,
                             content={"ok": False, "error": str(exc), "unreadable": True})
     return {"ok": True, "beat_id": beat_id, "attempts": attempts,
-            "spend": generation.spend(beat_id),
+            "spend": spend,
+            # Hoisted beside the total on purpose. A client that renders
+            # spend.spent alone would report money that may already have gone as
+            # $0.00, which is the defect this pair exists to close (§6.1).
+            "at_risk": spend["at_risk"],
             "unresolved": [a for a in attempts if a["status"] == "running"]}
 
 
@@ -2464,6 +2472,7 @@ async def abandon_generation_attempt(beat_id: str, attempt_id: str, request: Req
                      "decided that and why."})
     try:
         att = generation.abandon(beat_id, attempt_id, reason)
+        spend = generation.spend(beat_id) if att is not None else None
     except generation.LedgerUnreadable as exc:
         return JSONResponse(status_code=409, content={"ok": False, "error": str(exc)})
     except generation.TerminalConflict as exc:
@@ -2471,8 +2480,11 @@ async def abandon_generation_attempt(beat_id: str, attempt_id: str, request: Req
     if att is None:
         return JSONResponse(status_code=404, content={
             "ok": False, "error": f"no attempt {attempt_id} on {beat_id}"})
+    # Abandoning is the act that creates at-risk money, so the answer to it says
+    # how much. Returning only the billed total here would tell the human who
+    # just wrote off a possible charge that nothing happened.
     return {"ok": True, "attempt": asdict(att),
-            "spend": generation.spend(beat_id)}
+            "spend": spend, "at_risk": spend["at_risk"]}
 
 
 @app.post("/api/director/warning/{beat_id}/{warning_id}")
@@ -2701,9 +2713,22 @@ def _plan_payload(plan) -> dict:
     try:
         d["unresolved_attempts"] = [asdict(a) for a in generation.load_attempts(plan.beat_id)
                                     if a.status == generation.RUNNING]
+        # A stuck paid attempt is money, not just a blocked beat, so the payload
+        # that reports the block carries the exposure with it. Nothing in the UI
+        # renders either one yet -- `unresolved_attempts` has been unrendered
+        # since S4-R01 -- but the plan payload is where a screen will read it
+        # from, and the two belong in the same answer (§6.1).
+        d["spend"] = generation.spend(plan.beat_id)
+        d["at_risk"] = d["spend"]["at_risk"]
     except generation.LedgerUnreadable as exc:
         d["unresolved_attempts"] = []
         d["lineage_error"] = str(exc)
+        # Stated, not omitted. An absent key reads as $0.00 through the `?? 0`
+        # every client eventually writes, and this is the path where the
+        # exposure is least known, not most settled.
+        d["spend"] = generation.unknown_spend("the generation ledger for this "
+                                              "beat could not be read")
+        d["at_risk"] = None
     return d
 
 

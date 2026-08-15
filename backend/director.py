@@ -942,6 +942,13 @@ def _media_present(rel: str) -> bool:
         return False
 
 
+# Rough per-clip price for a Tier-C generation; fal has the real figure and it
+# lands on the attempt when the call returns. Named because it is now recorded
+# on the attempt BEFORE dispatch too: after a crash it is the only number left
+# to say how much money may have gone (§6.1).
+PAID_CLIP_COST = 0.60
+
+
 def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
                        out_dir: Path, log=print) -> Path:
     """Generate one Tier-C coverage clip from its own still.
@@ -1280,6 +1287,7 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                         att, how = generation.begin(
                             beat_id=plan.beat_id, shot_id=ds.id, signature=want,
                             kind="video", backend=ds.backend, paid=True,
+                            estimated_cost=PAID_CLIP_COST,
                             exists=_media_present,
                         )
                         if how == "in_flight":
@@ -1333,12 +1341,13 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                                 # until a human resolves it.
                                 generation.in_doubt(plan.beat_id, att.id, str(exc))
                                 raise
-                            ds.estimated_cost += 0.60  # rough; fal has the real figure
+                            ds.estimated_cost += PAID_CLIP_COST
                             ds.clip = config.rel_media_path(target)
                             ds.paid_clip = ds.clip
                             ds.paid_signature = want
                             ds.selected_attempt = att.id
-                            generation.succeed(plan.beat_id, att.id, ds.clip, cost=0.60)
+                            generation.succeed(plan.beat_id, att.id, ds.clip,
+                                               cost=PAID_CLIP_COST)
                             save_plan(plan)
                 else:
                     motion.render_shot(synth, out_dir=out_dir, storyboard=sb)
