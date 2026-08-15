@@ -25,8 +25,8 @@ sufficient, and nothing is deployed today — Cloud Run still runs `a8003ca`.
 | 3 Script → Director invalidation | built |
 | 4 Generation lineage | built, audited (two rounds) |
 | 5 Slot-based timeline | backend + API + tests built; **frontend not bound** |
-| 6 Refine routing | not started |
-| 7 Frozen export | not started |
+| 6 Refine routing | **DEFERRED** — Superseded by vNext Phase 5 Render QC / QCFinding; do not build duplicate issue schema. |
+| 7 Frozen export | backend + API + tests built; adversarial pass not yet run |
 | 8 Hardening | not started, and cannot be specified yet |
 
 ## Human gates
@@ -100,7 +100,15 @@ reopens slice 5.
 
 ---
 
-## 6 — Refine routing
+## 6 — Refine routing — DEFERRED
+
+> Superseded by vNext Phase 5 Render QC / QCFinding; do not build duplicate issue schema.
+
+Nothing below is to be built as written. The issue record, its severity/blocking
+representation and its routing are the same design problem vNext Phase 5 solves
+with `QCFinding`; building `backend/issues.py` first would produce a second issue
+schema that has to be reconciled later. The carried-forward item at the end of
+this section (a stuck paid attempt is an issue) travels with it.
 
 **Scope:** new `backend/issues.py`, `ProblemQueueDrawer.tsx`.
 
@@ -131,11 +139,23 @@ Generate. That closes the last of S4-R01.
 **The highest-stakes slice.** A defect here ships a deliverable that does not
 match what was reviewed, and the contract calls the invariant critical.
 
-**Decide before starting** (human gate 2): the snapshot format and location,
-what exactly is frozen, whether FCPXML is generated from the snapshot at export
-time or stored beside the master, and how export history is kept.
+**Decided at human gate 2**, before implementation, and implemented as decided:
 
-**Scope:** `bundle.py`, `timeline.py`, `main.py`, `exports/<version>/`.
+1. **FCPXML is generated FROM the snapshot at export time** — not stored beside
+   the master, not regenerated from live state. Two stored artifacts can drift,
+   and then §11.7 holds only as long as nobody regenerates one later; deriving
+   both from one frozen snapshot makes equivalence structural, not procedural.
+2. **What is frozen is the state §9.1 enumerates**, not a rendering of it. The
+   snapshot carries that state in restorable form plus a digest per §9.1 item.
+3. **JSON at `exports/<version>/snapshot.json`, through `backend/atomic.py`.**
+   Durability is not re-implemented; that module exists for a reason.
+4. **Export history is append-only** with version, type, preset, timestamp,
+   status and snapshot id per §9.2. A later edit makes a new version; a status is
+   a new row, never an edit of an earlier one.
+
+**Scope:** `bundle.py`, `timeline.py`, `main.py`, `exports/<version>/`, plus
+`backend/exports.py` — freeze/restore and history are their own concern, and
+CLAUDE.md forbids growing a monolith to hold them.
 
 **Exit:**
 

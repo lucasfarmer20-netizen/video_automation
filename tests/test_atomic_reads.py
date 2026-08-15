@@ -32,8 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 for _m in ("anthropic", "fal_client", "elevenlabs"):
     sys.modules.setdefault(_m, types.ModuleType(_m))
 
-from backend import atomic, config, director, generation, slots  # noqa: E402
-from backend.manifest import Camera  # noqa: E402
+from backend import atomic, config, director, exports, generation, slots  # noqa: E402
+from backend.manifest import Camera, Shot, Storyboard  # noqa: E402
 
 
 def _denial(path: Path) -> PermissionError:
@@ -201,6 +201,41 @@ def test_slots_load_survives_a_denied_read(deny):
     assert [s.id for s in slots.load()] == ["s001::beat"]
 
 
+def test_load_snapshot_survives_a_denied_read(deny):
+    """An export snapshot is the record that makes a deliverable verifiable.
+
+    A denial reaching the caller here reports a snapshot that is present as
+    unreadable, which downgrades a perfectly good frozen export to
+    "provenance unavailable" — and the migration constraint says such an export
+    is unverifiable. A transient Windows denial must not be able to manufacture
+    that state.
+    """
+    sb = Storyboard(title="Frozen Cut", shots=[
+        Shot(scene_id="s001", camera=Camera(move="static", duration=6.0))])
+    exports.freeze(sb, version="v1", preset="h264")
+    deny(exports.snapshot_path("v1"))
+    snapshot = exports.load_snapshot("v1")
+    assert snapshot["export_version"] == "v1"
+    assert snapshot["frozen"]["storyboard"]["shots"][0]["scene_id"] == "s001"
+
+
+def test_export_history_survives_a_denied_read(deny):
+    """History is read-modify-write, so a denied read is also a lost append.
+
+    Worse than the ordinary reader case: ``_append`` reads the file before
+    writing it back, so a denial that reached the caller mid-append would either
+    drop the row or — if the caller treated it as "no history yet" — overwrite
+    every prior row with a single new one, which is the one thing an append-only
+    record must never do.
+    """
+    exports.record("v1", "master", "succeeded", snapshot="sha256:abc")
+    deny(exports.history_path())
+    assert [r["version"] for r in exports.history()] == ["v1"]
+    deny(exports.history_path())
+    exports.record("v2", "master", "succeeded", snapshot="sha256:def")
+    assert [r["version"] for r in exports.history()] == ["v1", "v2"]
+
+
 def test_a_denied_ledger_read_is_still_refused_when_it_is_not_transient(deny):
     """Routing the read through atomic must not soften generation's fail-closed
     rule. An unreadable ledger is still not an empty one -- it just takes the
@@ -222,13 +257,14 @@ def test_every_record_atomic_writes_is_read_through_atomic():
     root = Path(__file__).resolve().parent.parent / "backend"
     writers = sorted(p.name for p in root.glob("*.py")
                      if "atomic.write_json" in p.read_text(encoding="utf-8"))
-    assert writers == ["director.py", "generation.py", "main.py", "slots.py"], (
+    assert writers == ["director.py", "exports.py", "generation.py", "main.py",
+                       "slots.py"], (
         f"the set of modules writing atomic records changed to {writers}. Each new "
         f"one needs its READ path routed through atomic.read_json, and a case above "
         f"proving it survives a denial.")
     readers = sorted(p.name for p in root.glob("*.py")
                      if "atomic.read_json" in p.read_text(encoding="utf-8"))
-    assert readers == ["director.py", "generation.py", "slots.py"], (
+    assert readers == ["director.py", "exports.py", "generation.py", "slots.py"], (
         f"modules reading atomic records changed to {readers}")
 
 
@@ -236,6 +272,7 @@ def test_no_reader_of_an_atomic_record_opens_it_directly():
     """The bare form is the defect. It must not come back into these three."""
     root = Path(__file__).resolve().parent.parent / "backend"
     for name, path_fn in (("director.py", "plan_path"),
+                          ("exports.py", "snapshot_path"),
                           ("generation.py", "ledger_path"),
                           ("slots.py", "slots_path")):
         src = (root / name).read_text(encoding="utf-8")

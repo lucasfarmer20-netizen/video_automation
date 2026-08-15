@@ -45,6 +45,7 @@ from . import atomic, config, manifest, script, assets, audio, motion, timeline,
 from . import director, spike_identity, planner, capabilities, casting, characters
 from . import stages as stagemod
 from . import generation
+from . import exports
 from . import slots as slotmod
 from . import projects
 from .manifest import Storyboard, Shot, MotionType, Camera, RenderConfig, db
@@ -4942,23 +4943,179 @@ async def update_metadata(request: Request):
 
 
 @app.post("/api/export/bundle")
-def build_export_bundle():
+async def build_export_bundle(request: Request):
     """Pack the FCPXML plus every asset it references into one ZIP.
 
     The plain .fcpxml points at absolute container paths, so on any other machine
     every clip is offline. This rewrites them relative and ships the media.
+
+    Given a frozen export ``version``, it packs that version's FCPXML from
+    ``exports/<version>/`` instead of whatever the timeline stage last wrote from
+    live state. The default is unchanged, and the README inside the ZIP states
+    which of the two it is either way — a bundle whose provenance nobody recorded
+    must say so rather than be quietly upgraded to looking verified.
     """
     try:
         sb = get_current_project()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — no body is the common case
+            body = {}
+        version = (body or {}).get("version") or None
+        if version:
+            exports.version_dir(version)          # validates; raises on traversal
 
         def fn():
-            p = bundle.build(sb, log=lambda m: log_job("bundle", m))
+            p = bundle.build(sb, log=lambda m: log_job("bundle", m), version=version)
             log_job("bundle", f"Ready: {_safe_rel_path(p)}")
 
         start_job("bundle", fn)
-        return {"ok": True, "stage": "bundle"}
+        return {"ok": True, "stage": "bundle", "version": version}
+    except exports.ExportError as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/export/master")
+async def run_frozen_export(request: Request):
+    """Freeze this cut and produce both §9.2 deliverables from the snapshot.
+
+    The whole of §11.7 is in ``exports.run``: it freezes, reconstructs the
+    storyboard from the snapshot once, and renders the master and writes the
+    FCPXML from that one object. Nothing here re-reads live state, and this
+    endpoint deliberately offers no way to ask for one deliverable without the
+    other — a lone regenerated FCPXML is the drift the snapshot exists to
+    prevent.
+
+    A new version every time. There is no parameter for overwriting one, because
+    §9.1 says a later edit creates a new version and a prior master is never
+    overwritten; ``exports.freeze`` refuses an existing version directory outright.
+    """
+    try:
+        sb = get_current_project()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        body = body or {}
+        preset = str(body.get("preset") or "")
+        label = str(body.get("label") or "")
+        version = exports.next_version()
+
+        def fn():
+            result = exports.run(sb, preset=preset, label=label, version=version,
+                                 log=lambda m: log_job("export", m))
+            log_job("export", f"Frozen export {result['version']} ready "
+                              f"(snapshot {result['snapshot_id']}).")
+
+        if not start_job("export", fn):
+            return JSONResponse(status_code=409, content={
+                "ok": False, "error": "An export is already running for this project."})
+        return {"ok": True, "stage": "export", "version": version, "preset": preset}
+    except exports.ExportError as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.get("/api/export/history")
+def export_history():
+    """Export history per §9.2, with each version's verification state.
+
+    Declared before ``/api/export/{kind}`` on purpose: that route would otherwise
+    match "history" and answer 404 for an unknown export type.
+
+    Pre-snapshot deliverables are entered here as legacy/unverifiable on read,
+    idempotently. They are shown rather than hidden, and labelled rather than
+    given a snapshot they never had.
+    """
+    try:
+        sb = get_current_project()
+        exports.record_legacy(sb)
+        entries = exports.history()
+        versions = []
+        seen = set()
+        for e in entries:
+            v = str(e.get("version") or "")
+            if v and v not in seen:
+                seen.add(v)
+                versions.append(exports.verification(v))
+        return {"ok": True, "exports": entries, "verification": versions}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+_EXPORT_ARTIFACTS = {
+    "snapshot": (exports.SNAPSHOT_NAME, "application/json"),
+    "master": (exports.MASTER_NAME, "video/mp4"),
+    "fcpxml": (f"{exports.STEM}.fcpxml", "application/xml"),
+    "otio": (f"{exports.STEM}.otio", "application/octet-stream"),
+}
+
+
+@app.get("/api/export/version/{version}/{kind}")
+def download_frozen_artifact(version: str, kind: str):
+    """One artifact of one frozen export version.
+
+    Two path segments, so this can never be shadowed by (or shadow)
+    ``/api/export/{kind}``, which matches a single segment only.
+
+    ``version`` is validated by ``exports.version_dir`` before it reaches the
+    filesystem — anchored to letters, digits, dot, dash and underscore — so this
+    route cannot be walked out of the exports directory. The bundle is served
+    from the same directory but is looked up by the episode slug rather than a
+    fixed name, since that is what ``bundle.build`` writes.
+    """
+    kind = kind.lower().lstrip(".")
+    try:
+        vdir = exports.version_dir(version)
+    except exports.ExportError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if kind == "bundle":
+        sb = get_current_project()
+        slug = config.episode_paths(sb.title)["slug"]
+        name, media_type = f"{slug}_bundle.zip", "application/zip"
+    elif kind in _EXPORT_ARTIFACTS:
+        name, media_type = _EXPORT_ARTIFACTS[kind]
+    else:
+        raise HTTPException(status_code=404, detail=f"Unknown export artifact {kind!r}")
+
+    path = (vdir / name).resolve()
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Export {version} has no {kind} — check /api/export/history.")
+
+    if kind in ("master", "bundle"):
+        # Streamed for the same reason the bundle download above is: Cloud Run
+        # rejects a response that declares a large Content-Length, which is
+        # exactly what FileResponse does. A master is the largest thing this
+        # pipeline produces, so serving it with FileResponse would 500 on the
+        # one artifact the whole slice exists to deliver.
+        return StreamingResponse(
+            _chunked(path), media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{version}_{name}"',
+                     "X-Export-Bytes": str(path.stat().st_size)})
+    return FileResponse(path, media_type=media_type,
+                        filename=f"{version}_{name}")
+
+
+def _chunked(p: Path, size: int = 1024 * 1024):
+    """Yield a file in 1 MiB blocks.
+
+    1 MiB rather than the default because these files live on the GCS FUSE
+    mount, where many small reads are many network round trips. Shared by the
+    bundle and frozen-master downloads so both stay off FileResponse — see the
+    Content-Length note in ``download_export_bundle``.
+    """
+    with open(p, "rb") as fh:
+        while True:
+            blk = fh.read(size)
+            if not blk:
+                break
+            yield blk
 
 
 @app.get("/api/export/bundle")
@@ -4983,18 +5140,8 @@ def download_export_bundle():
             detail="No bundle yet — build it first (POST /api/export/bundle).",
         )
 
-    def _chunks(p: Path, size: int = 1024 * 1024):
-        # 1 MiB reads: the file lives on the GCS FUSE mount, where many small
-        # reads are many network round trips.
-        with open(p, "rb") as fh:
-            while True:
-                blk = fh.read(size)
-                if not blk:
-                    break
-                yield blk
-
     return StreamingResponse(
-        _chunks(path),
+        _chunked(path),
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{path.name}"',
