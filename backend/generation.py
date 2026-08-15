@@ -30,6 +30,7 @@ second charge, the second stops a *new* request re-buying an unchanged shot.
 from __future__ import annotations
 
 import datetime as _dt
+import math
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -109,6 +110,87 @@ class LedgerUnreadable(RuntimeError):
     """The lineage exists but could not be read. NOT the same as no lineage."""
 
 
+# --- schema ---------------------------------------------------------------------
+#
+# A ledger is accounting data, so "JSON parsed" is not the same as "readable".
+# `{}` is valid JSON and used to yield an empty attempt list, indistinguishable
+# from a beat that never generated anything -- and once spend() started reporting
+# `spend_is_certain`, that shape stopped being merely wrong and became a
+# CONFIDENT zero on data nobody could read. A file on persistent storage that was
+# truncated, hand-repaired or half-migrated is syntactically valid and reaches
+# exactly this path.
+#
+# So every structural and type failure below raises LedgerUnreadable, which
+# callers already handle: begin() refuses to spend, and the routes answer 409.
+# Failing closed costs a retry. Failing open prices a bill nobody can check.
+#
+# (This closes the core of TG-S4-06, which recorded these shapes raising
+# incidental AttributeError/TypeError instead of LedgerUnreadable.)
+
+_STATUSES = (RUNNING, SUCCEEDED, FAILED)
+
+# Every field a row may carry, and the JSON type it must hold. Money and status
+# are here for the same reason the ids are: a total computed over a cost of
+# "0.60" is not a smaller number, it is a wrong bill or a TypeError.
+_SHAPE: dict[str, type] = {
+    "id": str, "shot_id": str, "beat_id": str, "parent_attempt": str,
+    "status": str, "kind": str, "backend": str, "signature": str,
+    "idempotency_key": str, "output": str, "error": str,
+    "started_at": str, "finished_at": str,
+    "attempt": int, "paid": bool, "outcome_unknown": bool,
+    "cost": float, "estimated_cost": float,
+}
+_REQUIRED = ("id", "shot_id", "beat_id", "attempt")
+
+
+def _valid(kind: type, value) -> bool:
+    if kind is bool:
+        return isinstance(value, bool)
+    if kind is int:
+        # bool is an int in Python, and paid=True must not pass as attempt=1.
+        return isinstance(value, int) and not isinstance(value, bool)
+    if kind is float:
+        # NaN and Infinity survive json.loads and would poison every total they
+        # touch -- silently, since NaN compares false against every threshold.
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and value >= 0)
+    return isinstance(value, str)
+
+
+def _row(beat_id: str, index: int, raw) -> GenerationAttempt:
+    """One validated row, or LedgerUnreadable. Never an incidental TypeError."""
+    where = f"attempt {index} in the generation ledger for {beat_id}"
+    if not isinstance(raw, dict):
+        raise LedgerUnreadable(
+            f"{where} is {type(raw).__name__}, not an object. Refusing to "
+            f"report spend from a ledger whose rows are not attempts.")
+    for key in _REQUIRED:
+        if key not in raw:
+            raise LedgerUnreadable(
+                f"{where} has no {key!r}. A row that cannot be identified "
+                f"cannot be reconciled against a bill.")
+    for key, value in raw.items():
+        if key in _SHAPE and not _valid(_SHAPE[key], value):
+            raise LedgerUnreadable(
+                f"{where}: {key}={value!r} is not a valid "
+                f"{_SHAPE[key].__name__}. Inspect the file; it has NOT been "
+                f"overwritten.")
+    if raw.get("status", RUNNING) not in _STATUSES:
+        raise LedgerUnreadable(
+            f"{where} has status {raw.get('status')!r}, which no guard here "
+            f"recognises -- it would count as neither billed, nor at risk, nor "
+            f"in flight, and so would drop out of every check at once.")
+    if raw["attempt"] < 1:
+        raise LedgerUnreadable(f"{where} is numbered {raw['attempt']}; "
+                               f"attempts are 1-based.")
+    if raw["beat_id"] != beat_id:
+        raise LedgerUnreadable(
+            f"{where} belongs to beat {raw['beat_id']!r}. Counting it here "
+            f"would bill this beat for another one's generation.")
+    known = set(GenerationAttempt.__dataclass_fields__)
+    return GenerationAttempt(**{k: v for k, v in raw.items() if k in known})
+
+
 def load_attempts(beat_id: str) -> list[GenerationAttempt]:
     """Every attempt recorded for a beat, oldest first.
 
@@ -146,9 +228,27 @@ def load_attempts(beat_id: str) -> list[GenerationAttempt]:
             f"the generation ledger for {beat_id} is corrupt: {exc}. "
             f"It has NOT been overwritten; inspect it before generating again."
         ) from exc
-    known = set(GenerationAttempt.__dataclass_fields__)
-    rows = [GenerationAttempt(**{k: v for k, v in a.items() if k in known})
-            for a in (raw.get("attempts") or [])]
+    if not isinstance(raw, dict):
+        raise LedgerUnreadable(
+            f"the generation ledger for {beat_id} is a "
+            f"{type(raw).__name__}, not an object. It has NOT been "
+            f"overwritten; inspect it before generating again.")
+    if raw.get("beat_id") != beat_id:
+        raise LedgerUnreadable(
+            f"the generation ledger at {ledger_path(beat_id).name} says it "
+            f"belongs to beat {raw.get('beat_id')!r}. Refusing to report one "
+            f"beat's spend from another's lineage.")
+    listed = raw.get("attempts")
+    if not isinstance(listed, list):
+        # The reachable shape: `{}`, or a file truncated to its header. It used
+        # to read as an empty list, which is what "this beat never generated
+        # anything" looks like -- a certain $0.00 on unreadable accounting.
+        raise LedgerUnreadable(
+            f"the generation ledger for {beat_id} has no attempts list "
+            f"({type(listed).__name__}). Refusing to treat it as an empty "
+            f"lineage -- that reports $0.00 as a settled fact about a file "
+            f"nobody could read.")
+    rows = [_row(beat_id, i, a) for i, a in enumerate(listed)]
     for a in rows:
         if a.error.startswith(ABANDONED):
             a.outcome_unknown = True
@@ -428,8 +528,11 @@ def spend(beat_id: str, shot_id: str | None = None) -> dict:
             if (shot_id is None or a.shot_id == shot_id)]
     paid_for = [a for a in rows if billed(a)]
     unsettled = [a for a in rows if at_risk(a)]
-    spent = round(sum(_amount(a) for a in paid_for), 4)
-    risk = round(sum(_amount(a) for a in unsettled), 4)
+    # float() because sum([]) is the integer 0, so an empty ledger reported
+    # `"spent": 0` while a populated one reported `"spent": 0.6`. Harmless in
+    # JSON and confusing everywhere else; a money field should have one type.
+    spent = round(float(sum(_amount(a) for a in paid_for)), 4)
+    risk = round(float(sum(_amount(a) for a in unsettled)), 4)
     summary = f"${spent:.2f} billed"
     if unsettled:
         summary += (f" • ${risk:.2f} at risk on {len(unsettled)} attempt"

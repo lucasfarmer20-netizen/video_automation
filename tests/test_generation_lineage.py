@@ -892,6 +892,114 @@ def test_a_free_attempt_is_never_money_at_risk():
     assert s["spent"] == 0.0
 
 
+# --- S8-01 / TG-S4-06: a malformed ledger is not a settled zero -------------------
+#
+# `{}` is valid JSON, and it used to yield an empty attempt list -- which is
+# exactly what "this beat never generated anything" looks like. That was already
+# wrong; once spend() started answering spend_is_certain it became worse than the
+# defect this slice set out to fix, because the report stopped merely omitting
+# the money and started ASSERTING there was none, on a file nobody could read.
+#
+# Reachable: ledgers live on persistent storage, and a file truncated by a failed
+# write, hand-repaired, or half-migrated is syntactically valid JSON.
+#
+# TG-S4-06 recorded these shapes raising incidental AttributeError/TypeError and
+# was judged not a spend defect because it still failed closed. It is one now, so
+# its core is closed here rather than in the slice item queued after this.
+
+def _write_raw(beat_id: str, doc) -> None:
+    from backend import atomic
+    p = generation.ledger_path(beat_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    atomic.write_json(p, doc)
+
+
+def _good_row(**over) -> dict:
+    row = {"id": "s001.01.a1", "shot_id": "s001.01", "beat_id": "s001",
+           "attempt": 1, "status": "succeeded", "paid": True, "cost": 0.60,
+           "output": "a.mp4"}
+    row.update(over)
+    return row
+
+
+MALFORMED = {
+    "an empty object": {},
+    "a header with no attempts": {"beat_id": "s001"},
+    "attempts is not a list": {"beat_id": "s001", "attempts": {"a": 1}},
+    "attempts is a string": {"beat_id": "s001", "attempts": "[]"},
+    "the document is a list": [],
+    "the document is a number": 3,
+    "a row is not an object": {"beat_id": "s001", "attempts": ["s001.01.a1"]},
+    "a row has no id": {"beat_id": "s001",
+                        "attempts": [{k: v for k, v in _good_row().items()
+                                      if k != "id"}]},
+    "a row has no shot_id": {"beat_id": "s001",
+                             "attempts": [{k: v for k, v in _good_row().items()
+                                           if k != "shot_id"}]},
+    "cost is a string": {"beat_id": "s001", "attempts": [_good_row(cost="0.60")]},
+    "cost is negative": {"beat_id": "s001", "attempts": [_good_row(cost=-0.60)]},
+    "cost is NaN": {"beat_id": "s001",
+                    "attempts": [_good_row(cost=float("nan"))]},
+    "estimated_cost is a string": {"beat_id": "s001",
+                                   "attempts": [_good_row(estimated_cost="1")]},
+    "paid is a string": {"beat_id": "s001", "attempts": [_good_row(paid="yes")]},
+    "attempt is a bool": {"beat_id": "s001", "attempts": [_good_row(attempt=True)]},
+    "attempt is zero": {"beat_id": "s001", "attempts": [_good_row(attempt=0)]},
+    "status is unrecognised": {"beat_id": "s001",
+                               "attempts": [_good_row(status="cancelled")]},
+    "the ledger names another beat": {"beat_id": "s999",
+                                      "attempts": [_good_row()]},
+    "a row names another beat": {"beat_id": "s001",
+                                 "attempts": [_good_row(beat_id="s999")]},
+}
+
+
+@pytest.mark.parametrize("case", sorted(MALFORMED))
+def test_a_malformed_ledger_is_unreadable_not_empty(case):
+    _write_raw("s001", MALFORMED[case])
+    with pytest.raises(generation.LedgerUnreadable):
+        generation.load_attempts("s001")
+
+
+@pytest.mark.parametrize("case", sorted(MALFORMED))
+def test_a_malformed_ledger_never_reports_a_certain_zero(case):
+    """The point of the whole slice, applied to the read path. Whatever this
+    file is, it is not evidence that nothing was billed."""
+    _write_raw("s001", MALFORMED[case])
+    with pytest.raises(generation.LedgerUnreadable):
+        generation.spend("s001")
+
+
+def test_a_malformed_ledger_refuses_to_spend_rather_than_reporting_nothing():
+    """And it must reach the guard that matters: begin() cannot open a paid
+    attempt against a ledger it could not read, because it cannot know whether
+    one is already running."""
+    _write_raw("s001", {})
+    with pytest.raises(generation.LedgerUnreadable):
+        _begin(idempotency_key="k1")
+    assert generation.ledger_path("s001").read_text(encoding="utf-8").strip() == "{}", \
+        "the unreadable ledger was overwritten"
+
+
+def test_a_well_formed_empty_ledger_is_still_an_empty_lineage():
+    """Failing closed must not mean refusing a beat that genuinely has no
+    history. An attempts list that is present and empty is a fact, not a gap."""
+    _write_raw("s001", {"beat_id": "s001", "attempts": []})
+    assert generation.load_attempts("s001") == []
+    s = generation.spend("s001")
+    assert s["spent"] == 0.0 and s["spend_is_certain"] is True
+
+
+def test_an_unknown_field_from_a_newer_writer_is_ignored_not_fatal():
+    """Forward compatibility is not the same as tolerating nonsense: a field
+    this version does not know is dropped, while a field it knows and cannot
+    trust stops the read."""
+    _write_raw("s001", {"beat_id": "s001",
+                        "attempts": [_good_row(settled_by="a later slice")]})
+    rows = generation.load_attempts("s001")
+    assert len(rows) == 1 and rows[0].cost == 0.60
+
+
 # --- S8-01: and no caller may read the total without the risk ---------------------
 
 def test_the_lineage_api_reports_what_is_at_risk_beside_the_total(api):
