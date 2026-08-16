@@ -256,6 +256,40 @@ print("PROBE_SAVE_MIRROR_CHANGED="
       + ("true" if MF.read_text(encoding="utf-8") != before else "false"))
 '''
 
+
+# Paid draft work: spent, then refused. The money must still be recorded.
+PROBE_DRAFTS = _PRELUDE + '''
+import backend.main as _M
+from backend import generation
+
+def fake(shot, n=3, backend="", render=None, **kw):
+    shot.draft_variations = ["assets/s001/var_a.png"]
+    shot.draft_image = shot.draft_variations[0]
+    return shot.draft_variations
+
+_M.assets.generate_for_shot = fake
+
+# Reads answer (no document -> disk); the write raises. An outage that begins
+# after the request started, which is the window that strands paid work.
+manifest.db = Empty()
+r = client.post("/api/regenerate/s001", json={"backend": "nano2"})
+print("PROBE_DRAFT_STATUS=%d" % r.status_code)
+rows = generation.load_attempts("s001")
+print("PROBE_DRAFT_ATTEMPTS=%d" % len(rows))
+print("PROBE_DRAFT_PAID=" + ("true" if any(a.paid for a in rows) else "false"))
+
+# Local mode: two deliberate re-drafts in a row must BOTH generate.
+manifest.db = None
+calls = []
+def counting(shot, n=3, backend="", render=None, **kw):
+    calls.append(backend)
+    return fake(shot, n=n, backend=backend, render=render)
+_M.assets.generate_for_shot = counting
+client.post("/api/regenerate/s001", json={"backend": "nano2"})
+client.post("/api/regenerate/s001", json={"backend": "nano2"})
+print("PROBE_DRAFT_SECOND_GENERATED=" + ("true" if len(calls) == 2 else "false"))
+'''
+
 PROBES = {
     "unavailable": PROBE_UNAVAILABLE,
     "partial": PROBE_PARTIAL,
@@ -263,6 +297,7 @@ PROBES = {
     "local": PROBE_LOCAL,
     "write": PROBE_WRITE,
     "create": PROBE_CREATE,
+    "drafts": PROBE_DRAFTS,
 }
 
 
@@ -369,6 +404,14 @@ PREFIX_CALLER = (
 )
 
 
+REGEN_CALL = (
+    "        record_paid_drafts(shot, backend, lambda: assets.generate_for_shot(\n"
+    "            shot, n=_takes(sb), backend=backend, render=sb.render))"
+)
+DRAFT_SIGNATURE = (
+    '                              signature="", kind="image", backend=backend,'
+)
+
 MUTATIONS = [
     # ---- reproductions of a defect that really shipped -------------------------
     Mutation(
@@ -449,6 +492,30 @@ MUTATIONS = [
                 "test_a_refused_create_leaves_no_project_behind"],
     ),
 
+    Mutation(
+        "DEFECT: paid drafts are generated with nothing recording them",
+        "CLAUDE.md gates / §11.4",
+        "the attempt record on the draft path -- assets.generate_for_shot is "
+        "called directly again, so an outage between the paid call and the save "
+        "leaves images on disk that nothing anywhere says were bought",
+        [(MAIN, REGEN_CALL,
+          "        assets.generate_for_shot(shot, n=_takes(sb), backend=backend, render=sb.render)  # MUTANT")],
+        probes=[("drafts", "PROBE_DRAFT_ATTEMPTS=0"),
+                ("drafts", "PROBE_DRAFT_PAID=false")],
+        defect=True,
+        expect=["test_a_paid_draft_is_recorded_even_when_the_save_is_refused"],
+    ),
+    Mutation(
+        "recording the draft also gates it", "CLAUDE.md gates",
+        "the empty signature -- begin()'s reuse arm comes alive, the disposition "
+        "stops being \"created\", and the contract guard refuses the user asking "
+        "for new variations of a beat they already have: the legitimate re-buy "
+        "S4-01's remediation was reverted for",
+        [(MAIN, DRAFT_SIGNATURE,
+          '                              signature="draft", kind="image", backend=backend,  # MUTANT')],
+        probes=[("drafts", "PROBE_DRAFT_SECOND_GENERATED=false")],
+        expect=["test_recording_a_draft_never_gates_a_deliberate_re_draft"],
+    ),
     # ---- faithful mutations of the fix ------------------------------------------
     Mutation(
         "the refusal publishes what the store is", "CLAUDE.md secrets",

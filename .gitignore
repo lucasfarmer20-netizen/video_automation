@@ -57,13 +57,10 @@ _migrate_tmp/
 # commit by a `git add -A`. Test debris must not be committable.
 prompt_ledger.jsonl
 
-# Probe spec written into src/ for the duration of one mutation run by
-# scratch/mutate_slice8_storage_gate_ui.py. vitest only collects
-# src/**/*.test.tsx, so it has to land there. The harness unlinks it in a
-# `finally`, which a Ctrl-C between write and unlink does not reach -- and an
-# un-ignored test file left in the tree is the same debris class as the ledger
-# above.
-frontend/src/app/zz_storage_probe.test.tsx
+# (The UI mutation harness used to generate a probe spec here and needed an
+# ignore for it. It no longer generates anything -- the probe is a committed
+# spec, src/app/page.storage.probe.test.tsx, gated on STORAGE_PROBE=1 -- so
+# there is nothing to ignore. Removing a write beats ignoring it.)
 
 # Active-project pointer. main.py:208 resolves it to /gcs/.active_project when
 # the mount exists and to Path(".active_project") -- the repository root --

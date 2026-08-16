@@ -16,9 +16,10 @@ and a test that dies under a faithful mutation of the fix.
 Probes exist for the same reason they exist on the money side. A red vitest run
 proves the tests are sensitive to *something*. What has to be demonstrated is
 the behaviour by name — that under the mutation the destructive button really is
-back on the screen. The probe spec is written into ``src/`` for the duration of
-one run (vitest's ``include`` is ``src/**/*.test.tsx``) and removed in a
-``finally``, exactly like the file mutations.
+back on the screen. The probe is ``src/app/page.storage.probe.test.tsx``: a
+committed spec that asserts in an ordinary ``npm test`` and additionally prints
+``PROBE_UI_*`` lines under ``STORAGE_PROBE=1``. It is not generated, so unlike
+every earlier version of this harness it cannot leave anything behind.
 """
 from __future__ import annotations
 
@@ -32,74 +33,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = ROOT / "frontend"
 PAGE = FRONTEND / "src" / "app" / "page.tsx"
-PROBE_SPEC = FRONTEND / "src" / "app" / "zz_storage_probe.test.tsx"
+PROBE_SPEC = FRONTEND / "src" / "app" / "page.storage.probe.test.tsx"
 
 
 # --------------------------------------------------------------------------- #
-# probe: render the real page against a real storage-gate 503 and report what
-# is actually on screen. It never asserts, so it stays green under every
-# mutation and reports rather than judges.
+# probe: a REAL, TRACKED spec, not a generated one
 # --------------------------------------------------------------------------- #
-
-PROBE_SOURCE = r'''
-import React from "react";
-import { afterEach, beforeEach, test, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import Page from "./page";
-
-const GATE_MESSAGE = "PROBE-GATE-SENTENCE";
-
-const reply = (status: number, body: any) => ({
-  ok: status < 400,
-  status,
-  headers: new Headers({ "X-Project-Id": "leshy" }),
-  json: async () => body,
-  text: async () => JSON.stringify(body),
-}) as unknown as Response;
-
-beforeEach(() => {
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
-    const url = String(input).replace("http://localhost:5000", "");
-    if (url.startsWith("/api/project/active")) {
-      return reply(503, {
-        detail: { error: GATE_MESSAGE, storage_gate: "unavailable", project_id: "leshy" },
-      });
-    }
-    if (url.startsWith("/api/projects")) {
-      return reply(200, { ok: true, projects: [] });
-    }
-    if (url.startsWith("/api/assemble/status")) return reply(200, { ok: true, jobs: {} });
-    return reply(200, { ok: true });
-  }));
-  vi.stubGlobal("alert", vi.fn());
-});
-
-afterEach(() => {
-  cleanup();
-  vi.unstubAllGlobals();
-});
-
-test("probe: what the studio shows when the durable store cannot answer", async () => {
-  render(<Page />);
-  await waitFor(() => {
-    if (screen.queryByText(/Loading Workspace/i)) throw new Error("still loading");
-  });
-
-  const create = screen.queryByRole("button", { name: /initialize project workspace/i });
-  console.log("PROBE_UI_CREATE_BUTTON=" + (create ? "shown" : "absent"));
-
-  const gate = screen.queryByTestId("storage-gate-block");
-  const noproj = screen.queryByText(/No Active Project Loaded/i);
-  console.log("PROBE_UI_SCREEN=" + (gate ? "storage-gate" : noproj ? "no-active-project" : "other"));
-
-  const body = document.body.textContent || "";
-  console.log("PROBE_UI_SERVER_SENTENCE=" + (body.includes(GATE_MESSAGE) ? "shown" : "absent"));
-  console.log("PROBE_UI_INTACT_LINE="
-    + (/Nothing has been lost and nothing has been changed/i.test(body) ? "shown" : "absent"));
-  console.log("PROBE_UI_RETRY="
-    + (screen.queryByRole("button", { name: /try again/i }) ? "shown" : "absent"));
-});
-'''
+#
+# This harness used to write a spec into src/app/ for the duration of a run and
+# unlink it in a `finally`. A Ctrl-C or a dying subprocess never reaches that
+# finally, leaving an untracked test file in the source tree where the next
+# `git add -A` sweeps it into a commit -- which is exactly how
+# prompt_ledger.jsonl got committed, and the third instance of one class:
+# tooling writing into the workspace where real files live.
+#
+# Relocating the write to a temp directory does not work: a vitest config
+# outside the project cannot resolve `vitest/config` or `@vitejs/plugin-react`,
+# because Node resolves from the config's own location. Measured --
+# ERR_MODULE_NOT_FOUND. So the write is REMOVED rather than moved.
+#
+# page.storage.probe.test.tsx is committed, asserts in an ordinary `npm test`,
+# and additionally prints PROBE_UI_* lines when STORAGE_PROBE=1. Nothing is
+# generated and there is nothing to clean up.
 
 
 @dataclass
@@ -241,12 +196,14 @@ def run_probe() -> tuple[bool, str]:
     # `--disable-console-intercept` is required: vitest 4 swallows console.log
     # from a passing test, and a probe whose output is silently dropped reports
     # every signature as MISSING -- a harness fault dressed as a result.
-    PROBE_SPEC.write_text(PROBE_SOURCE, encoding="utf-8")
-    try:
-        return _vitest("--disable-console-intercept",
-                       str(PROBE_SPEC.relative_to(FRONTEND)).replace("\\", "/"))
-    finally:
-        PROBE_SPEC.unlink(missing_ok=True)
+    env = {**_ENV, "STORAGE_PROBE": "1"}
+    proc = subprocess.run(
+        [_NPX, "vitest", "run", "--disable-console-intercept",
+         str(PROBE_SPEC.relative_to(FRONTEND)).replace("\\", "/")],
+        cwd=FRONTEND, env=env, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+    )
+    return proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
 
 
 def probe_lines(out: str) -> list[str]:
@@ -314,14 +271,9 @@ def main() -> int:
         print("frontend/node_modules is absent — run `npm ci` in frontend/ first.")
         return 1
 
-    # A previous run killed between writing the probe spec and its `finally`
-    # unlink leaves the file behind, where it would be collected as a real test
-    # and counted in the baseline. Gitignored as a second line of defence, but
-    # ignored is not absent -- clear it here so the baseline is the suite.
-    if PROBE_SPEC.exists():
-        print(f"clearing a stale probe spec left by an interrupted run: "
-              f"{PROBE_SPEC.name}")
-        PROBE_SPEC.unlink()
+    if not PROBE_SPEC.is_file():
+        print(f"the probe spec is missing: {PROBE_SPEC}")
+        return 1
 
     touched = sorted({p for m in MUTATIONS for p, _, _ in m.edits})
     pristine = {p: _read(p) for p in touched}
@@ -390,7 +342,6 @@ def main() -> int:
     for p in touched:
         if before[p] != after[p]:
             _write(p, pristine[p])
-    PROBE_SPEC.unlink(missing_ok=True)
 
     ok, _ = run_suite()
     print(f"\nrestored suite: {'PASS' if ok else 'FAIL'}")

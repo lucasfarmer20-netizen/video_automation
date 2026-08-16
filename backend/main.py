@@ -467,6 +467,94 @@ def save_current_project(sb: Storyboard):
     manifest.save(sb)
 
 
+DRAFT_IMAGE_COST = 0.15   # nano2 / Gemini 3 Pro Image, ~$0.15 per 2K image
+
+
+def record_paid_drafts(shot: Shot, backend: str, generate) -> None:
+    """Run a paid draft generation with a durable record of it on both sides.
+
+    THE DECISION, and why it is neither of the two obvious ones.
+
+    ``save_current_project`` refuses without writing the JSON mirror when the
+    durable store is unreachable, and the cost of that consistency lands here:
+    these callers spend money and *then* save, so an outage beginning inside
+    that window used to leave images on disk with nothing anywhere recording
+    that they were bought (contract §11.4, the write-side form of §11.2 -- money
+    spent, no record). Two fixes suggest themselves and both fail:
+
+    * **Write the mirror anyway.** It is not read. ``get_current_project`` takes
+      Firestore and only falls to disk when there is no document, so for an
+      existing project the mirror is never consulted -- and the next successful
+      save overwrites it from Firestore state. That is a record with an
+      unpredictable lifetime, which is not a record.
+    * **Refuse before the paid call.** Already true: ``get_current_project()``
+      at the top of each of these handlers raises 503 if the store is down when
+      the request starts. The residual window is an outage beginning *during*
+      generation, and no pre-check closes that one.
+
+    So the record goes where the paid VIDEO path already puts it: an attempt in
+    ``generation/<beat>.json``, written before dispatch, on the GCS mount,
+    atomic, and independent of Firestore. A refused save then costs the manifest
+    pointer and nothing else -- ``spend()`` and ``at_risk()`` still see the money.
+
+    RECORDING ONLY, NOT GATING, and that is deliberate. ``signature`` and
+    ``idempotency_key`` are left empty, which skips begin()'s reuse and
+    in_flight arms (generation.py:332-347) so this always returns "created".
+    Enabling them here would refuse a deliberate re-draft -- the user asking for
+    new variations of a beat they already have -- which is exactly the
+    legitimate re-buy that S4-01's remediation was reverted for. This path needs
+    the ledger's memory, not its veto.
+
+    OPENING THE ATTEMPT FAILS CLOSED. If the record cannot be written, nothing
+    is dispatched -- because "money spent, no record" is the defect this exists
+    to remove, and swallowing the failure here would recreate it one layer in.
+    It is also begin()'s own contract: the caller must not spend unless it got
+    "created". An earlier revision printed a warning and generated anyway, which
+    hid a TypeError from this very call site behind a line nobody reads.
+
+    SETTLING it does not. By then the provider has been called and the money is
+    already recorded; a settle that fails leaves the attempt RUNNING, which
+    reads as at-risk rather than as nothing, and that is the conservative state
+    to be stuck in.
+    """
+    # signature="" on purpose -- see RECORDING ONLY above. It is required by
+    # begin() rather than defaulted, so passing it is not an oversight.
+    att, how = generation.begin(beat_id=shot.scene_id, shot_id=shot.scene_id,
+                                signature="", kind="image", backend=backend,
+                                paid=True, estimated_cost=DRAFT_IMAGE_COST)
+    if how != "created":
+        # begin()'s contract, honoured rather than assumed: "the caller must not
+        # spend money unless it got created". With signature="" this branch is
+        # unreachable today -- which is exactly why it is written down. Discarding
+        # the disposition would mean that the day someone gives this path a
+        # signature (to dedupe, to add idempotency), it would start paying on a
+        # "reused" or "in_flight" answer and record nothing new for the charge.
+        # A mutation setting a signature proves the branch is live.
+        raise HTTPException(
+            status_code=409,
+            detail=(f"the generation ledger answered {how!r} for {shot.scene_id}; "
+                    f"refusing to generate. Resolve it before drafting again."),
+        )
+
+    try:
+        generate()
+    except Exception as exc:
+        # in_doubt, not fail: the provider may already have been called and
+        # charged, and nothing here can tell. Same rule the video path uses.
+        try:
+            generation.in_doubt(shot.scene_id, att.id, f"draft generation raised: {exc}")
+        except Exception as led:  # noqa: BLE001
+            print(f"Warning: could not mark draft attempt in doubt: {led}")
+        raise
+
+    try:
+        chosen = (shot.draft_variations or [""])[0]
+        generation.succeed(shot.scene_id, att.id, output=chosen,
+                           cost=DRAFT_IMAGE_COST * max(1, len(shot.draft_variations)))
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: could not settle draft attempt for {shot.scene_id}: {exc}")
+
+
 def _scan_projects() -> list[dict]:
     """Discover storyboard_manifest.json projects, one entry per real project.
 
@@ -816,7 +904,8 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
             if not shot.draft_image:
                 backend = getattr(shot, "image_model", None) or getattr(sb.render, "backend", None) or "nano2"
                 log(f"Generating drafts for {shot.scene_id} using {backend}...")
-                assets.generate_for_shot(shot, n=_takes(sb), backend=backend, render=sb.render)
+                record_paid_drafts(shot, backend, lambda: assets.generate_for_shot(
+                    shot, n=_takes(sb), backend=backend, render=sb.render))
                 shot.chosen_variation = 0
                 shot.draft_image = shot.draft_variations[0]
                 save_shot_assets(shot)
@@ -911,7 +1000,8 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
                     if not local_image_path or not local_image_path.exists():
                         log(f"Still image draft not found for {shot.scene_id}, generating still drafts...")
                         try:
-                            assets.generate_for_shot(shot, n=_takes(sb), backend=sb.render.backend, render=sb.render)
+                            record_paid_drafts(shot, sb.render.backend, lambda: assets.generate_for_shot(
+                                shot, n=_takes(sb), backend=sb.render.backend, render=sb.render))
                             shot.chosen_variation = 0
                             shot.draft_image = shot.draft_variations[0]
                             save_shot_assets(shot)
@@ -3839,7 +3929,8 @@ async def generate_shot_video(scene_id: str, request: Request):
         local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
         if not local_image_path or not local_image_path.exists():
             print("Auto-generating still drafts before video render...")
-            assets.generate_for_shot(shot, n=_takes(sb), backend=sb.render.backend, render=sb.render)
+            record_paid_drafts(shot, sb.render.backend, lambda: assets.generate_for_shot(
+                shot, n=_takes(sb), backend=sb.render.backend, render=sb.render))
             shot.chosen_variation = 0
             shot.draft_image = shot.draft_variations[0]
             save_current_project(sb)
@@ -3959,7 +4050,8 @@ async def regenerate(scene_id: str, request: Request):
             or assets.DEFAULT_BACKEND
         )
 
-        assets.generate_for_shot(shot, n=_takes(sb), backend=backend, render=sb.render)
+        record_paid_drafts(shot, backend, lambda: assets.generate_for_shot(
+            shot, n=_takes(sb), backend=backend, render=sb.render))
         save_current_project(sb)
         return {"ok": True, "variations": shot.draft_variations, "backend": backend}
     except HTTPException:

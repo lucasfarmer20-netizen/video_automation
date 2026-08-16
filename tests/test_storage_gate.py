@@ -446,6 +446,116 @@ def test_creating_a_project_still_works_with_no_firestore_configured(client, tmp
     assert (tmp_path / "bestiary" / "leshy2" / "storyboard_manifest.json").is_file()
 
 
+# --- 4b. paid work is recorded even when the save is refused --------------------
+
+def test_a_paid_draft_is_recorded_even_when_the_save_is_refused(client, monkeypatch):
+    """Money spent, no record -- §11.4, the write-side form of §11.2.
+
+    ``save_current_project`` deliberately does not write the JSON mirror when
+    the durable store is unreachable. The cost lands on the paid callers, which
+    spend and THEN save: an outage beginning in that window left images on disk
+    with nothing anywhere recording that they were bought, a 503 at the caller,
+    and a retry that pays again.
+
+    The store here answers the read (no document -> disk) and fails the write,
+    which is the exact window: an outage that begins after the handler started.
+
+    First assertion is the ledger. Under the regression there is no attempt file
+    at all, so it fails on the missing record rather than on the status -- which
+    is the same either way.
+    """
+    from backend import generation
+
+    c, _ = client
+
+    def _fake_generate(shot, n=3, backend="", render=None, **kw):
+        shot.draft_variations = ["assets/s001/var_a.png", "assets/s001/var_b.png"]
+        shot.draft_image = shot.draft_variations[0]
+        return shot.draft_variations
+
+    monkeypatch.setattr(M.assets, "generate_for_shot", _fake_generate)
+
+    original = manifest.db
+    # Reads answer (no document -> disk); the write raises, because _Empty has
+    # no `set`. Exactly "the store went down after this request started".
+    manifest.db = _Empty()
+    try:
+        r = c.post("/api/regenerate/s001", json={"backend": "nano2"})
+    finally:
+        manifest.db = original
+
+    attempts = generation.load_attempts("s001")
+    assert attempts, "a paid draft was generated and nothing recorded it"
+    paid = [a for a in attempts if a.paid]
+    assert len(paid) == 1
+    assert paid[0].kind == "image"
+    assert paid[0].estimated_cost == M.DRAFT_IMAGE_COST
+    # And the caller was still told the truth about the durable store.
+    assert r.status_code == 503, r.text
+    assert r.json()["detail"]["storage_gate"] == "unavailable"
+
+
+def test_recording_a_draft_never_gates_a_deliberate_re_draft(client, monkeypatch):
+    """Recording, not gating -- and the distinction is load-bearing.
+
+    begin()'s reuse and in_flight arms are skipped by leaving `signature` and
+    `idempotency_key` empty. Enabling them here would refuse the user asking for
+    new variations of a beat they already have, which is the legitimate re-buy
+    S4-01's remediation was reverted for. Two regenerations in a row must both
+    generate, and must produce two attempts rather than one reused.
+    """
+    from backend import generation
+
+    c, _ = client
+    calls = []
+
+    def _fake_generate(shot, n=3, backend="", render=None, **kw):
+        calls.append(backend)
+        shot.draft_variations = ["assets/s001/var_a.png"]
+        return shot.draft_variations
+
+    monkeypatch.setattr(M.assets, "generate_for_shot", _fake_generate)
+
+    original = manifest.db
+    manifest.db = None          # local development: saves succeed
+    try:
+        c.post("/api/regenerate/s001", json={"backend": "nano2"})
+        c.post("/api/regenerate/s001", json={"backend": "nano2"})
+    finally:
+        manifest.db = original
+
+    assert len(calls) == 2, "the second re-draft was refused rather than generated"
+    assert len(generation.load_attempts("s001")) == 2
+
+
+def test_a_draft_that_raises_is_left_in_doubt_not_marked_failed(client, monkeypatch):
+    """The provider may already have been called and charged.
+
+    Same rule the paid video path uses: after dispatch, an exception means the
+    outcome is unknown, not that nothing was bought.
+    """
+    from backend import generation
+
+    c, _ = client
+
+    def _boom(shot, n=3, backend="", render=None, **kw):
+        raise RuntimeError("fal timed out after dispatch")
+
+    monkeypatch.setattr(M.assets, "generate_for_shot", _boom)
+
+    original = manifest.db
+    manifest.db = None
+    try:
+        c.post("/api/regenerate/s001", json={"backend": "nano2"})
+    finally:
+        manifest.db = original
+
+    attempts = generation.load_attempts("s001")
+    assert attempts, "a dispatched draft left no record at all"
+    assert attempts[-1].outcome_unknown is True
+    assert attempts[-1].paid is True
+
+
 # --- 5. the refusal is readable by anyone, so it says nothing about the estate ---
 
 def test_the_refusal_does_not_publish_what_the_store_is(client, capsys):
