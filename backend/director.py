@@ -42,7 +42,7 @@ from pathlib import Path
 
 from . import atomic, config, generation, ledger
 from .ffmpeg_bin import ffmpeg_bin, ffprobe_bin
-from .manifest import Camera, MotionType, Shot, Storyboard
+from .manifest import Camera, MotionType, Shot, Storyboard, approval_is_explicit
 
 # Canonical stream parameters. These mirror `motion.render_shot`'s writer
 # exactly; if that changes, this must change with it or `-c copy` concat breaks.
@@ -1139,8 +1139,15 @@ def compile_coverage(plan: CoveragePlan, sb: Storyboard, render_dir: Path,
     # Free tiers stay open. Static and parallax cost nothing, and drafts are
     # explicitly a pre-gate activity, so an unapproved beat can still be assembled
     # locally for review.
+    #
+    # `approval_is_explicit` rather than truthiness, matching require_paid_gate
+    # and gate_cleared: this is the second route to the paid video tier, and it
+    # already exists because the first gate was attached to routes instead of to
+    # the spend. Asking the same question the same way is the point -- two doors
+    # onto the same money that disagree about what "approved" means is how the
+    # next one gets missed.
     paid = [s.id for s in plan.coverage if s.motion_type == "ai_video"]
-    if paid and not getattr(sb, "storyboard_approved", False):
+    if paid and not approval_is_explicit(getattr(sb, "storyboard_approved", False)):
         raise PlanError(
             f"{plan.beat_id}: {len(paid)} shot(s) want paid video ({paid}) but the "
             f"storyboard is not approved. Approve it first — that is where the "

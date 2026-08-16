@@ -3912,8 +3912,18 @@ def require_paid_gate(sb, what: str = "render") -> None:
     three handlers and was missing from the fourth -- which is the failure mode of
     attaching a gate to routes rather than to the spend. One helper, so a new route
     cannot regress it by omission.
+
+    The approval test goes through ``manifest.approval_is_explicit`` rather than
+    truthiness, for the reason this whole change exists: a non-boolean here is a
+    value nobody checked, and `"no"` is truthy. Not reachable today -- every
+    writer stores a real boolean, and ``from_dict`` now normalises what it loads
+    -- so this is not a live hole being plugged. It is the paid gate declining to
+    depend on that, which is the same argument that put a second check in
+    ``gate_cleared`` after the loader already had one. This is literally the
+    function money passes through; it should not be the one place that infers
+    approval instead of asking.
     """
-    if not getattr(sb, "storyboard_approved", False):
+    if not manifest.approval_is_explicit(getattr(sb, "storyboard_approved", False)):
         raise HTTPException(
             status_code=400,
             detail=f"Approve the storyboard first — that is where the {what} "

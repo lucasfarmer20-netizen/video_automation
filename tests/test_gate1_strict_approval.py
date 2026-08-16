@@ -37,9 +37,38 @@ And an assertion only protects something if it is REACHED.
 predicate verbatim against the same case list: a value that does not clear THAT
 gate never exercised the defect, and its case here would pass against the
 original code while proving nothing. That test is the one that keeps the rest of
-this file honest -- half of the loose-value space is falsy and was always safe by
-accident, and without it a case list that drifted entirely falsy would still look
-green.
+this file honest -- a third of the loose-value space is falsy and was always safe
+by accident, and without it a case list that drifted entirely falsy would still
+look green.
+
+TOKENS CLOSE INSTANCES; THE OBJECT CLOSES THE CLASS
+---------------------------------------------------
+The first revision of this file made, one level up, the exact mistake it was
+written to correct. It replaced a table of `True`/`False` with a table of
+thirteen loose values -- and every truthy one of them read as a REFUSAL
+(`"no"`, `"false"`, `"pending"`) or as a structure (`1`, `[]`, `{}`). Weaken any
+of the four enforcement points to `value is True or value == "yes"` and all
+thirteen still passed, with the whole suite green, while a paid Tier-C beat
+carrying `approved: "yes"` cleared Gate 1.
+
+The lesson is not "add 'yes'". A denial in the field is the SAFE input, because
+anyone reading the manifest can see it is wrong. The dangerous input is the one
+that reads as consent, because that is the one somebody writes a sentinel for --
+and the token they pick is, by definition, one this list does not contain.
+
+So there are two mechanisms below, and only the second is load-bearing:
+
+  * `_LOOSE` now carries the affirmative tokens as well. That kills the named
+    instances and documents the shape for a reader.
+  * `_EqualsAnything` compares equal to everything, so ANY equality or
+    membership sentinel accepts it -- `== "yes"`, `== "sanctioned"`,
+    `in AFFIRMATIVE` -- whatever token was chosen, including one nobody
+    listed. `is` is the single comparison it cannot fool, which is why
+    `approval_is_explicit` is written with `is`.
+
+The harness proves the difference rather than asserting it: one sentinel
+mutation uses `"yes"` (in the table) and another uses a token that appears
+NOWHERE in this file, and both must die.
 """
 
 from __future__ import annotations
@@ -73,11 +102,37 @@ from backend.manifest import (  # noqa: E402
 # covered, because `from_dict` now has to turn it into a real `False` rather than
 # leaving `0` or `[]` in the field for `to_dict` to write back out.
 _LOOSE: list[tuple[str, object, bool]] = [
-    # Truthy: every one of these opened Gate 1 on a paid beat before the fix.
+    # Denials and undecided states. Truthy, so every one opened Gate 1 before
+    # the fix -- this is the reported defect.
     ("str-no", "no", True),
     ("str-false", "false", True),
-    ("str-true", "true", True),
     ("str-pending", "pending", True),
+    ("str-maybe", "maybe", True),
+    # AFFIRMATIVE-LOOKING. A first revision of this table had none of these, and
+    # the omission was the same mistake it was written to correct: it was heavy
+    # on values that LOOK like refusals, because those are what the bug report
+    # showed, and a check weakened to `value is True or value == "yes"` sailed
+    # through all of them with the entire suite green.
+    #
+    # A denial is not the dangerous input. It is the SAFE one -- a reviewer
+    # looking at `approved: "no"` knows something is wrong. The dangerous input
+    # is the one that reads as consent to a human skimming the manifest and is
+    # still a value nobody checked, because that is the one a sentinel gets
+    # added for. Case and punctuation vary because a sentinel is usually
+    # written to be forgiving.
+    ("str-yes", "yes", True),
+    ("str-YES", "YES", True),
+    ("str-Y", "Y", True),
+    ("str-y", "y", True),
+    ("str-t", "t", True),
+    ("str-on", "on", True),
+    ("str-ok", "ok", True),
+    ("str-true", "true", True),
+    ("str-TRUE", "TRUE", True),
+    ("str-True", "True", True),
+    ("str-approved", "approved", True),
+    ("str-one", "1", True),
+    # Numbers and containers: what a loosely-typed client sends.
     ("int-1", 1, True),
     ("float-1", 1.0, True),
     ("list-nonempty", ["vesper"], True),
@@ -92,6 +147,80 @@ _LOOSE: list[tuple[str, object, bool]] = [
 
 _LOOSE_IDS = [name for name, _, _ in _LOOSE]
 _LOOSE_VALUES = [value for _, value, _ in _LOOSE]
+
+
+class _EqualsAnything:
+    """Compares equal to every value there is, and is truthy.
+
+    THIS is what closes the class; the token list above only closes instances.
+
+    A list of affirmative strings kills `value is True or value == "yes"` and
+    kills nothing else. Pick a token the list does not contain -- `"sanctioned"`,
+    `"GRANTED"`, a UUID, whatever the next author reaches for -- and the
+    weakened check passes every case again. Enumerating tokens is unwinnable:
+    the space is every string, and the one that matters is by definition the one
+    nobody listed.
+
+    So instead of guessing the token, this refuses to be distinguished from it.
+    ``__eq__`` returns True against anything, so ANY equality or membership
+    sentinel -- ``== <token>``, ``in (<tokens>)``, ``in AFFIRMATIVE_SET`` --
+    accepts this object whatever token was chosen, and the assertion that it
+    must be rejected fails. ``is`` is the one comparison it cannot fool, which
+    is exactly why ``approval_is_explicit`` uses ``is`` and why this object
+    passes against the real implementation.
+
+    ``__hash__`` is defined because ``__eq__`` alone would make it unhashable,
+    and an unhashable value would raise TypeError inside a ``value in {...}``
+    membership sentinel rather than being accepted by it -- the test would still
+    fail, but for the wrong reason, and a reader chasing it would land on the
+    container type instead of on the missing approval.
+    """
+
+    def __eq__(self, other) -> bool:
+        return True
+
+    def __ne__(self, other) -> bool:
+        return False
+
+    def __hash__(self) -> int:
+        return hash(True)
+
+    def __bool__(self) -> bool:
+        return True
+
+    def __repr__(self) -> str:
+        return "<equal-to-everything>"
+
+
+class _AffirmativeString(str):
+    """A ``str`` that reads "yes" and is a genuine ``str`` subclass.
+
+    Closes the sibling class: a check that decides by SHAPE rather than by
+    value -- ``isinstance(value, str) and value.lower() not in ("no", "false")``,
+    or any `str` fast-path added for a client that sends text. `_EqualsAnything`
+    is not a str and would slip past that one; a plain `"yes"` in the table
+    catches the common form, and this catches the form that also asks about the
+    type. Rejected by the real implementation for the same single reason
+    everything else is: it is not the ``True`` singleton.
+    """
+
+    def __new__(cls):
+        return super().__new__(cls, "yes")
+
+
+# Values that cannot round-trip through JSON, so they exercise the in-memory
+# predicate and the loader but not the on-disk tests.
+_ADVERSARIAL: list[tuple[str, object]] = [
+    ("equals-anything", _EqualsAnything()),
+    ("str-subclass-yes", _AffirmativeString()),
+]
+
+_ADV_IDS = [name for name, _ in _ADVERSARIAL]
+_ADV_VALUES = [value for _, value in _ADVERSARIAL]
+
+# Everything that must be refused, JSON-safe or not.
+_ALL_REFUSED_IDS = _LOOSE_IDS + _ADV_IDS
+_ALL_REFUSED_VALUES = _LOOSE_VALUES + _ADV_VALUES
 
 # Positions and lengths, so a gate that checks only some of the paid beats is
 # caught on the value axis too. Small on purpose -- test_manifest.py already
@@ -172,8 +301,28 @@ def test_every_truthy_case_would_have_opened_the_old_gate():
         sb = Storyboard(title="T", storyboard_approved=True,
                         shots=[_paid("s001", approved=value)])
         assert _old_gate(sb) is truthy, name
+    for name, value in _ADVERSARIAL:
+        sb = Storyboard(title="T", storyboard_approved=True,
+                        shots=[_paid("s001", approved=value)])
+        assert _old_gate(sb) is True, name
     assert any(truthy for _, _, truthy in _LOOSE), (
         "no case in _LOOSE reproduces the defect; this file would be vacuous")
+
+
+def test_the_affirmative_half_of_the_table_is_not_token_bound():
+    """The token list must not be the only thing standing between the gate and a
+    sentinel, and this is the assertion that says so out loud.
+
+    `_EqualsAnything` is rejected for the same single reason `"yes"` is -- it is
+    not the `True` singleton -- but it is rejected under EVERY choice of token,
+    including the ones nobody listed. If this file ever loses that object and
+    keeps only the strings, it is back to closing instances."""
+    assert _EqualsAnything() == "yes"
+    assert _EqualsAnything() == "sanctioned-by-vesper-2026"
+    assert _EqualsAnything() in ("yes", "true", "on")
+    assert bool(_EqualsAnything()) is True
+    # ...and none of that is an approval.
+    assert approval_is_explicit(_EqualsAnything()) is False
 
 
 def test_the_paid_fixture_clears_the_gate_when_approval_is_a_real_boolean():
@@ -186,7 +335,7 @@ def test_the_paid_fixture_clears_the_gate_when_approval_is_a_real_boolean():
 
 # --- approval_is_explicit ---------------------------------------------------------
 
-@pytest.mark.parametrize("value", _LOOSE_VALUES, ids=_LOOSE_IDS)
+@pytest.mark.parametrize("value", _ALL_REFUSED_VALUES, ids=_ALL_REFUSED_IDS)
 def test_nothing_loose_counts_as_an_approval(value):
     assert approval_is_explicit(value) is False
 
@@ -198,7 +347,7 @@ def test_only_the_boolean_true_counts_as_an_approval():
 
 # --- gate_cleared(): the last line of defence ------------------------------------
 
-@pytest.mark.parametrize("value", _LOOSE_VALUES, ids=_LOOSE_IDS)
+@pytest.mark.parametrize("value", _ALL_REFUSED_VALUES, ids=_ALL_REFUSED_IDS)
 @pytest.mark.parametrize("n_paid,broken_at", _LXP, ids=_LXP_IDS)
 def test_gate_shut_when_any_paid_beats_approval_is_not_a_boolean(
         value, n_paid, broken_at):
@@ -216,7 +365,7 @@ def test_gate_shut_when_any_paid_beats_approval_is_not_a_boolean(
     assert _siblings_are_ready(paid, broken_at)
 
 
-@pytest.mark.parametrize("value", _LOOSE_VALUES, ids=_LOOSE_IDS)
+@pytest.mark.parametrize("value", _ALL_REFUSED_VALUES, ids=_ALL_REFUSED_IDS)
 def test_gate_shut_when_the_storyboard_approval_is_not_a_boolean(value):
     """The project-level term, which fails the same way one line earlier: with
     `"no"`, `if not self.storyboard_approved` is False, so the short-circuit
@@ -240,7 +389,7 @@ def test_a_loose_approval_does_not_hold_the_gate_shut_for_free_beats():
 
 # --- from_dict(): the boundary ----------------------------------------------------
 
-@pytest.mark.parametrize("value", _LOOSE_VALUES, ids=_LOOSE_IDS)
+@pytest.mark.parametrize("value", _ALL_REFUSED_VALUES, ids=_ALL_REFUSED_IDS)
 def test_a_loose_approval_never_becomes_an_approved_shot(value):
     """Validate on read, so the bad value never reaches the object at all.
 
@@ -254,7 +403,7 @@ def test_a_loose_approval_never_becomes_an_approved_shot(value):
     assert sb.shots[1].approved is True, "only the loose beat may be reset"
 
 
-@pytest.mark.parametrize("value", _LOOSE_VALUES, ids=_LOOSE_IDS)
+@pytest.mark.parametrize("value", _ALL_REFUSED_VALUES, ids=_ALL_REFUSED_IDS)
 def test_a_loose_storyboard_approval_never_becomes_an_approved_project(value):
     sb = Storyboard.from_dict("p", {"title": "T", "storyboard_approved": value},
                               [_paid_dict("s001")])
@@ -262,7 +411,7 @@ def test_a_loose_storyboard_approval_never_becomes_an_approved_project(value):
     assert sb.storyboard_approved is False
 
 
-@pytest.mark.parametrize("value", _LOOSE_VALUES, ids=_LOOSE_IDS)
+@pytest.mark.parametrize("value", _ALL_REFUSED_VALUES, ids=_ALL_REFUSED_IDS)
 def test_a_loose_approval_is_degraded_rather_than_raised(value):
     """It degrades, and it degrades quietly enough to keep the project readable.
 
@@ -440,7 +589,101 @@ def _sidebar(tmp_path, monkeypatch):
     return badge
 
 
-@pytest.mark.parametrize("value", _LOOSE_VALUES, ids=_LOOSE_IDS)
+# --- the two paid doors: same question, asked the same way ----------------------
+#
+# Neither of these is reachable today. Every writer stores a real boolean and
+# from_dict normalises what it loads, so nothing can currently put a loose value
+# in front of them -- these are LOW, and saying otherwise would overstate them.
+#
+# They are here because this PR's own argument applies to them more than to
+# anything else it touches: a gate that infers its input is one edit from being
+# bypassed, and these two are the functions money actually passes through.
+# require_paid_gate exists at all because the check was attached to routes
+# instead of to the spend and one route was missed; director's exists because
+# coverage was a second door onto Tier C that walked past the first. Two doors
+# onto the same money that disagree about what "approved" means is how the third
+# gets missed too.
+
+@pytest.mark.parametrize("value", _ALL_REFUSED_VALUES, ids=_ALL_REFUSED_IDS)
+def test_the_paid_gate_refuses_an_approval_that_is_not_a_boolean(value):
+    """`require_paid_gate` is the single helper every paid render route calls."""
+    from fastapi import HTTPException
+    from backend import main as MAIN
+
+    sb = Storyboard(title="T", shots=[_paid("s001")])
+    sb.storyboard_approved = value
+    with pytest.raises(HTTPException) as exc:
+        MAIN.require_paid_gate(sb, "render")
+    assert exc.value.status_code == 400
+    assert "Approve the storyboard first" in str(exc.value.detail)
+
+
+def test_the_paid_gate_still_admits_a_real_approval():
+    """No over-correction: the gate must open for a genuinely approved board, or
+    every paid render is dead."""
+    from backend import main as MAIN
+
+    sb = Storyboard(title="T", storyboard_approved=True, shots=[_paid("s001")])
+    assert MAIN.require_paid_gate(sb, "render") is None
+
+
+@pytest.mark.parametrize("value", _ALL_REFUSED_VALUES, ids=_ALL_REFUSED_IDS)
+def test_paid_coverage_refuses_an_approval_that_is_not_a_boolean(
+        value, tmp_path, monkeypatch):
+    """The director's coverage route, the second door onto the paid video tier."""
+    from backend import director
+    from backend.director import CoveragePlan, DirectorShot, PlanError
+    from backend.manifest import Camera
+
+    monkeypatch.setattr(director.config, "MANIFEST_PATH", tmp_path / "m.json")
+    plan = CoveragePlan(
+        beat_id="s003", beat_duration=27.0, status="locked",
+        coverage=[DirectorShot(id="s003.01", beat_id="s003", prompt="a thing",
+                               camera=Camera(duration=27.0),
+                               motion_type="ai_video")])
+    director.save_plan(plan)
+
+    sb = Storyboard(id="p", title="T",
+                    shots=[Shot(scene_id="s003", narration="x",
+                                camera=Camera(duration=27.0))])
+    sb.storyboard_approved = value
+
+    with pytest.raises(PlanError, match="not approved"):
+        director.compile_coverage(plan, sb, tmp_path / "render",
+                                  log=lambda m: None)
+
+
+@pytest.mark.parametrize("value", _ALL_REFUSED_VALUES, ids=_ALL_REFUSED_IDS)
+def test_free_coverage_is_unaffected_by_the_strict_check(
+        value, tmp_path, monkeypatch):
+    """Free tiers stay open before the gate — parallax costs nothing, and drafts
+    are explicitly a pre-gate activity. Tightening the approval test must not
+    quietly close a door that was deliberately left open."""
+    from backend import director
+    from backend.director import CoveragePlan, DirectorShot
+    from backend.manifest import Camera
+
+    monkeypatch.setattr(director.config, "MANIFEST_PATH", tmp_path / "m.json")
+    plan = CoveragePlan(
+        beat_id="s003", beat_duration=27.0, status="locked",
+        coverage=[DirectorShot(id="s003.01", beat_id="s003", prompt="a thing",
+                               camera=Camera(duration=27.0),
+                               motion_type="parallax")])
+    director.save_plan(plan)
+
+    sb = Storyboard(id="p", title="T",
+                    shots=[Shot(scene_id="s003", narration="x",
+                                camera=Camera(duration=27.0))])
+    sb.storyboard_approved = value
+
+    # Fails later for want of media, but must NOT fail on the approval check.
+    with pytest.raises(Exception) as exc:
+        director.compile_coverage(plan, sb, tmp_path / "render",
+                                  log=lambda m: None)
+    assert "not approved" not in str(exc.value)
+
+
+@pytest.mark.parametrize("value", _ALL_REFUSED_VALUES, ids=_ALL_REFUSED_IDS)
 def test_the_durable_store_cannot_restore_a_badge_the_scan_withheld(_sidebar, value):
     """`/api/projects` refines the scanned entry from the Firestore document, and
     that refinement is a second RAW read -- `manifest.list_projects` returns

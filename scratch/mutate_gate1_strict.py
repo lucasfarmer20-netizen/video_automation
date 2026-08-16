@@ -47,6 +47,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "backend" / "manifest.py"
 MAIN = ROOT / "backend" / "main.py"
+DIRECTOR = ROOT / "backend" / "director.py"
 
 
 # --------------------------------------------------------------------------- #
@@ -68,6 +69,28 @@ from backend.manifest import MotionType, Shot, Storyboard
 LOOSE = [("no", "no"), ("false", "false"), ("true", "true"), ("one", 1),
          ("list", ["vesper"]), ("dict", {"by": "vesper"}),
          ("zero", 0), ("none", None), ("emptylist", [])]
+
+
+class EqAny:
+    """Equal to everything, truthy. Stands in for every sentinel token at once.
+
+    A probe over affirmative STRINGS can only demonstrate the tokens somebody
+    thought to list. This one is accepted by any `== <token>` or `in (<tokens>)`
+    sentinel whatever the token is, so PROBE_SENTINEL_eqany=True is evidence
+    about the whole class rather than about one word.
+    """
+    def __eq__(self, other): return True
+    def __ne__(self, other): return False
+    def __hash__(self): return hash(True)
+    def __bool__(self): return True
+    def __repr__(self): return "<eqany>"
+
+
+# Affirmative-looking values. `yes` is in the test file's table; `UNLISTED` is
+# deliberately NOT -- see the SENTINEL mutations for why that distinction is the
+# whole point.
+UNLISTED = "sanctioned-by-vesper-2026"
+SENTINELS = [("yes", "yes"), ("unlisted", UNLISTED), ("eqany", EqAny())]
 
 tmp = Path(tempfile.mkdtemp())
 
@@ -98,10 +121,71 @@ sb = Storyboard(title="T", shots=[paid()])
 sb.storyboard_approved = "no"
 print("PROBE_INMEM_SBGATE_no=%s" % sb.gate_cleared())
 
+# The sentinel space: a paid Tier-C beat whose approval merely LOOKS like
+# consent. All False pristine.
+for name, value in SENTINELS:
+    sb = Storyboard(title="T", storyboard_approved=True,
+                    shots=[paid(approved=value)])
+    print("PROBE_SENTINEL_%s=%s" % (name, sb.gate_cleared()))
+
 # The floor: with a real boolean this same fixture must still open.
 print("PROBE_INMEM_GATE_realtrue=%s"
       % Storyboard(title="T", storyboard_approved=True,
                    shots=[paid()]).gate_cleared())
+'''
+
+# The paid doors: require_paid_gate, which every paid render route calls, and
+# the director's coverage route, which is the second way onto Tier C.
+PROBE_PAID = _PRELUDE + '''
+from backend import main as MAIN
+
+def gate_admits(value):
+    sb = Storyboard(title="T", shots=[paid()])
+    sb.storyboard_approved = value
+    try:
+        MAIN.require_paid_gate(sb, "render")
+        return True          # no refusal -- the paid call proceeds
+    except Exception:
+        return False
+
+for name, value in SENTINELS:
+    print("PROBE_PAIDGATE_%s=%s" % (name, gate_admits(value)))
+print("PROBE_PAIDGATE_no=%s" % gate_admits("no"))
+print("PROBE_PAIDGATE_realtrue=%s" % gate_admits(True))
+'''
+
+# The director's coverage route -- the second door onto the paid video tier.
+PROBE_COVERAGE = _PRELUDE + '''
+from backend import director
+from backend.director import CoveragePlan, DirectorShot
+from backend.manifest import Camera
+
+director.config.MANIFEST_PATH = tmp / "m.json"
+
+
+def coverage_admits(value, motion="ai_video"):
+    """True when the approval refusal did NOT fire -- i.e. the paid route ran."""
+    plan = CoveragePlan(
+        beat_id="s003", beat_duration=27.0, status="locked",
+        coverage=[DirectorShot(id="s003.01", beat_id="s003", prompt="a thing",
+                               camera=Camera(duration=27.0), motion_type=motion)])
+    director.save_plan(plan)
+    sb = Storyboard(id="p", title="T",
+                    shots=[Shot(scene_id="s003", narration="x",
+                                camera=Camera(duration=27.0))])
+    sb.storyboard_approved = value
+    try:
+        director.compile_coverage(plan, sb, tmp / "render", log=lambda m: None)
+        return True
+    except Exception as exc:
+        return "not approved" not in str(exc)
+
+
+for name, value in SENTINELS:
+    print("PROBE_COVERAGE_%s=%s" % (name, coverage_admits(value)))
+print("PROBE_COVERAGE_no=%s" % coverage_admits("no"))
+# Free tiers stay open before the gate; tightening approval must not close them.
+print("PROBE_COVERAGE_free_no=%s" % coverage_admits("no", motion="parallax"))
 '''
 
 # The boundary: a manifest on disk, loaded the way every project is loaded.
@@ -195,6 +279,8 @@ PROBES = {
     "load": PROBE_LOAD,
     "note": PROBE_NOTE,
     "sidebar": PROBE_SIDEBAR,
+    "paid": PROBE_PAID,
+    "coverage": PROBE_COVERAGE,
 }
 
 
@@ -276,6 +362,14 @@ PRE_SIDEBAR = (
 PRE_SIDEBAR_DOC = (
     '                p["storyboard_approved"] = doc.get(  # MUTANT\n'
     '                    "storyboard_approved", p["storyboard_approved"])\n'
+)
+
+# The two paid doors.
+PAID_GATE = (
+    '    if not manifest.approval_is_explicit(getattr(sb, "storyboard_approved", False)):\n'
+)
+DIRECTOR_GATE = (
+    '    if paid and not approval_is_explicit(getattr(sb, "storyboard_approved", False)):\n'
 )
 
 
@@ -491,6 +585,92 @@ MUTATIONS = [
         expect=["test_the_paid_fixture_clears_the_gate_when_approval_is_a_real_boolean",
                 "test_a_real_approval_still_opens_the_gate_through_from_dict"],
     ),
+    # ---- sentinels: the class the token list alone cannot close -----------------
+    #
+    # These are the mutations that caught the first revision of this work. Every
+    # loose value in the test table then read as a REFUSAL or a structure, so a
+    # check weakened to accept one affirmative token passed all of them with the
+    # entire suite green.
+    #
+    # SENTINEL-1 and SENTINEL-2 are the same weakening with a different word, and
+    # the pair is the point. `yes` is in the test file's table, so the token list
+    # kills it. `sanctioned-by-vesper-2026` appears NOWHERE in that file, so the
+    # token list cannot kill it and only _EqualsAnything can -- which is what
+    # makes the guard a closed class rather than a longer list of instances.
+    # If SENTINEL-2 ever survives while SENTINEL-1 dies, the object has been
+    # dropped and this file is back to whack-a-mole.
+    Mutation(
+        "SENTINEL-1: a listed affirmative token counts as approval",
+        "contract §5.4",
+        "strictness for one word -- `is True or == \"yes\"`, the shape somebody "
+        "adds for a client that sends text. A paid Tier-C beat carrying "
+        "`approved: \"yes\"` clears Gate 1 having been approved by nobody",
+        [(MANIFEST, EXPLICIT_RETURN,
+          '    return value is True or value == "yes"  # MUTANT\n')],
+        probes=[("inmem", "PROBE_SENTINEL_yes=True"),
+                ("inmem", "PROBE_SENTINEL_eqany=True"),
+                ("paid", "PROBE_PAIDGATE_yes=True")],
+        expect=["test_nothing_loose_counts_as_an_approval[str-yes]",
+                "test_nothing_loose_counts_as_an_approval[equals-anything]",
+                "test_gate_shut_when_any_paid_beats_approval_is_not_a_boolean",
+                "test_the_paid_gate_refuses_an_approval_that_is_not_a_boolean"],
+    ),
+    Mutation(
+        "SENTINEL-2: an UNLISTED token counts as approval", "contract §5.4",
+        "the same weakening with a word the test table does not contain. No "
+        "list of affirmative strings can kill this, however long -- the token "
+        "space is every string and the dangerous one is by definition the one "
+        "nobody listed. Only _EqualsAnything reaches it",
+        [(MANIFEST, EXPLICIT_RETURN,
+          '    return value is True or value == "sanctioned-by-vesper-2026"  # MUTANT\n')],
+        probes=[("inmem", "PROBE_SENTINEL_unlisted=True"),
+                ("inmem", "PROBE_SENTINEL_eqany=True"),
+                ("paid", "PROBE_PAIDGATE_eqany=True")],
+        expect=["test_nothing_loose_counts_as_an_approval[equals-anything]",
+                "test_the_affirmative_half_of_the_table_is_not_token_bound"],
+    ),
+    Mutation(
+        "SENTINEL-3: a membership whitelist, bypassing the helper entirely",
+        "contract §5.4",
+        "the sentinel added at the CALL SITE rather than at the definition, so "
+        "approval_is_explicit is untouched and its unit tests all still pass. "
+        "Only a test that drives gate_cleared itself can see this",
+        [(MANIFEST,
+          "            approval_is_explicit(s.approved) and bool(s.video_model)\n",
+          "            (approval_is_explicit(s.approved)\n"
+          '             or s.approved in ("yes", "on", "granted"))  # MUTANT\n'
+          "            and bool(s.video_model)\n")],
+        probes=[("inmem", "PROBE_SENTINEL_yes=True"),
+                ("inmem", "PROBE_SENTINEL_eqany=True")],
+        expect=["test_gate_shut_when_any_paid_beats_approval_is_not_a_boolean"],
+    ),
+    Mutation(
+        "SENTINEL-4: the paid gate infers approval again", "contract §5.4",
+        "require_paid_gate back to truthiness -- the helper every paid render "
+        "route calls, and the function money actually passes through. Not "
+        "reachable today, which is exactly why it needs a test rather than an "
+        "argument",
+        [(MAIN, PAID_GATE,
+          '    if not getattr(sb, "storyboard_approved", False):  # MUTANT\n')],
+        probes=[("paid", "PROBE_PAIDGATE_no=True"),
+                ("paid", "PROBE_PAIDGATE_yes=True"),
+                ("paid", "PROBE_PAIDGATE_eqany=True")],
+        expect=["test_the_paid_gate_refuses_an_approval_that_is_not_a_boolean"],
+    ),
+    Mutation(
+        "SENTINEL-5: the coverage door infers approval again", "contract §5.4",
+        "the director's Tier-C route back to truthiness. It exists because "
+        "coverage was a second door onto paid video that walked past the first "
+        "gate; two doors that disagree about what approved means is how the "
+        "third gets missed",
+        [(DIRECTOR, DIRECTOR_GATE,
+          '    if paid and not getattr(sb, "storyboard_approved", False):  # MUTANT\n')],
+        probes=[("coverage", "PROBE_COVERAGE_no=True"),
+                ("coverage", "PROBE_COVERAGE_yes=True"),
+                ("coverage", "PROBE_COVERAGE_eqany=True")],
+        expect=["test_paid_coverage_refuses_an_approval_that_is_not_a_boolean"],
+    ),
+
     Mutation(
         "the loader resets approval on beats that cost nothing", "contract §5.4",
         "over-correction at the boundary — a free beat's approval is not a term "

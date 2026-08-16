@@ -466,16 +466,22 @@ class Mutation:
 # ambiguous, and every mutation is then visibly a complete alternative predicate
 # rather than a diff a reader has to apply in their head.
 
+# Re-anchored when Gate 1's approval terms became strictly boolean (§5.4):
+# `s.approved` is now `approval_is_explicit(s.approved)` and the storyboard check
+# below is wrapped the same way. Every mutation keeps the meaning it was written
+# with -- this is the anchor text moving, not the mutation set changing. Without
+# it, 12 of the 20 mutations here fail with "anchor not found" and this harness
+# stops testing anything.
 GATE_BODY = (
     "        return all(\n"
-    "            s.approved and bool(s.video_model)\n"
+    "            approval_is_explicit(s.approved) and bool(s.video_model)\n"
     "            for s in self.shots\n"
     "            if s.needs_paid_video()\n"
     "        )"
 )
 
 
-def gate(terms: str = "s.approved and bool(s.video_model)",
+def gate(terms: str = "approval_is_explicit(s.approved) and bool(s.video_model)",
          quantifier: str = "all", iterable: str = "self.shots",
          predicate: str = "\n            if s.needs_paid_video()") -> str:
     return (f"        return {quantifier}(  # MUTANT\n"
@@ -485,7 +491,7 @@ def gate(terms: str = "s.approved and bool(s.video_model)",
 
 
 GATE_APPROVAL_CHECK = (
-    "        if not self.storyboard_approved:\n"
+    "        if not approval_is_explicit(self.storyboard_approved):\n"
     "            return False\n"
 )
 
@@ -495,7 +501,7 @@ NEEDS_PAID = (
 )
 
 REQUIRE_PAID_GATE = (
-    '    if not getattr(sb, "storyboard_approved", False):\n'
+    '    if not manifest.approval_is_explicit(getattr(sb, "storyboard_approved", False)):\n'
     "        raise HTTPException(\n"
     "            status_code=400,\n"
     '            detail=f"Approve the storyboard first — that is where the {what} "\n'
@@ -503,7 +509,9 @@ REQUIRE_PAID_GATE = (
     "        )"
 )
 
-DIRECTOR_GATE = '    if paid and not getattr(sb, "storyboard_approved", False):'
+DIRECTOR_GATE = (
+    '    if paid and not approval_is_explicit(getattr(sb, "storyboard_approved", False)):'
+)
 DIRECTOR_SELECTS_PAID = (
     '    paid = [s.id for s in plan.coverage if s.motion_type == "ai_video"]'
 )
@@ -566,7 +574,7 @@ MUTATIONS = [
         "an approved Tier-C beat needs no model to render on", "CLAUDE.md Gate 1",
         "the model term — a beat ticked for spend with nothing selected to "
         "generate it sends the pipeline at a paid API with no model",
-        [(MANIFEST, GATE_BODY, gate(terms="s.approved"))],
+        [(MANIFEST, GATE_BODY, gate(terms="approval_is_explicit(s.approved)"))],
         probes=[("gate", "PROBE_GATE_ONE_PAID_NO_MODEL=True"),
                 ("gate", "PROBE_GATE_ONE_PAID_BLANK_MODEL=True"),
                 ("gate", "PROBE_GATE_FIRST_BLIND=n1i0-no_model")],
@@ -605,7 +613,8 @@ MUTATIONS = [
         "a blank model counts as a model", "CLAUDE.md Gate 1",
         "`bool()` — the empty string is what a cleared dropdown writes, and it "
         "is not None, so the gate opens on a beat with nothing selected",
-        [(MANIFEST, GATE_BODY, gate(terms="s.approved and s.video_model is not None"))],
+        [(MANIFEST, GATE_BODY,
+          gate(terms="approval_is_explicit(s.approved) and s.video_model is not None"))],
         probes=[("gate", "PROBE_GATE_ONE_PAID_BLANK_MODEL=True"),
                 ("gate", "PROBE_GATE_FIRST_BLIND=n1i0-blank_model")],
         expect=["test_gate_shut_when_any_one_of_several_paid_shots_has_no_video_model"],
