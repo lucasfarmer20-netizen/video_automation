@@ -2,18 +2,29 @@
 
 import React, { useState, useEffect } from "react";
 import { CoverageSurvey, SurveyBeat } from "../types/director";
-import { fetchCoverageSurvey, redirectSceneCoverage } from "../lib/directorApi";
-import { Compass, Sparkles, AlertTriangle, Play, ChevronRight, CheckCircle2, RefreshCw } from "lucide-react";
+import { fetchCoverageSurvey, redirectSceneCoverage, waitForJob } from "../lib/directorApi";
+import { Compass, Sparkles, AlertTriangle, Play, ChevronRight, CheckCircle2, RefreshCw, Clock } from "lucide-react";
 
 interface CoverageSurveyPanelProps {
   onSelectBeats: (beats: string[]) => void;
 }
+
+/**
+ * Why the plan did not open the workspace.
+ *
+ * `busy` is a 409: another plan is already running. Nothing has gone wrong and
+ * the user did not cause it, so it must not be dressed as a failure. `failed`
+ * is a plan that ran and did not produce one, or a POST that never started.
+ */
+type PlanProblem = { key: string; kind: "busy" | "failed"; message: string };
 
 export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPanelProps) {
   const [survey, setSurvey] = useState<CoverageSurvey | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [planningBeats, setPlanningBeats] = useState<string | null>(null);
+  const [planLog, setPlanLog] = useState<string>("");
+  const [planProblem, setPlanProblem] = useState<PlanProblem | null>(null);
 
   const loadSurvey = () => {
     setLoading(true);
@@ -33,17 +44,85 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
     loadSurvey();
   }, []);
 
+  /**
+   * Plan a beat, and open the workspace only once the plan is on disk.
+   *
+   * POST /api/director/plan answers the instant `start_job` spawns a thread; the
+   * plan itself is a plan -> critic -> re-plan cycle of Anthropic calls, roughly
+   * ninety seconds. This used to call `onSelectBeats` about one second into that,
+   * so the workspace mounted, fetched a plan that did not exist yet, showed
+   * "404 / Unplanned" and — since it only refetches when `sceneId` changes —
+   * never looked again. The plan landed a minute later into a screen that had
+   * already given up. Worse, the catch branch was identical to the success
+   * branch, so a 409 ("a plan for s003 is already running") and an outright
+   * failure both opened the workspace exactly as success did.
+   *
+   * `waitForJob` is the pattern already used by DirectorWorkspace for this same
+   * endpoint, and its own comment documents this exact failure.
+   *
+   * The direction of error is deliberate: an unfinished or failed plan is never
+   * presented as a finished one. Saying "still planning" about a job that has
+   * finished costs a refresh; opening a finished-looking workspace over a job
+   * that never ran cost a walkthrough.
+   */
   const handlePlanBeats = async (beatList: string[]) => {
     const key = beatList.join(",");
+    // Only one plan job runs at a time server-side, so starting a second from
+    // this panel could only earn a 409.
+    if (planningBeats) return;
     setPlanningBeats(key);
+    setPlanLog("");
+    setPlanProblem(null);
     try {
-      await redirectSceneCoverage(beatList, "Initial scene coverage planning");
+      const res = await redirectSceneCoverage(beatList, "Initial scene coverage planning");
+      if (!res.job) {
+        // Started, but unnamed: there is no job to watch, so this panel cannot
+        // know when it finishes. It says so rather than guessing "ready".
+        setPlanProblem({
+          key,
+          kind: "failed",
+          message:
+            `Planning ${key} started, but the server did not name the job, so this ` +
+            `panel cannot tell when it finishes. Watch the job log and reopen the beat.`,
+        });
+        return;
+      }
+      const done = await waitForJob(res.job, { onLog: setPlanLog });
+      if (!done.ok) {
+        setPlanProblem({
+          key,
+          kind: "failed",
+          message:
+            done.status === "timeout"
+              ? `The planner for ${key} is still running — it has not finished, so there ` +
+                `is no plan to open yet. Leave it and reopen the beat shortly.`
+              : `Planning ${key} failed, so no coverage plan was written. ` +
+                `${(done.log || "").slice(-300)}`.trim(),
+        });
+        return;
+      }
       onSelectBeats(beatList);
     } catch (e: any) {
-      console.log("Started planning or opening workspace:", e.message);
-      onSelectBeats(beatList);
+      const status = e?.status;
+      setPlanProblem(
+        status === 409
+          ? {
+              key,
+              kind: "busy",
+              message:
+                `${e?.message || `A plan for ${key} is already running`} — nothing is wrong ` +
+                `and nothing was lost; wait for it to finish rather than starting another.`,
+            }
+          : {
+              key,
+              kind: "failed",
+              message:
+                e?.message || `Could not start planning for ${key}, so no plan was requested.`,
+            }
+      );
     } finally {
       setPlanningBeats(null);
+      setPlanLog("");
     }
   };
 
@@ -115,6 +194,7 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
           const isHigh = beat.recommend === 3;
           const isMed = beat.recommend === 2;
           const isPlanning = planningBeats === beat.beat_id;
+          const problem = planProblem && planProblem.key === beat.beat_id ? planProblem : null;
 
           const dots = isHigh ? "●●●" : isMed ? "●●" : "○";
           const dotColor = isHigh ? "text-red-400" : isMed ? "text-amber-400" : "text-zinc-500";
@@ -142,13 +222,44 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
                     </span>
                   </div>
                   <p className="text-xs text-zinc-300 font-mono mt-1 font-semibold">{beat.reason}</p>
+
+                  {/* The job, while it is running. Ninety seconds of silence is
+                      what made "did that button do anything?" the only reading. */}
+                  {isPlanning && (
+                    <p
+                      data-testid={`plan-running-${beat.beat_id}`}
+                      className="text-[11px] text-amber-300/90 font-mono mt-1.5 leading-relaxed"
+                    >
+                      Planning {beat.beat_id} — this takes about a minute and a half. The
+                      workspace opens when the plan is written.
+                      {planLog ? ` ${planLog}` : ""}
+                    </p>
+                  )}
+
+                  {problem && (
+                    <p
+                      data-testid={`plan-problem-${beat.beat_id}`}
+                      data-kind={problem.kind}
+                      className={`text-[11px] font-mono mt-1.5 leading-relaxed ${
+                        problem.kind === "busy" ? "text-zinc-300" : "text-red-300"
+                      }`}
+                    >
+                      {problem.kind === "busy" ? (
+                        <Clock className="w-3 h-3 inline-block mr-1 -mt-0.5" />
+                      ) : (
+                        <AlertTriangle className="w-3 h-3 inline-block mr-1 -mt-0.5" />
+                      )}
+                      {problem.message}
+                    </p>
+                  )}
                 </div>
               </div>
 
               {/* Action Button */}
               <button
+                data-testid={`plan-beat-${beat.beat_id}`}
                 onClick={() => handlePlanBeats([beat.beat_id])}
-                disabled={isPlanning}
+                disabled={Boolean(planningBeats)}
                 className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-mono font-bold rounded-lg transition flex items-center gap-1.5 shrink-0 shadow disabled:opacity-50"
               >
                 {isPlanning ? (
@@ -156,7 +267,7 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
                 ) : (
                   <Play className="w-3.5 h-3.5 fill-current" />
                 )}
-                <span>PLAN SCENE ({beat.beat_id})</span>
+                <span>{isPlanning ? `PLANNING (${beat.beat_id})…` : `PLAN SCENE (${beat.beat_id})`}</span>
               </button>
             </div>
           );
