@@ -156,6 +156,30 @@ describe("the refusals arrive distinguishable, in the server's own words", () =>
     expect(err.status).toBe(404);
   });
 
+  test("a plan replaced after the quote comes back flagged as a mismatch", async () => {
+    vi.stubGlobal("fetch", reply(409, {
+      ok: false,
+      error:
+        "the plan for s001 changed after you were quoted a price, so nothing " +
+        "was compiled and nothing was charged. Review the current plan and " +
+        "confirm its cost again.",
+      signature_mismatch: true,
+      quoted_signature: "ab12cd34ef567890",
+      plan_signature: "ffff0000ffff0000",
+    }));
+
+    const err = await caught(() => compileCoverage("s001", "ab12cd34ef567890"));
+
+    expect(err.message).toContain("changed after you were quoted a price");
+    // The discriminator the caller branches on to re-quote rather than to
+    // report a generic failure — and it must not be confused with the drift
+    // 409, which is about the plan the human DID see.
+    expect(err.signatureMismatch).toBe(true);
+    expect(err.approvalDrifted).toBeUndefined();
+    // The plan that is there now, so the caller can say what it costs.
+    expect(err.planSignature).toBe("ffff0000ffff0000");
+  });
+
   test("the catch-all 400 still reports what the backend said broke", async () => {
     vi.stubGlobal("fetch", reply(400, {
       ok: false,
@@ -204,5 +228,30 @@ describe("a started compile", () => {
     expect(String(url)).toContain("/api/director/compile/s001");
     expect(String(url)).not.toContain("force");
     expect((init as RequestInit).method).toBe("POST");
+  });
+
+  test("carries the signature of the plan the price was quoted for", async () => {
+    const fetchMock = reply(200, { ok: true, started: true, job: "director:s001" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await compileCoverage("s001", "ab12cd34ef567890");
+
+    // The whole binding: the route compares this to the plan it is about to
+    // dispatch. A request that does not carry it cannot have a quote honoured,
+    // however carefully the caller refetched first.
+    expect(String(fetchMock.mock.calls[0][0]))
+      .toContain("plan_signature=ab12cd34ef567890");
+  });
+
+  test("omits the parameter entirely when there is no signature to send", async () => {
+    // An unapproved plan has no identity to bind. Sending `plan_signature=`
+    // empty is the same as omitting it server-side, but not sending a key at
+    // all is what keeps "quoted nothing" distinguishable in a request log.
+    const fetchMock = reply(200, { ok: true, started: true, job: "director:s001" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await compileCoverage("s001");
+
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("plan_signature");
   });
 });

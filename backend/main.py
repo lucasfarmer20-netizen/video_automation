@@ -3094,7 +3094,7 @@ async def put_director_plan(beat_id: str, request: Request):
 
 
 @app.post("/api/director/compile/{beat_id}")
-def compile_director_coverage(beat_id: str):
+def compile_director_coverage(beat_id: str, plan_signature: str = ""):
     """Render the coverage and assemble the beat clip. Spike B's whole point.
 
     There is no force flag. There used to be, and ``force=true`` skipped the
@@ -3104,12 +3104,41 @@ def compile_director_coverage(beat_id: str):
     and a query parameter that steps over it is not a gate.
 
     Recovery goes the way a human does: lock the plan, then compile.
+
+    ``plan_signature`` binds a QUOTE to the plan it was quoted for. The studio
+    shows the human ``paid_shots`` and ``estimated_cost`` and asks them to
+    confirm the spend; this route then dispatches ``director.load_plan(beat_id)``
+    -- whatever is current at DISPATCH, not what was quoted. Replace and lock a
+    more expensive plan in another tab between the gate opening and the human
+    confirming, and the newer plan compiled at the newer price on consent given
+    for the older one. The request identified no plan at all, so the route
+    structurally could not honour a quote. Refetching before posting would only
+    have narrowed the window: the identity has to travel WITH the request and be
+    compared here, against the object the job closure actually captures.
+
+    An empty ``plan_signature`` means the caller quoted no price -- the CLI and
+    the tests -- and there is nothing to honour, so the binding is skipped
+    rather than invented. Every compile the studio issues carries one.
     """
     try:
         sb = get_current_project()
         plan = director.load_plan(beat_id)
         if not plan:
             raise HTTPException(status_code=404, detail=f"no director plan for {beat_id}")
+        # First, because it is about CONSENT rather than about the plan's own
+        # state: if this is not the plan the human agreed to spend on, nothing
+        # else about it is worth reporting to them. They have not seen it.
+        current_signature = director.plan_signature(plan)
+        if plan_signature and plan_signature != current_signature:
+            return JSONResponse(status_code=409, content={
+                "ok": False,
+                "error": (f"the plan for {beat_id} changed after you were quoted a "
+                          f"price, so nothing was compiled and nothing was charged. "
+                          f"Review the current plan and confirm its cost again."),
+                "signature_mismatch": True,
+                "quoted_signature": plan_signature,
+                "plan_signature": current_signature,
+            })
         # §11.5: an approved plan must not silently mutate after approval.
         # Drift is detected once, in director.load_plan, which drops the stale
         # approval and returns the plan to draft -- so `status` never claims an
@@ -3128,7 +3157,7 @@ def compile_director_coverage(beat_id: str):
                           f"plan for {beat_id} is a draft; lock it first - approval is "
                           f"what allocates the render budget."),
                 "approval_drifted": bool(drifted),
-                "plan_signature": director.plan_signature(plan),
+                "plan_signature": current_signature,
             })
         # §4/§10: a script change must not silently corrupt the plan. Re-timing
         # is already refused by director.validate; a line rewritten to the SAME

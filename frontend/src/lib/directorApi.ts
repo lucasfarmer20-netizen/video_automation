@@ -117,6 +117,12 @@ export async function fetchCoveragePlan(
         version: plan.version,
         coverage: plan.coverage || [],
         warnings: plan.warnings || [],
+        // The identity of the plan the human approved, carried through so a
+        // later compile can name WHICH plan it was quoted for. §11.5 keeps this
+        // honest: a plan that mutates after approval loses the approval in
+        // `load_plan` and comes back `draft`, so a plan that reads `locked`
+        // always carries the signature of the coverage actually on screen.
+        approved_signature: plan.approved_signature || "",
         estimated_cost: data.summary?.estimated_cost || plan.estimated_cost || 0,
         // What compiling this scene will BUY, as the server counts it. The
         // summary spans every beat in `beats`, which is exactly the set the
@@ -432,6 +438,10 @@ export type CompileRefusal = Error & {
   stale?: Record<string, unknown>;
   /** Present when a locked plan still carries undecided critic findings. */
   warnings?: DirectorWarning[];
+  /** Present when the plan changed after the human was quoted a price. */
+  signatureMismatch?: boolean;
+  /** The plan that is there NOW, so the caller can re-quote from it. */
+  planSignature?: string;
 };
 
 /** Everything POST /api/director/compile/{beat} can answer with, either way. */
@@ -448,6 +458,9 @@ type CompileReply = {
   approval_drifted?: boolean;
   stale?: Record<string, unknown>;
   warnings?: DirectorWarning[];
+  signature_mismatch?: boolean;
+  quoted_signature?: string;
+  plan_signature?: string;
 };
 
 /**
@@ -463,10 +476,24 @@ type CompileReply = {
  * There is deliberately no `force` parameter. The backend removed one because
  * `force=true` skipped the draft check and could send an unapproved plan into
  * paid generation; the recovery is to lock the plan, not to step over the gate.
+ *
+ * `planSignature` is what makes the confirmed PRICE bind the plan it was quoted
+ * for. Without it the request named only a beat, and the route dispatched
+ * whatever `load_plan(beat_id)` returned at the moment it ran — so a plan
+ * replaced and re-locked in another tab between the gate opening and the human
+ * confirming compiled at the newer price on consent given for the older one.
+ * Sending it is not a courtesy: the route cannot honour a quote it was never
+ * told about, and refetching before posting would only narrow the window.
  */
-export async function compileCoverage(beatId: string): Promise<CompileReply> {
+export async function compileCoverage(
+  beatId: string,
+  planSignature = ""
+): Promise<CompileReply> {
+  const query = planSignature
+    ? `?plan_signature=${encodeURIComponent(planSignature)}`
+    : "";
   const res = await fetch(
-    `${API_BASE}/api/director/compile/${encodeURIComponent(beatId)}`,
+    `${API_BASE}/api/director/compile/${encodeURIComponent(beatId)}${query}`,
     { method: "POST", headers: getAuthHeaders() }
   );
 
@@ -483,6 +510,8 @@ export async function compileCoverage(beatId: string): Promise<CompileReply> {
     }
     if (data.stale) err.stale = data.stale;
     if (data.warnings) err.warnings = data.warnings;
+    if (data.signature_mismatch) err.signatureMismatch = true;
+    if (data.plan_signature) err.planSignature = data.plan_signature;
     throw err;
   }
 

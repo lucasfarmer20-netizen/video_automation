@@ -137,6 +137,10 @@ export interface DirectorCoveragePlan {
   /** Shots that will be bought from a paid video model when this compiles.
    *  Server-counted (`summary.paid_shots`); the compile gate quotes it. */
   paid_shots?: number;
+  /** Server-computed identity of the approved plan (`director.plan_signature`).
+   *  Sent back with a compile so the price the human confirmed binds the plan
+   *  it was quoted for — see `compileCoverage`. Empty on an unapproved plan. */
+  approved_signature?: string;
 }
 
 export interface SurveyBeat {

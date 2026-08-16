@@ -94,6 +94,7 @@ function plan(over: Partial<DirectorCoveragePlan> = {}): DirectorCoveragePlan {
     warning_dispositions: {},
     estimated_cost: 1.85,
     paid_shots: 2,
+    approved_signature: "ab12cd34ef567890",
     ...over,
   };
 }
@@ -116,17 +117,43 @@ function refusal(
   return Object.assign(new Error(message), { status }, extra);
 }
 
-/** Mount, wait for the plan, and open the spend gate. */
-async function mountAndOpenGate() {
+/**
+ * The sentinel the money assertion fails with.
+ *
+ * It exists so a mutation run can prove WHY a test died. `M5` in
+ * `scratch/mutate_compile_control.py` wires COMPILE COVERAGE straight to the
+ * dispatch, and it was being killed by a missing-`compile-cost-gate` element
+ * long before anything asserted that no money had been spent — so it proved the
+ * gate element renders, not that money cannot be spent without it. The harness
+ * now requires this string in the failure output.
+ */
+const SPENT_WITHOUT_A_PRICE =
+  "COMPILE COVERAGE dispatched without the cost gate: money committed with no price shown";
+
+/**
+ * Mount and click COMPILE COVERAGE.
+ *
+ * Deliberately does NOT look for the gate. A `getByTestId("compile-cost-gate")`
+ * here would throw under exactly the mutation that matters — the one that
+ * bypasses the gate — before any test could assert that nothing was dispatched.
+ * The cheap assertion must never be the one that runs first.
+ */
+async function mountAndClickCompile() {
   render(<DirectorWorkspace sceneId="s001" activeProjectTitle="Heney" mediaUrl={(p) => p} />);
   const open = await screen.findByTestId("compile-open-gate");
   fireEvent.click(open);
+  await act(async () => {});
+}
+
+/** Mount, click COMPILE COVERAGE, and hand back the gate it must have opened. */
+async function mountAndOpenGate() {
+  await mountAndClickCompile();
   return screen.getByTestId("compile-cost-gate");
 }
 
 /** Mount, open the gate, and commit the spend. */
 async function compileIt() {
-  await mountAndOpenGate();
+  await mountAndClickCompile();
   fireEvent.click(screen.getByTestId("compile-confirm"));
   await act(async () => {});
 }
@@ -141,27 +168,32 @@ afterEach(cleanup);
 // --- the control exists at all -----------------------------------------------
 
 describe("the control the studio did not have", () => {
-  test("a locked plan can be compiled, and opening the gate spends nothing", async () => {
-    const gate = await mountAndOpenGate();
+  test("pressing COMPILE COVERAGE commits no money", async () => {
+    await mountAndClickCompile();
 
-    // THE DEFECT. Eleven references to `compile` in the frontend and every one
-    // was a type, a status comparison or a comment; nothing could ever issue
-    // this request.
-    expect(gate).toBeTruthy();
-    // Reading the price is not agreeing to it.
-    expect(mockCompile).not.toHaveBeenCalled();
+    // THE MONEY ASSERTION, AND IT RUNS FIRST. Under a bypass of the gate this
+    // is the only assertion that demonstrates the defect; anything cheaper
+    // ahead of it — the gate element, the price text — fails first and reports
+    // a missing element instead of a spend.
+    expect(mockCompile.mock.calls, SPENT_WITHOUT_A_PRICE).toEqual([]);
+
+    // Only then: the control exists at all, which is the original gap. Eleven
+    // references to `compile` in the frontend and every one was a type, a
+    // status comparison or a comment; nothing could ever issue this request.
+    expect(screen.getByTestId("compile-cost-gate")).toBeTruthy();
   });
 
   test("the price is on screen before the request, from the server's own count", async () => {
-    const gate = await mountAndOpenGate();
+    await mountAndClickCompile();
+
+    expect(mockCompile.mock.calls, SPENT_WITHOUT_A_PRICE).toEqual([]);
 
     // What is bought, and what it costs — before any of it is committed.
+    const gate = screen.getByTestId("compile-cost-gate");
     expect(gate.textContent).toContain("2 paid video shots");
     expect(gate.textContent).toContain("$1.85");
     expect(gate.textContent).toContain("9 shots");
     expect(screen.getByTestId("compile-confirm").textContent).toContain("$1.85");
-
-    expect(mockCompile).not.toHaveBeenCalled();
   });
 
   test("cancelling closes the gate without issuing anything", async () => {
@@ -169,7 +201,7 @@ describe("the control the studio did not have", () => {
     fireEvent.click(screen.getByTestId("compile-cancel"));
     await act(async () => {});
 
-    expect(mockCompile).not.toHaveBeenCalled();
+    expect(mockCompile.mock.calls, SPENT_WITHOUT_A_PRICE).toEqual([]);
     expect(screen.queryByTestId("compile-cost-gate")).toBeNull();
   });
 
@@ -421,6 +453,92 @@ describe("the refusals reach the screen as themselves", () => {
     expect(problem.getAttribute("data-kind")).toBe("missing");
   });
 
+  test("the plan changed after the quote — consent, checked before anything else", async () => {
+    mockCompile.mockRejectedValue(
+      refusal(
+        409,
+        "the plan for s001 changed after you were quoted a price, so nothing was compiled and nothing was charged. Review the current plan and confirm its cost again.",
+        { signatureMismatch: true, planSignature: "ffff0000ffff0000" }
+      )
+    );
+    // The re-quote reads the plan that is actually there now.
+    mockFetchPlan.mockResolvedValueOnce(plan()).mockResolvedValueOnce(
+      plan({ estimated_cost: 12.0, paid_shots: 7 })
+    );
+
+    await compileIt();
+
+    const problem = screen.getByTestId("compile-problem");
+    expect(problem.textContent).toContain(
+      "the plan for s001 changed after you were quoted a price, so nothing was compiled and nothing was charged. Review the current plan and confirm its cost again."
+    );
+    expect(problem.getAttribute("data-kind")).toBe("quote_changed");
+    // Re-quoted, because they cannot consent to a price they have not seen.
+    expect(problem.textContent).toContain("$12.00");
+    expect(problem.textContent).toContain("7 paid");
+    // And nothing is retried at the new price: a new price is a new decision.
+    expect(mockCompile).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("compile-cost-gate")).toBeNull();
+    expect(screen.queryByTestId("compile-done")).toBeNull();
+  });
+
+  test("the refreshed plan is what the next attempt quotes, and what it sends", async () => {
+    // A message that re-quotes while the screen still shows the old plan is
+    // worse than no re-quote: the gate would keep quoting the stale price and
+    // keep sending the stale signature, so every retry is refused for ever and
+    // the two numbers on screen disagree.
+    mockCompile.mockRejectedValueOnce(
+      refusal(409, "the plan for s001 changed after you were quoted a price.", {
+        signatureMismatch: true,
+      })
+    );
+    mockFetchPlan
+      .mockResolvedValueOnce(plan())
+      .mockResolvedValueOnce(
+        plan({
+          estimated_cost: 12.0,
+          paid_shots: 7,
+          approved_signature: "ffff0000ffff0000",
+        })
+      );
+
+    await compileIt();
+
+    // The gate now quotes the plan that is actually on the server.
+    fireEvent.click(screen.getByTestId("compile-open-gate"));
+    await act(async () => {});
+    expect(screen.getByTestId("compile-cost-gate").textContent).toContain("$12.00");
+
+    // …and the next attempt carries the new identity, not the stale one it was
+    // already refused for.
+    mockCompile.mockResolvedValueOnce({ ok: true, started: true, job: "director:s001" });
+    mockWait.mockResolvedValue({ ok: true, status: "done", log: "done" });
+    mockFetchPlan.mockResolvedValue(plan({ status: "compiled" }));
+    fireEvent.click(screen.getByTestId("compile-confirm"));
+    await act(async () => {});
+
+    expect(mockCompile.mock.calls[1]).toEqual(["s001", "ffff0000ffff0000"]);
+  });
+
+  test("a re-quote that itself fails does not overwrite the refusal", async () => {
+    mockCompile.mockRejectedValue(
+      refusal(409, "the plan for s001 changed after you were quoted a price.", {
+        signatureMismatch: true,
+      })
+    );
+    mockFetchPlan
+      .mockResolvedValueOnce(plan())
+      .mockRejectedValueOnce(new Error("scene endpoint returned 503"));
+
+    await compileIt();
+
+    const problem = screen.getByTestId("compile-problem");
+    expect(problem.textContent).toContain(
+      "the plan for s001 changed after you were quoted a price."
+    );
+    expect(problem.getAttribute("data-kind")).toBe("quote_changed");
+  });
+
   test("the catch-all 400 — whatever actually broke, in its own words", async () => {
     mockCompile.mockRejectedValue(
       refusal(400, "[Errno 2] No such file or directory: 'render/s001'")
@@ -436,6 +554,39 @@ describe("the refusals reach the screen as themselves", () => {
     // A 400 is not one of the pre-`start_job` refusals, so this must not claim
     // on the user's behalf that nothing was charged.
     expect(problem.textContent).not.toContain("nothing was charged");
+  });
+});
+
+// --- the quote binds the plan it was quoted for ------------------------------
+
+describe("the confirmed price is bound to the plan it was quoted for", () => {
+  test("the plan's identity travels with the request, not just its beat id", async () => {
+    // Without this the request named only a beat, and the route dispatched
+    // whatever load_plan(beat_id) returned at the moment it ran — so a plan
+    // replaced and re-locked in another tab between the gate opening and the
+    // confirmation compiled at the newer price on consent for the older one.
+    mockFetchPlan.mockResolvedValue(plan({ approved_signature: "ab12cd34ef567890" }));
+    mockCompile.mockResolvedValue({ ok: true, started: true, job: "director:s001" });
+    mockWait.mockResolvedValue({ ok: true, status: "done", log: "done" });
+
+    await compileIt();
+
+    expect(mockCompile).toHaveBeenCalledWith("s001", "ab12cd34ef567890");
+  });
+
+  test("every beat of a scene carries the identity of the plan that was quoted", async () => {
+    mockFetchPlan.mockResolvedValue(
+      plan({ scene_beats: ["s001", "s002"], approved_signature: "ab12cd34ef567890" })
+    );
+    mockCompile.mockResolvedValue({ ok: true, started: true, job: "director:x" });
+    mockWait.mockResolvedValue({ ok: true, status: "done", log: "done" });
+
+    await compileIt();
+
+    expect(mockCompile.mock.calls).toEqual([
+      ["s001", "ab12cd34ef567890"],
+      ["s002", "ab12cd34ef567890"],
+    ]);
   });
 });
 

@@ -89,6 +89,7 @@ const QUICK_SHORTCUTS = [
  * and the kind only decides the framing around it.
  */
 type CompileProblemKind =
+  | "quote_changed"
   | "draft"
   | "approval_drifted"
   | "stale"
@@ -105,9 +106,15 @@ type CompileProblem = { kind: CompileProblemKind; message: string };
  * `approval_drifted` is a boolean the route always sends on the draft 409, so
  * `false` is meaningful and must be distinguished from absent: it is what tells
  * "never locked" apart from "locked, then edited".
+ *
+ * `signature_mismatch` is checked FIRST, matching the route's own order and for
+ * the route's own reason: it means the plan on the server is not the one the
+ * human was quoted for, so nothing else about that plan is worth telling them —
+ * they have not seen it.
  */
 function classifyCompileRefusal(err: CompileRefusal | undefined): CompileProblem {
   const message = err?.message || "The compile request failed before it started.";
+  if (err?.signatureMismatch) return { kind: "quote_changed", message };
   if (err?.approvalDrifted === true) return { kind: "approval_drifted", message };
   if (err?.approvalDrifted === false) return { kind: "draft", message };
   if (err?.stale) return { kind: "stale", message };
@@ -131,12 +138,28 @@ type CritiqueOutcome =
 
 /** Refusals the server raises before `start_job`, so nothing was bought. */
 const SPENT_NOTHING: CompileProblemKind[] = [
+  "quote_changed",
   "draft",
   "approval_drifted",
   "stale",
   "unresolved_warnings",
   "busy",
 ];
+
+/**
+ * What compiling this plan BUYS, as the server counts it.
+ *
+ * Falling back to the plan's own `ai_video` shots keeps the quote honest when
+ * the scene summary is absent; it is a floor, never an overstatement. This
+ * counts server-assigned `motion_type`s — the price itself is only ever
+ * `estimated_cost`, computed on the server, never arithmetic done here.
+ */
+function paidShotsOf(plan: DirectorCoveragePlan): number {
+  return (
+    plan.paid_shots ??
+    plan.coverage.filter((s) => s.motion_type === "ai_video").length
+  );
+}
 
 export default function DirectorWorkspace({
   sceneId,
@@ -281,6 +304,15 @@ export default function DirectorWorkspace({
    * The plan is locked per scene, so it compiles per scene: one job per beat in
    * `scene_beats`, in order, stopping at the first beat that refuses rather than
    * spending on later beats after an unexplained one.
+   *
+   * And the price the human agreed to binds the plan it was quoted for. The
+   * gate above quotes THIS plan; the request carries `approved_signature`, the
+   * server's identity for it, and the route refuses if what it is about to
+   * dispatch is something else. Without that the request named only a beat, so
+   * a plan replaced and re-locked in another tab between the gate opening and
+   * the confirmation compiled at the newer price on consent given for the older
+   * one. On that refusal the plan is refetched and the human is re-quoted;
+   * nothing is retried, because a new price needs a new decision.
    */
   const handleCompileCoverage = async () => {
     if (!coveragePlan || compilingBeat) return;
@@ -297,7 +329,7 @@ export default function DirectorWorkspace({
     try {
       for (const beat of beats) {
         setCompilingBeat(beat);
-        const res = await compileCoverage(beat);
+        const res = await compileCoverage(beat, coveragePlan.approved_signature);
         if (!res.job) {
           // Started, but unnamed: there is nothing to watch, so this screen
           // cannot know when it ends — and must not imply that it has.
@@ -343,7 +375,28 @@ export default function DirectorWorkspace({
         });
       }
     } catch (e) {
-      setCompileProblem(classifyCompileRefusal(e as CompileRefusal));
+      const problem = classifyCompileRefusal(e as CompileRefusal);
+      setCompileProblem(problem);
+      if (problem.kind === "quote_changed") {
+        // Re-quote. The refusal on its own tells them the plan moved; it does
+        // not tell them what it moved TO, and they cannot consent to a price
+        // they have not been shown. The gate stays closed either way — a new
+        // price is a new decision, so they click COMPILE COVERAGE again.
+        try {
+          const fresh = await fetchCoveragePlan(beats);
+          setCoveragePlan(fresh);
+          setCompileProblem({
+            kind: "quote_changed",
+            message:
+              `${problem.message} The plan on screen has been refreshed: it is now ` +
+              `${fresh.coverage.length} shot${fresh.coverage.length === 1 ? "" : "s"}, ` +
+              `${paidShotsOf(fresh)} paid, $${fresh.estimated_cost.toFixed(2)}.`,
+          });
+        } catch {
+          // The refusal itself stands and is already on screen. A failed
+          // refresh must not overwrite it with a message about the refresh.
+        }
+      }
     } finally {
       setCompilingBeat(null);
       setCompileLog("");
@@ -577,11 +630,7 @@ export default function DirectorWorkspace({
   }
 
   const isLocked = coveragePlan.status === "locked" || coveragePlan.status === "compiled";
-  // What compiling BUYS. The server counts the paid shots; falling back to the
-  // plan's own ai_video shots keeps the quote honest if the summary is absent.
-  const paidShots =
-    coveragePlan.paid_shots ??
-    coveragePlan.coverage.filter((s) => s.motion_type === "ai_video").length;
+  const paidShots = paidShotsOf(coveragePlan);
   const coverageTotalSum = coveragePlan.coverage.reduce((acc, s) => acc + s.camera.duration, 0);
   const targetDuration = coveragePlan.beat_duration || coveragePlan.total_duration;
   const isDurationMatched = Math.abs(coverageTotalSum - targetDuration) <= 0.1;
