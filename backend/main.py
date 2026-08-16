@@ -619,7 +619,15 @@ def _scan_projects() -> list[dict]:
                     # showing "0 beats" despite a full storyboard on disk.
                     beats_count = len(manifest_data.get("shots") or [])
                     script_locked = bool(manifest_data.get("script_locked", False))
-                    storyboard_approved = bool(manifest_data.get("storyboard_approved", False))
+                    # Not bool(): this reads the raw JSON and so never passes
+                    # Storyboard.from_dict, which means it is the one remaining
+                    # place a loose `storyboard_approved` is read directly. With
+                    # bool(), "no" lit the sidebar's "Approved ✓" for a project
+                    # Gate 1 now (correctly) refuses to open — the UI claiming an
+                    # approval that does not exist, which is exactly what §11.4
+                    # forbids.
+                    storyboard_approved = manifest.approval_is_explicit(
+                        manifest_data.get("storyboard_approved"))
                 except Exception as exc:
                     print(f"Warning: could not read {resolved}: {exc}")
                 if not name:
