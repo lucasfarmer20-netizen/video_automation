@@ -46,3 +46,13 @@ intro/
 # Ad-hoc inspection/migration scratch dirs (never part of a build)
 _inspect/
 _migrate_tmp/
+
+# Prompt/plan telemetry. ledger.ledger_path() (backend/ledger.py:54-58) resolves
+# PROMPT_LEDGER_PATH, then /gcs, then config.ROOT -- and config.ROOT is this
+# directory. Deployed, the real ledger lives on the GCS mount and is unaffected
+# by this line; locally and under pytest it lands here. Only
+# tests/test_ledger_failures.py redirects the env var, so every other test that
+# reaches record_plan_outcome() appends to the repo root instead: 1029 rows, all
+# stamped with pytest tmp-project names, were sitting here and were swept into a
+# commit by a `git add -A`. Test debris must not be committable.
+prompt_ledger.jsonl
