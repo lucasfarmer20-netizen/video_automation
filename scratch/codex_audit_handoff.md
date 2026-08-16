@@ -60,6 +60,21 @@ pinned to an earlier commit could not read them.
   trains people to ignore red. Severity Low (workstation-only); the reason was
   signal integrity, not reachability.
 
+- **Storage gate (slice 8, PR #16, 2026-08-15).** `backend/main.py` wrapped
+  `manifest.load_project()` in `except Exception` and fell through to the disk
+  manifest on any failure, so "no Firestore record" (legitimate) and "the
+  durable store is unreachable" (not) both answered 200 over a disk copy that
+  is ephemeral on Cloud Run. Closed by `manifest.StorageUnavailable`: not-found
+  and `db is None` stay `None`, unreachable raises, and `get_current_project` /
+  `save_current_project` fail closed with 503 + `storage_gate: "unavailable"`.
+  The studio renders that as a stated block instead of the "No Active Project
+  Loaded" screen, whose call to action is *create a new project*. Mutation
+  evidence: `scratch/mutate_slice8_storage_gate.py` (11/11 killed) and
+  `scratch/mutate_slice8_storage_gate_ui.py` (7/7 killed).
+  **Still open, deliberately:** `manifest.list_projects` keeps its broad
+  `except` at `/api/projects`, where the disk scan is the primary source and
+  Firestore only refines it — a documented degrade, not a substitution.
+
 ## Explicitly out of scope
 
 - Windows-only transient `os.replace` behaviour — settled. The reader-side form
