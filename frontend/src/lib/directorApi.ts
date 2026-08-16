@@ -229,6 +229,19 @@ export interface BeatCoverageState {
   shots: number;
   /** Locked or compiled coverage: finished work the server refuses to overwrite. */
   locked: boolean;
+  /**
+   * The server's own estimate for this beat, in dollars, or null.
+   *
+   * `null` when `/api/director/scene`'s summary did not price this beat, and
+   * null must render as "not priced" — never as 0, and never as a number
+   * borrowed from anywhere else. A cost is the one number on this screen a
+   * human will act on; a wrong one is worse than an absent one.
+   */
+  estimatedCost: number | null;
+  /** Critic findings recorded against the plan. */
+  warnings: number;
+  /** Narration seconds this beat runs, as the server measured it. */
+  durationSeconds: number | null;
 }
 
 /**
@@ -262,8 +275,21 @@ export async function fetchBeatCoverageStates(
   /** Only the parts of a `/api/director/scene` entry this reader needs. */
   interface SceneEntry {
     beat_id?: string;
-    plan?: { status?: string; coverage?: unknown[] } | null;
+    beat_duration?: number | null;
+    plan?: { status?: string; coverage?: unknown[]; warnings?: unknown[] } | null;
   }
+  /** One row of `planner.scene_summary` — the ONLY source of a cost figure. */
+  interface SummaryRow {
+    beat_id?: string;
+    estimated_cost?: number;
+  }
+  const priced = new Map<string, number>();
+  ((data.summary?.beats || []) as SummaryRow[]).forEach((row) => {
+    if (row?.beat_id && typeof row.estimated_cost === "number") {
+      priced.set(row.beat_id, row.estimated_cost);
+    }
+  });
+
   const out: Record<string, BeatCoverageState> = {};
   (data.beats || []).forEach((entry: SceneEntry) => {
     if (!entry?.plan || !entry.beat_id) return;
@@ -276,6 +302,11 @@ export async function fetchBeatCoverageStates(
       // inventing a second definition of "locked" that can drift from the one
       // the server enforces.
       locked: status === "locked" || status === "compiled",
+      // Strictly the server's figure for THIS beat of THIS project. Absent
+      // stays absent: no zero, no total divided up, no default.
+      estimatedCost: priced.has(entry.beat_id) ? (priced.get(entry.beat_id) as number) : null,
+      warnings: (entry.plan.warnings || []).length,
+      durationSeconds: typeof entry.beat_duration === "number" ? entry.beat_duration : null,
     };
   });
   return out;

@@ -104,14 +104,56 @@ describe("POST /api/director/plan, as its callers see it", () => {
 describe("reading existing coverage for the survey's beats", () => {
   const sceneReply = (beats: unknown[]) => reply(200, { ok: true, beats });
 
-  test("locked coverage is reported as locked, with its shot count", async () => {
-    vi.stubGlobal("fetch", sceneReply([
-      { beat_id: "s001", plan: { status: "locked", coverage: [1, 2, 3, 4, 5, 6, 7, 8, 9] } },
-    ]));
+  test("locked coverage is reported as locked, with its shot count and the server's cost", async () => {
+    vi.stubGlobal("fetch", reply(200, {
+      ok: true,
+      beats: [{
+        beat_id: "s001", beat_duration: 17.7,
+        plan: { status: "locked", coverage: [1, 2, 3, 4, 5, 6, 7, 8, 9], warnings: [{}, {}] },
+      }],
+      summary: { beats: [{ beat_id: "s001", estimated_cost: 1.85 }] },
+    }));
 
     expect(await fetchBeatCoverageStates(["s001"])).toEqual({
-      s001: { status: "locked", shots: 9, locked: true },
+      s001: {
+        status: "locked", shots: 9, locked: true,
+        estimatedCost: 1.85, warnings: 2, durationSeconds: 17.7,
+      },
     });
+  });
+
+  test("a cost comes from the summary and from nowhere else", () => {
+    // The figure a human acts on. It may only ever be the server's own number
+    // for this beat of this project — not a total, not a default, not a fixture.
+    // A beat the summary does not price is reported unpriced, and the panel
+    // renders that as "not priced" rather than $0.00.
+    return (async () => {
+      vi.stubGlobal("fetch", reply(200, {
+        ok: true,
+        beats: [
+          { beat_id: "s001", plan: { status: "draft", coverage: [1] } },
+          { beat_id: "s002", plan: { status: "draft", coverage: [1, 2] } },
+        ],
+        summary: { estimated_cost: 99.99, beats: [{ beat_id: "s002", estimated_cost: 0.42 }] },
+      }));
+
+      const states = await fetchBeatCoverageStates(["s001", "s002"]);
+      // s001 is absent from the summary: unpriced, NOT given the total.
+      expect(states.s001.estimatedCost).toBeNull();
+      expect(states.s002.estimatedCost).toBe(0.42);
+    })();
+  });
+
+  test("a genuine zero cost is kept, not treated as missing", () => {
+    return (async () => {
+      vi.stubGlobal("fetch", reply(200, {
+        ok: true,
+        beats: [{ beat_id: "s001", plan: { status: "draft", coverage: [1] } }],
+        summary: { beats: [{ beat_id: "s001", estimated_cost: 0 }] },
+      }));
+
+      expect((await fetchBeatCoverageStates(["s001"])).s001.estimatedCost).toBe(0);
+    })();
   });
 
   test("compiled coverage is locked too — the planner refuses both", async () => {
@@ -133,7 +175,10 @@ describe("reading existing coverage for the survey's beats", () => {
     ]));
 
     expect(await fetchBeatCoverageStates(["s003"])).toEqual({
-      s003: { status: "draft", shots: 3, locked: false },
+      s003: {
+        status: "draft", shots: 3, locked: false,
+        estimatedCost: null, warnings: 0, durationSeconds: null,
+      },
     });
   });
 

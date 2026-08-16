@@ -80,7 +80,7 @@ beforeEach(() => {
   mockRunning.mockResolvedValue({});
   // s001 is locked, with the nine shots the production run actually produced.
   mockCoverage.mockResolvedValue({
-    s001: { status: "locked", shots: 9, locked: true },
+    s001: { status: "locked", shots: 9, locked: true, estimatedCost: 1.85, warnings: 0, durationSeconds: 17.7 },
   });
 });
 
@@ -122,7 +122,7 @@ describe("a beat with locked coverage is not offered as an unplanned one", () =>
     // Draft coverage is not protected by the planner, but it is still work the
     // user has. The offer is the same shape; only the badge differs.
     mockCoverage.mockResolvedValue({
-      s001: { status: "draft", shots: 6, locked: false },
+      s001: { status: "draft", shots: 6, locked: false, estimatedCost: 0.9, warnings: 1, durationSeconds: 17.7 },
     });
     await mountPanel();
 
@@ -245,7 +245,7 @@ describe("the offer is re-read after a plan lands", () => {
 
     // The plan lands, and the server now holds 9 shots for this beat.
     mockCoverage.mockResolvedValue({
-      s001: { status: "draft", shots: 9, locked: false },
+      s001: { status: "draft", shots: 9, locked: false, estimatedCost: 1.85, warnings: 0, durationSeconds: 17.7 },
     });
     await flush();
     await flush();
