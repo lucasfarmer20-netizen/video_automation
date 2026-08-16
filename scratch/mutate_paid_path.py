@@ -535,9 +535,19 @@ MUTATIONS = [
         "become a separate purchase of the same shot",
         [(GEN, BEGIN_DUPLICATE, "        if False:  # MUTANT\n            pass")],
         probes=[("disposition", "PROBE_DISP_SAME_REQUEST=in_flight")],
+        # NOT test_concurrent_duplicate_requests_open_exactly_one_attempt, and
+        # the reason is a fact about the guards rather than about the test. Two
+        # simultaneous identical requests both carry a signature, so with the
+        # idempotency arm gone the SECOND one meets the in_flight arm instead --
+        # the first attempt is still running with the same signature -- and no
+        # second attempt is opened. That test therefore cannot distinguish the
+        # two guards, which is exactly what
+        # test_the_two_guards_are_not_the_same_guard is for, and that one does
+        # die here. Measured, not assumed: the first run of this harness
+        # declared the concurrency test and was corrected by the result.
         expect=["test_a_duplicate_request_does_not_open_a_second_attempt",
-                "test_concurrent_duplicate_requests_open_exactly_one_attempt",
-                "test_a_worker_restart_does_not_re_bill"],
+                "test_a_worker_restart_does_not_re_bill",
+                "test_the_two_guards_are_not_the_same_guard"],
     ),
     Mutation(
         "media already bought for these inputs is bought again", "§11.1",
@@ -549,7 +559,7 @@ MUTATIONS = [
                 ("rebuy", "PROBE_REBUY_MARKER_BOUGHT_TWICE=true")],
         expect=["test_unchanged_inputs_reuse_the_media_already_bought",
                 "test_a_lost_paid_marker_does_not_re_buy_the_clip",
-                "test_the_two_guards_are_not_the_same_guard"],
+                "test_the_captured_project_still_blocks_a_second_charge_after_the_switch"],
     ),
     Mutation(
         "a recorded success whose media is gone is reused anyway", "§11.1",
@@ -576,8 +586,13 @@ MUTATIONS = [
           "        return bool(path) and path.is_file()  # MUTANT")],
         probes=[("rebuy", "PROBE_REBUY_TRUNCATED_REPLACED=false"),
                 ("rebuy", "PROBE_REBUY_TRUNCATED_TOTAL_PAID=1")],
-        expect=["test_a_recorded_paid_clip_that_got_truncated_is_regenerated",
-                "test_a_zero_byte_download_is_not_mistaken_for_a_paid_clip"],
+        # One test, deliberately. test_a_zero_byte_download_is_not_mistaken_for_a
+        # _paid_clip guards the OTHER size check -- the re-bill marker's, which
+        # has always tested size -- and survives this. That the two checks are
+        # separate is the point of _media_present's docstring: the attempt-level
+        # one had to be made exactly as strict or it becomes the weaker of the
+        # two and decides first.
+        expect=["test_a_recorded_paid_clip_that_got_truncated_is_regenerated"],
     ),
 
     # ---- the caller's half: only "created" may spend ----------------------------
@@ -588,8 +603,13 @@ MUTATIONS = [
         [(DIRECTOR, DIR_ONLY_CREATED_SPENDS, "                        if False:  # MUTANT")],
         probes=[("rebuy", "PROBE_REBUY_MARKER_BOUGHT_TWICE=true"),
                 ("rebuy", "PROBE_REBUY_MARKER_TOTAL_PAID=2")],
+        # NOT test_an_unchanged_shot_is_still_never_re_billed: that one leaves
+        # DirectorShot.paid_clip in place, and the older marker guard
+        # short-circuits above this branch, so the disposition check never runs.
+        # The ledger is the INDEPENDENT guard and only the tests that clear the
+        # marker can see it -- which is the whole reason the ledger exists.
         expect=["test_a_lost_paid_marker_does_not_re_buy_the_clip",
-                "test_an_unchanged_shot_is_still_never_re_billed"],
+                "test_the_captured_project_still_blocks_a_second_charge_after_the_switch"],
     ),
     Mutation(
         "an attempt that may have been billed is not surfaced to a human",

@@ -217,7 +217,12 @@ render_dir = root / "render"
 M.config.episode_paths = lambda title: {"render": render_dir, "root": root,
                                         "narration": root, "sfx": root}
 M.config.assets_dir = lambda: root / "assets"
-M._resolve_local_image_file = lambda rel, scene_id=None: still
+# Resolves only once the shot HAS a draft, which is what makes the auto-draft
+# branch reachable. Returning the file unconditionally made the route skip the
+# draft purchase entirely, so the first run of this harness reported the gate
+# mutation reaching fal while showing no still bought -- half the spend,
+# presented as the whole of it.
+M._resolve_local_image_file = lambda rel, scene_id=None: (still if rel else None)
 M.assets._download = lambda url, dest: Path(dest).write_bytes(b"CLIP")
 
 drafts = []
