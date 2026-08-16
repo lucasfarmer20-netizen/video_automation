@@ -182,6 +182,33 @@ print("PROBE_GATE_ALL_LOCAL_UNAPPROVED=" + str(Storyboard(
 print("PROBE_GATE_READY_BOARD=" + str(Storyboard(
     title="T", storyboard_approved=True,
     shots=[paid("s001"), paid("s002"), free("s003")]).gate_cleared()))
+
+# Approval that is neither True nor False, through the REAL loader.
+#
+# from_dict filters unknown keys but does not coerce types, so whatever the
+# manifest carries reaches the predicate as-is: JSON null arrives as None. The
+# gate shuts correctly, because `s.approved` is a truthiness test -- but over
+# True and False alone, `s.approved` and `s.approved is not False` are
+# indistinguishable, and this harness exercised nothing else. That rewrite opens
+# Gate 1 on a paid beat whose approval was never given, with the suite green.
+
+
+def loaded(**over):
+    beat = {"scene_id": "s001", "motion_type": "ai_video",
+            "video_model": "seedance_2_0"}
+    beat.update(over)
+    return Storyboard.from_dict("p", {"storyboard_approved": True}, [beat])
+
+
+print("PROBE_GATE_NULL_APPROVAL=" + str(loaded(approved=None).gate_cleared()))
+print("PROBE_GATE_ZERO_APPROVAL=" + str(loaded(approved=0).gate_cleared()))
+print("PROBE_GATE_ABSENT_APPROVAL=" + str(loaded().gate_cleared()))
+print("PROBE_GATE_TRUE_APPROVAL=" + str(loaded(approved=True).gate_cleared()))
+# Reported, not asserted anywhere as desirable: a non-empty string is truthy, so
+# a manifest carrying "approved": "no" clears Gate 1 on a paid beat with no
+# mutation at all. That is a production defect rather than an unpinned
+# safeguard, so this round measures it and does not change it.
+print("PROBE_GATE_STRING_APPROVAL=" + str(loaded(approved="no").gate_cleared()))
 '''
 
 # The studio's paid video route, driven for real. The signature is not the
@@ -423,6 +450,13 @@ class Mutation:
     # went red on its fixture check rather than on the verdict.
     proves: list[str] = field(default_factory=list)
     not_proves: list[str] = field(default_factory=list)
+    # Required when `proves` is empty. The four doors below are guarded by tests
+    # that assert a refusal MESSAGE and have no money sentence to reach, so for
+    # those the probe is what discharges the obligation -- and saying so in
+    # writing, checked at startup, is what stops that from reading as an
+    # oversight. Same rule as mutate_paid_path.py / mutate_isolation.py /
+    # mutate_pass_a.py.
+    proves_note: str = ""
 
 
 # --- anchors ------------------------------------------------------------------
@@ -552,6 +586,22 @@ MUTATIONS = [
         not_proves=["assert _siblings_are_ready(paid, broken_at)"],
     ),
     Mutation(
+        "an approval that is not True still counts as approval",
+        "CLAUDE.md Gate 1 / §5.4",
+        "the truthiness of the per-beat tick — `is not False` accepts every "
+        "value a manifest can carry except the False singleton, so a Tier-C beat "
+        "whose approval is JSON null, or 0, reaches the paid API having never "
+        "been approved by anyone. Indistinguishable from the real predicate over "
+        "True/False alone, which is why it survived until the loader was put in "
+        "front of it",
+        [(MANIFEST, GATE_BODY,
+          gate(terms="s.approved is not False and bool(s.video_model)"))],
+        probes=[("gate", "PROBE_GATE_NULL_APPROVAL=True"),
+                ("gate", "PROBE_GATE_ZERO_APPROVAL=True")],
+        expect=["test_an_approval_that_is_not_true_never_clears_the_gate"],
+        proves=["assert sb.gate_cleared() is False"],
+    ),
+    Mutation(
         "a blank model counts as a model", "CLAUDE.md Gate 1",
         "`bool()` — the empty string is what a cleared dropdown writes, and it "
         "is not None, so the gate opens on a beat with nothing selected",
@@ -619,6 +669,11 @@ MUTATIONS = [
                 ("route", "PROBE_ROUTE_SAYS_APPROVE_FIRST=false")],
         defect=True,
         expect=["test_paid_video_route_refuses_an_unapproved_storyboard"],
+        proves_note=(
+            "test_paid_video_route_refuses_an_unapproved_storyboard asserts the "
+            "refusal MESSAGE; there is no money assertion in it to reach. The "
+            "spend is carried by the probe instead: PROBE_ROUTE_BOUGHT_A_STILL"
+            "=true and PROBE_ROUTE_CALLED_FAL=true"),
     ),
     Mutation(
         "the paid route refuses whatever the storyboard says",
@@ -636,6 +691,10 @@ MUTATIONS = [
         probes=[("route", "PROBE_ROUTE_APPROVED_REFUSED=true"),
                 ("route", "PROBE_ROUTE_APPROVED_REACHED_FAL=false")],
         expect=["test_paid_video_route_refuses_an_unapproved_storyboard"],
+        proves_note=(
+            "same test, other direction: it has no assertion that an APPROVED "
+            "storyboard gets through, which is why the probe grew an approved "
+            "leg. PROBE_ROUTE_APPROVED_REFUSED=true is the evidence"),
     ),
 
     # ---- door 2: Director coverage ---------------------------------------------
@@ -650,6 +709,11 @@ MUTATIONS = [
                 ("director", "PROBE_DIRECTOR_SAYS_NOT_APPROVED=false")],
         defect=True,
         expect=["test_paid_coverage_refused_until_the_storyboard_is_approved"],
+        proves_note=(
+            "test_paid_coverage_refused_until_the_storyboard_is_approved is a "
+            "pytest.raises(match=...) on the message and reaches no assertion "
+            "about spend. PROBE_DIRECTOR_PAID_CALLS=1 is what says a clip was "
+            "bought for an unapproved storyboard"),
     ),
     Mutation(
         "coverage stops recognising which shots cost money", "CLAUDE.md Gate 1",
@@ -660,6 +724,11 @@ MUTATIONS = [
         probes=[("director", "PROBE_DIRECTOR_BOUGHT_UNAPPROVED=true"),
                 ("director", "PROBE_DIRECTOR_PAID_CALLS=1")],
         expect=["test_paid_coverage_refused_until_the_storyboard_is_approved"],
+        proves_note=(
+            "test_paid_coverage_refused_until_the_storyboard_is_approved is a "
+            "pytest.raises(match=...) on the message and reaches no assertion "
+            "about spend. PROBE_DIRECTOR_PAID_CALLS=1 is what says a clip was "
+            "bought for an unapproved storyboard"),
     ),
     Mutation(
         "coverage refuses free tiers as well", "CLAUDE.md Gate 1",
@@ -670,6 +739,11 @@ MUTATIONS = [
           "    paid = [s.id for s in plan.coverage]  # MUTANT")],
         probes=[("director", "PROBE_DIRECTOR_FREE_SAYS_NOT_APPROVED=true")],
         expect=["test_free_coverage_compiles_before_approval"],
+        proves_note=(
+            "test_free_coverage_compiles_before_approval asserts that a string "
+            "is ABSENT from an error; there is nothing to reach past it. "
+            "PROBE_DIRECTOR_FREE_SAYS_NOT_APPROVED=true is the statement that "
+            "free coverage was refused"),
     ),
 
     # ---- door 3: the CLI orchestrator ------------------------------------------
@@ -768,6 +842,27 @@ def shows(out: str, signature: str) -> bool:
     return signature in probe_lines(out)
 
 
+def failure_lines(out: str) -> str:
+    """Only the lines pytest marks as the FAILING statement and its explanation.
+
+    Matching `proves` / `not_proves` against the whole suite output does not
+    work, and the first run with these fields enforced is what showed it.
+    pytest's long traceback prints the failing test's source from the def down
+    to the failure: the failing statement is prefixed ``>``, its explanation
+    ``E``, and every earlier line -- including earlier assertions and their
+    message strings -- is printed UNPREFIXED as context.
+
+    So a substring search over the raw output cannot tell "this assertion
+    failed" from "this assertion sits above the one that did". It reported three
+    not_proves violations in mutate_paid_path.py that were nothing of the kind:
+    the money assertion had passed, and its source was merely visible above the
+    refusal check that failed. Restricting the search to ``>``/``E`` lines is
+    what makes the distinction the field was added to draw.
+    """
+    return "\n".join(ln for ln in out.splitlines()
+                      if ln.lstrip().startswith(("E ", "> ")))
+
+
 def failing_tests(out: str) -> list[str]:
     return sorted({line.split(" ", 1)[1].strip()
                    for line in out.splitlines() if line.startswith("FAILED ")})
@@ -836,6 +931,13 @@ def main() -> int:
             print(f"  - {n}")
         return 1
 
+    silent = [m.name for m in MUTATIONS if not m.proves and not m.proves_note]
+    if silent:
+        print("mutations with neither `proves` nor a written `proves_note`:")
+        for n in silent:
+            print(f"  - {n}")
+        return 1
+
     touched = sorted({p for m in MUTATIONS for p, _, _ in m.edits})
     pristine = {p: _read(p) for p in touched}
     before = digest(touched)
@@ -900,8 +1002,9 @@ def main() -> int:
             if not any(want in t for t in failed):
                 unproven.append(f"{mut.name}: expected {want} to fail")
 
+        failed_asserts = failure_lines(suite_out)
         for phrase in mut.proves:
-            shown = phrase in suite_out
+            shown = phrase in failed_asserts
             print(f"    assertion {'FIRED' if shown else 'NEVER RAN'}: {phrase!r}")
             if not shown:
                 unproven.append(
@@ -909,7 +1012,7 @@ def main() -> int:
                     f"died on a cheaper assertion first, so the defect was never "
                     f"demonstrated")
         for phrase in mut.not_proves:
-            if phrase in suite_out:
+            if phrase in failed_asserts:
                 print(f"    assertion UNEXPECTEDLY FIRED: {phrase!r}")
                 unproven.append(
                     f"{mut.name}: the fixture assertion {phrase!r} also failed — "

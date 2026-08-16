@@ -37,11 +37,29 @@ here — the point is that there is something to disagree with.
 | 3 | the paid path — `begin`/`succeed`/`fail`/`in_doubt`/`abandon`, the ledger schema gate, `record_paid_drafts` | `mutate_slice8_spend.py`, `mutate_slice8_tg_s4.py`, `scratch/mutate_paid_path.py` (new) |
 | 4 | §11.7 export equivalence | `scratch/mutate_slice7.py` |
 | 5 | the storage gate | `scratch/mutate_slice8_storage_gate*.py` |
+| 6 | the Director approval boundary (Audit Pass A) | `scratch/mutate_pass_a.py` (new) |
+
+Row 6 was not in the brief's five, and it is here because **the first version of
+this document left it out entirely** — not deferred with a reason, absent from
+both lists. It was found by re-reading the inventory against `b1e466e` after the
+document was written. It is recorded rather than quietly added because an
+inventory's failure mode is omission, not error, and a document whose own
+omission is invisible teaches the wrong lesson about how much to trust it.
+
+It is not deferrable. The scope bar is "costs money or admits unapproved work",
+and this is the second clause exactly: `force=true` used to send an unapproved
+plan into a compile that generates stills and buys paid video, and the
+`unresolved_warnings` check on the compile route (`backend/main.py`) sits
+directly on the paid dispatch path. On this document's own ranking it belongs
+*above* D2-1/D2-2 — those let a stale approval through, this one lets work
+through with no approval at all.
 
 **Promotion rule** — anything the inventory turned up that guards an
 *irreversible* outcome which is neither money nor a gate (data loss, an
-overwrite, a destroyed record) is pulled into scope rather than deferred. Three
-items met that test; they are in the next section.
+overwrite, a destroyed record) is pulled into scope rather than deferred. It is
+unconditional: "something similar is already covered" is not a reason to decline,
+because similar coverage is not equivalent mutation coverage. Four items met the
+test; they are in the next section.
 
 **Everything else** is listed below with three facts: what it guards, what
 failing silently would cost, and whether it is reachable in the deployed
@@ -63,18 +81,70 @@ Against that:
   `out_of_scope: workstation_only_conditions`). POSIX `rename` does not fail the
   way `os.replace` does on Windows. Items below marked *workstation-only* are
   recorded and must not be looped on.
+* **Firestore has delete protection and point-in-time recovery, 7-day
+  retention.** This changes how severe several items below are, so it is stated
+  once here rather than assumed: deployed, a destroyed *manifest* is restorable
+  for a week. It does not cover media — that lives on the GCS mount — and it
+  does not apply locally, where `db is None` and the JSON file is the only
+  store. Where a rating below depends on it, it says so.
 
 ## Promoted out of the deferred list
 
-Three items guard outcomes that cannot be undone by retrying. Money can be
-re-spent; a storyboard overwritten by another film's cannot be recovered from
-anywhere, because the JSON mirror and the Firestore document are both gone in
-the same operation.
+Four items guard outcomes that retrying cannot undo. Money can be re-spent; the
+work these protect cannot be re-made by asking again. Three were promoted when
+this document was written; **P4 was promoted after review**, having first been
+deferred for a reason that was about the round rather than about the safeguard.
+
+**"Irreversible" needs stating precisely, though, because it is the word a
+reviewer should press on and the three do not all earn it the same way.**
+
+* **P3 is unrecoverable, full stop.** Generated media lives on the GCS mount and
+  nowhere else — no database holds a copy — so a file dropped by a short copy
+  and then `rmtree`d exists nowhere afterwards.
+* **P1 and P2 are recoverable, and the cost of that recovery is the actual
+  reason they are promoted.** The overwrite destroys the JSON manifest.
+  Deployed, that is a *mirror*: `save_current_project` stamps `sb.id` from the
+  bound context and writes Firestore first, so under the Pass F defect project
+  A's durable document survives and only A's JSON copy is clobbered. Firestore
+  on this project has delete protection and point-in-time recovery enabled with
+  a **7-day retention window**, so deployed the manifest is restorable for a
+  week.
+
+  What makes it a promotion anyway is what that recovery requires. Nothing
+  surfaces the loss: the studio answers 200, the save "succeeds", and the film
+  on screen is simply the wrong one's. The only remedy is a database
+  point-in-time restore that **the user does not know to ask for**, and the
+  seven-day clock starts without anyone noticing it has started. A silent
+  destruction whose repair depends on someone spotting it within a week is the
+  right category, even though the bytes are not immediately gone.
+
+  Two cases where it *is* total, and both are ordinary rather than exotic:
+  locally there is no Firestore at all — `db is None`, the JSON file is the
+  store of record, and this is the shape `mutate_isolation.py`'s probe measures;
+  and deployed, the clobbered mirror is what the next bootstrap copies **up**,
+  which the storage-gate work already identified as a live path. Add the id
+  stamp going wrong at the same time (P1c, which is why that mutation is in the
+  harness) and the durable document is overwritten directly.
+
+P2 inherits P1's analysis exactly, because its write case reduces to P1 — and
+that write case is the whole of its justification, which is worth stating
+plainly because the first version of its harness did not cover it. The probe and
+the tests sent only GETs, so a middleware that refused reads and fell back on
+writes passed everything. `/api/approve` is the sharpest demonstration of what
+that permits: it sets `approved` on every beat and `storyboard_approved` on the
+episode, so a POST naming a project the server cannot resolve does not merely
+write into the active film, it **clears Gate 1** on one nobody named. Covered
+now, by a write probe and a test that assert byte-for-byte preservation of the
+active project as well as the refusal.
+
+P4 needs none of the PITR qualification above: Firestore holds manifests, and
+what `purge` removes is a directory of generated media.
 
 | ID | Safeguard | Why promoted |
 |---|---|---|
-| **P1** | `save_current_project` writes to the **bound context**, never the active-project pointer (`backend/main.py`) | This is Audit Pass F's finding, and it is the worst shape in the codebase: working on project B overwrote project A's *whole manifest* — every approval, selection and timing — and reported success. `manifest.save`'s default was already bound-aware; its main caller passed the active path explicitly and overrode it, so hardening the primitive was not enough. Not money: an irreversible destruction of approved work. |
+| **P1** | `save_current_project` writes to the **bound context**, never the active-project pointer (`backend/main.py`) | This is Audit Pass F's finding, and it is the worst shape in the codebase: working on project B overwrote project A's *whole manifest* — every approval, selection and timing — and reported success. `manifest.save`'s default was already bound-aware; its main caller passed the active path explicitly and overrode it, so hardening the primitive was not enough. Not money: a silent destruction of approved work, repairable only by a restore nobody knows to ask for — see the analysis above. |
 | **P2** | An unknown `X-Project-Id` is **refused**, not silently served the active project (`bind_project_context`, `backend/main.py`) | The read case is a display defect. The write case is P1 by another route: a client naming a project the server cannot resolve, answered about whichever film happens to be active, writes into it. |
+| **P4** | `/api/project/delete` refuses a path **outside the workspace root** (`backend/main.py`) | Promoted after review, having first been deferred for a bad reason (see D1-4). The handler takes a caller-supplied path, and `purge: true` is a real `shutil.rmtree` rather than a move to `_trash` — so nothing recovers it: no Firestore copy, no trash directory, no PITR, because media and project directories are not in the database. The containment check is the only guard between that path and the unlink, and it had no mutation and no test. |
 | **P3** | `_move_tree` **keeps the source** when the copy is short (`backend/main.py`) | Project delete/move on a gcsfuse mount falls back to copy-then-delete. A half-finished copy that reported success and then deleted the original destroys a film. The guard is a byte-count comparison and a `RuntimeError`; nothing was mutation-testing it. |
 
 These are covered by `scratch/mutate_isolation.py`. Their reachability is
@@ -120,21 +190,32 @@ narration re-render rather than a Tier-C clip, and because the failure is loud
 Covered already: enqueue-time context capture and worker rebind, and the ledger
 path following the bound project, are both pinned by
 `scratch/mutate_slice8_tg_s4.py` (TG-S4-05). Create/delete identity is pinned by
-`scratch/mutate_slice8.py` (#7, #8). Promoted this round: P1, P2, P3.
+`scratch/mutate_slice8.py` (#7, #8). Audit Pass A's Director approval boundary,
+which landed in the same commit as slices 0 and 1, is pinned by
+`scratch/mutate_pass_a.py` — see the note on row 6 above for why it is covered
+rather than listed here. Promoted this round: P1, P2, P3.
 
 | ID | Safeguard | What it guards | Cost of failing silently | Reachable deployed | Tests today | Sev |
 |---|---|---|---|---|---|---|
 | D1-1 | Every response carries `X-Project-Id` | A client that has switched discarding replies that lost the race | The studio renders another film's data under the current film's heading. Read-only — the write path is P1/P2 | Yes | `test_every_response_names_the_project_it_is_about` | Medium |
 | D1-2 | The job registry is keyed by **(project_id, name)**, not name alone | Two films running the same stage; one shown the other's progress as its own | Under the old global registry, one film's render blocked every other film's project switch, and job logs were shared. Not an overwrite: jobs carry their own context now, which is the part that *is* pinned | Yes | `test_two_projects_can_run_the_same_stage_at_once`, `test_a_project_only_sees_its_own_jobs`, `test_same_named_jobs_do_not_share_a_log_buffer` | Medium |
 | D1-3 | A project switch is refused while **this project's** job is running | A running job's output being redirected mid-flight | Explicitly belt-and-braces: the real defence is the enqueue-time capture, and that is pinned. Its own docstring says so | Yes | `test_project_switch_is_refused_while_a_job_runs`, `test_the_switch_guard_reads_the_real_job_registry` | Low |
-| D1-4 | `ProjectContext` is immutable and every derived path stays inside its own project root | Path traversal out of a project directory | A read or write outside the project tree. The containment check on `/api/project/select` is the reachable edge of this | Yes | `test_every_derived_path_stays_inside_its_own_project`, `test_a_context_is_immutable` | **High — see note** |
+| D1-4 | `ProjectContext` is immutable and every derived path stays inside its own project root | A captured context changing after capture, and derived paths leaving the project tree | The immutability half is guarded by P1's mutations, which write through a bound context. The **workspace containment** half was promoted to P4 — see above | Yes | `test_every_derived_path_stays_inside_its_own_project`, `test_a_context_is_immutable` | Medium (containment split out) |
 | D1-5 | A binding is undone when its block exits; concurrent threads do not share one | A leaked binding making the next request answer about the wrong film | Same class as P1, one layer down. Deferred because the leak is caught by the promoted P1 mutation at the point where it would do damage | Yes | `test_a_binding_is_undone_when_the_block_exits`, `test_concurrent_threads_do_not_share_a_binding` | Medium |
 
-**D1-4 is High and is deferred with reservations.** Containment is what stops a
-project path resolving outside the workspace root, and the operations behind it
-include delete. It is not promoted this round only because the three promoted
-items exercise the same `main.py` write-target machinery and a fourth would not
-change the round's conclusion. It should be first in the next one.
+**D1-4's containment half was promoted (P4), and the reason it was originally
+deferred does not survive scrutiny.** The first version of this document declined
+to promote it "only because the three promoted items exercise the same `main.py`
+write-target machinery and a fourth would not change the round's conclusion."
+That is a statement about the round, not about the safeguard. The promotion rule
+is unconditional on irreversibility, and similar coverage is not equivalent
+mutation coverage — P1, P2 and P3 mutate three different guards and none of them
+touches the path check on `/api/project/delete`. Corrected after review.
+
+What remains under D1-4 is the immutability of `ProjectContext` and the derived
+paths hanging off `root`. Those are Medium: a frozen dataclass and property
+accessors, exercised indirectly by every P1 mutation, with no separate way to
+fail silently.
 
 ### Slice 2 — approval bound to the exact plan it was given for
 
@@ -196,6 +277,33 @@ refusal-to-overwrite that backs it is the same `get_current_project` path the
 storage-gate harness already drives — but from the storage axis, not this one.
 Second on the list for the next round, after D2-1/D2-2.
 
+## Open finding: approval is never type-checked (NOT fixed here)
+
+Found while closing a review finding about Gate 1, and left alone deliberately,
+because it is a **production defect rather than an unpinned safeguard** and this
+was a test-and-tooling round.
+
+`Storyboard.from_dict` filters unknown keys but does not coerce types, so a
+manifest's `approved` value reaches `gate_cleared()` exactly as written. The
+predicate is a truthiness test, which handles `null`, `0` and a missing key
+correctly — all falsy, gate shut, and all three are now pinned by
+`test_an_approval_that_is_not_true_never_clears_the_gate`.
+
+What it does not handle is a truthy non-boolean. A beat carrying
+`"approved": "no"` is approved as far as Gate 1 is concerned, and a paid Tier-C
+beat with that value clears the gate **with no mutation at all**:
+
+```
+PROBE_GATE_STRING_APPROVAL=True      # scratch/mutate_gate1.py, pristine
+```
+
+Contract §5.4 requires approval to be explicit before paid generation, and a
+string is not an explicit approval. The fix is coercion or validation at the
+loader, which is new behaviour and therefore a build round — the guardrails
+forbid it in a fix round, and no test here asserts the current answer is
+desirable. Reachable by a hand-edited manifest or a writer of a different
+vintage; not reachable through the studio, which writes booleans.
+
 ## Observed while surveying, outside slices 0–4
 
 Recorded rather than acted on, because attributing them to a slice would be a
@@ -220,8 +328,8 @@ In the order a next round should take them, by severity and reachability:
    unapproved paid work, all three are reachable by typing, and all three meet
    this round's own in-scope criterion. One harness could cover them: they share
    `director.py`'s signature machinery.
-2. **D1-4, H1-2** — containment, and the loader that keeps a project reachable.
-   Availability and path safety rather than spend.
+2. **H1-2** — the loader that keeps a project reachable. Availability rather
+   than spend. (Containment left this list when it became P4.)
 3. **D0-4** — the narrator setting, the last item that touches a bill.
 4. Everything else in this document is Medium or below, and per the guardrails a
    round that yields no reachable High is a round that should not have run.
@@ -230,3 +338,26 @@ Nothing here is a defect. Every safeguard listed is present and tested; what is
 absent is a mutation proving the test would notice its removal. That distinction
 is the whole subject of this document, and it is why none of this was filed as a
 finding.
+
+## How to check this document, and how it already failed once
+
+The failure mode of an inventory is **omission**, not error. Every entry above
+can be argued with, which is the point; what cannot be argued with is a
+safeguard that appears in neither list, because there is nothing on the page to
+disagree about. The first version of this document did exactly that with Audit
+Pass A — five guards on the Director approval boundary, one of them on the paid
+dispatch path — and it was found only by re-reading the document against the
+commits rather than against the code.
+
+So the check that matters is not "is each rating right". It is:
+
+1. Take the slice 0–4 commits (`b1e466e`, `a419310`, `2a3b0de`, `7352a71`,
+   `e2bdf2f`, `d515320`, `3d2885d`, plus `4eeb976` and `99a883b`) and read what
+   each commit message says it added.
+2. For each guard named there, find it in the covered table or the deferred
+   list.
+3. Anything in neither is this document's real error.
+
+Note the trap in step 1, because it is what hid Pass A: `b1e466e` carries slices
+0 *and* 1 *and* two audit passes. Reading it as "the slice 0/1 commit" is how
+four closed defects in the same diff go uncounted.

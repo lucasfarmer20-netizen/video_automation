@@ -7,8 +7,9 @@ The slice 8 retrofit was scoped to safeguards whose failure costs money or
 admits unapproved work, with one stated exception: **anything guarding an
 irreversible outcome that is neither — data loss, an overwrite, a destroyed
 record — is promoted rather than deferred.** The inventory
-(`docs/audits/slice8_deferred_safeguard_inventory.md`) turned up three, and this
-is them.
+(`docs/audits/slice8_deferred_safeguard_inventory.md`) turned up three, and a
+review pass turned up a fourth that had been deferred for a reason about the
+round rather than about the safeguard. This is all four.
 
 Money can be spent again. None of these can be undone by retrying, because in
 each case the thing that would have been used to recover is what was destroyed:
@@ -28,6 +29,17 @@ each case the thing that would have been used to recover is what was destroyed:
     delete on the gcsfuse mount is copy-then-delete, because directory rename is
     unsupported there. A half-finished copy that reported success and then ran
     ``rmtree`` destroys a film. The guard is a file count and a ``RuntimeError``.
+  * **P4 — ``/api/project/delete`` refuses a path outside the workspace.** The
+    handler takes a caller-supplied path and ``purge: true`` is a real
+    ``shutil.rmtree``, not a move to ``_trash``. The containment check is the
+    only guard between the two, and it had neither a mutation nor a test.
+
+P2's mutation is the one worth reading twice. Refusing GETs and falling back on
+everything else leaves every read assertion in the suite passing, because they
+are all reads -- and ``/api/approve`` sets ``approved`` on every beat and
+``storyboard_approved`` on the episode, so a POST naming a project the server
+cannot resolve does not merely write into the active film. It clears Gate 1 on
+one nobody named.
 
 All three are reachable on Cloud Run and none of them is exotic: P1 fires
 whenever two projects are open in one browser session, P2 whenever a switch
@@ -189,6 +201,13 @@ def flaky(a, b, *args, **kw):
 
 M.shutil.copyfile = flaky
 dst = tmp / "_trash" / "Doomed"
+# Counted from the tree, not written down. The literal 3 that used to be on the
+# PROBE_MOVE_FILES_DESTROYED line was the size of the fixture thirty lines above
+# with nothing tying the two together: adding a file to the fixture would have
+# made a correct mutation report MISSING, and the run would have failed saying
+# the defect was not demonstrated when the real fault was arithmetic here. This
+# is the same rglob count _move_tree itself uses for `expected`.
+had = sum(1 for f in src.rglob("*") if f.is_file())
 try:
     M._move_tree(src, dst)
     outcome = "returned"
@@ -205,14 +224,102 @@ print("PROBE_MOVE_ORIGINAL_CLIP_STILL_THERE="
 landed = sorted(p.name for p in dst.rglob("*") if p.is_file()) if dst.exists() else []
 print("PROBE_MOVE_LANDED=" + json.dumps(landed))
 # The bytes that exist nowhere any more. Zero is the only acceptable number.
-lost = 0 if survived else max(0, 3 - len(landed))
+print("PROBE_MOVE_FILES_IN_SOURCE=%d" % had)
+lost = 0 if survived else max(0, had - len(landed))
 print("PROBE_MOVE_FILES_DESTROYED=%d" % lost)
+'''
+
+# P2's WRITE case, which is the one it was promoted for. PROBE_UNKNOWN above
+# sends a GET; refusing GETs and falling back on everything else preserves every
+# read assertion while letting a POST that named an unresolvable project land in
+# whichever film happens to be active. /api/approve is the sharpest version of
+# that: it sets approved on every beat and storyboard_approved on the episode, so
+# the fallback does not merely write -- it CLEARS GATE 1 on a film nobody named.
+PROBE_WRITE_UNKNOWN = _PRELUDE + '''
+from fastapi.testclient import TestClient
+import backend.main as M
+
+a, a_mf = project("alpha", "ALPHA")
+config.MANIFEST_PATH = a_mf
+M.get_active_manifest_path = lambda: str(a_mf)
+M.WORKSPACE_ROOT = tmp
+
+# A beat carrying a chosen image, so /api/approve would really succeed if the
+# request were allowed through. Without it the endpoint refuses on "no beats to
+# approve" and the probe would read clean under the mutation for the wrong
+# reason.
+sb = manifest.load(a_mf)
+sb.shots[0].draft_image = "assets/s001/v0.png"
+sb.shots[0].motion_type = "ai_video"
+sb.shots[0].video_model = "seedance_2_0"
+manifest.save(sb, a_mf)
+before = a_mf.read_bytes()
+
+client = TestClient(M.app, raise_server_exceptions=False)
+r = client.post("/api/approve",
+                headers={"X-Project-Id": "a-project-that-does-not-exist"})
+
+after = json.loads(a_mf.read_text(encoding="utf-8"))
+print("PROBE_WRITE_UNKNOWN_STATUS=%d" % r.status_code)
+print("PROBE_WRITE_UNKNOWN_ACTIVE_CHANGED="
+      + ("true" if a_mf.read_bytes() != before else "false"))
+print("PROBE_WRITE_UNKNOWN_ACTIVE_APPROVED="
+      + str(bool(after.get("storyboard_approved"))))
+print("PROBE_WRITE_UNKNOWN_BEAT_APPROVED="
+      + str(bool((after.get("shots") or [{}])[0].get("approved"))))
+
+# The control, run last because it really does approve alpha: a write that names
+# nothing must still work, or a mutation that refused every POST would look like
+# a fix.
+plain = client.post("/api/approve")
+print("PROBE_WRITE_NAMED_NOTHING_STATUS=%d" % plain.status_code)
+'''
+
+# P4. The containment check on /api/project/delete: the only guard between a
+# caller-supplied path and rmtree, and `purge: true` is a real rmtree.
+PROBE_CONTAINMENT = _PRELUDE + '''
+import tempfile as _tf
+from fastapi.testclient import TestClient
+import backend.main as M
+
+a, a_mf = project("alpha", "ALPHA")
+config.MANIFEST_PATH = a_mf
+M.get_active_manifest_path = lambda: str(a_mf)
+# The workspace is `tmp`; the decoy below is deliberately somewhere else.
+M.WORKSPACE_ROOT = tmp
+
+outside = Path(_tf.mkdtemp()) / "NotOurs"
+outside.mkdir(parents=True)
+(outside / "storyboard_manifest.json").write_text(
+    '{"title": "NotOurs"}', encoding="utf-8")
+(outside / "keepme.txt").write_text("bytes that exist nowhere else",
+                                    encoding="utf-8")
+
+client = TestClient(M.app, raise_server_exceptions=False)
+# The typed confirmation is supplied CORRECTLY, on purpose. Every later guard in
+# the handler -- protected directories, nested projects, the typed name -- would
+# also refuse this request, so a probe that let one of those answer first would
+# read clean with containment removed. This gets past all of them and is stopped
+# by containment or not at all.
+r = client.post("/api/project/delete", json={
+    "rel": str(outside / "storyboard_manifest.json"),
+    "confirm": "notours", "purge": True})
+
+print("PROBE_CONTAIN_STATUS=%d" % r.status_code)
+print("PROBE_CONTAIN_REFUSED_FOR_CONTAINMENT="
+      + ("true" if "outside the workspace" in r.text else "false"))
+print("PROBE_CONTAIN_OUTSIDE_SURVIVED="
+      + ("true" if outside.is_dir() else "false"))
+print("PROBE_CONTAIN_FILE_SURVIVED="
+      + ("true" if (outside / "keepme.txt").is_file() else "false"))
 '''
 
 PROBES = {
     "overwrite": PROBE_OVERWRITE,
     "default": PROBE_DEFAULT,
     "unknown": PROBE_UNKNOWN,
+    "write_unknown": PROBE_WRITE_UNKNOWN,
+    "containment": PROBE_CONTAINMENT,
     "move": PROBE_MOVE,
 }
 
@@ -226,6 +333,17 @@ class Mutation:
     probes: list[tuple[str, str]] = field(default_factory=list)
     defect: bool = False
     expect: list[str] = field(default_factory=list)
+    # The reachability obligation. `expect` proves the right TEST died; these
+    # prove the right ASSERTION inside it ran. A test that dies on
+    # `pytest.raises(...)` not raising has demonstrated nothing about the bytes
+    # it was protecting -- test_move_tree_keeps_the_source_when_the_copy_is_short
+    # was exactly that shape until this harness was written against it.
+    #
+    # `proves_note` is required when `proves` is empty, and main() refuses to run
+    # without one, so "the probe carries this" is a recorded decision.
+    proves: list[str] = field(default_factory=list)
+    not_proves: list[str] = field(default_factory=list)
+    proves_note: str = ""
 
 
 # --- anchors ------------------------------------------------------------------
@@ -260,6 +378,12 @@ MIDDLEWARE_REFUSES = (
     '                                     "project_id": requested})'
 )
 
+DELETE_CONTAINMENT = (
+    "        root = next((r for r in roots if r in p.parents), None)\n"
+    "        if root is None:\n"
+    '            raise HTTPException(status_code=400, detail="Project path is outside the workspace")'
+)
+
 MOVE_REFUSES = (
     "    if landed < expected:\n"
     "        raise RuntimeError(\n"
@@ -289,6 +413,7 @@ MUTATIONS = [
                 ("overwrite", "PROBE_OVERWRITE_ALPHA_TITLE=BRAVO-EDITED")],
         defect=True,
         expect=["test_save_current_project_writes_to_the_bound_project"],
+        proves=["bound B overwrote active A"],
     ),
     Mutation(
         "manifest.save's default follows the process, not the binding", "§11.3",
@@ -301,6 +426,7 @@ MUTATIONS = [
         probes=[("default", "PROBE_DEFAULT_ALPHA_DESTROYED=true"),
                 ("default", "PROBE_DEFAULT_ALPHA_TITLE=WRITTEN-UNDER-BRAVO")],
         expect=["test_manifest_save_defaults_to_the_bound_project"],
+        proves=['assert manifest.load(a.manifest_path).title == "belongs-to-a"'],
     ),
     Mutation(
         "the saved document is not stamped with the project it belongs to",
@@ -312,6 +438,7 @@ MUTATIONS = [
         [(MAIN, SAVE_STAMPS_ID, "    ctx = projects.bound()  # MUTANT: id not stamped")],
         probes=[("overwrite", "PROBE_OVERWRITE_STAMPED_ID=False")],
         expect=["test_save_current_project_stamps_the_bound_project_id"],
+        proves=['assert seen["id"] == b.project_id'],
     ),
 
     # ---- P2: an unknown project is refused, not substituted ----------------------
@@ -331,6 +458,50 @@ MUTATIONS = [
         defect=True,
         expect=["test_a_request_naming_an_unknown_project_is_refused",
                 "test_an_unknown_project_is_never_silently_served_the_active_one"],
+        proves=["assert r.headers.get(\"X-Project-Id\") != a.project_id"],
+    ),
+
+    Mutation(
+        "only GETs are refused; a write for an unknown project falls back",
+        "§11.3",
+        "the half of the refusal that P2 exists for. Reads that name an "
+        "unresolvable project are still refused, so every read assertion in the "
+        "suite still passes -- and a POST is answered about whichever film is "
+        "active. /api/approve makes that concrete: it sets approved on every "
+        "beat and storyboard_approved on the episode, so a request naming a "
+        "project that does not exist clears Gate 1 on one that does",
+        [(MAIN, MIDDLEWARE_REFUSES,
+          "    try:  # MUTANT: only GETs are refused\n"
+          "        ctx = _context_for(requested)\n"
+          "    except projects.UnknownProject as exc:\n"
+          '        if request.method == "GET":\n'
+          "            return JSONResponse(status_code=404,\n"
+          '                                content={"ok": False, "error": str(exc),\n'
+          '                                         "project_id": requested})\n'
+          '        ctx = _context_for("")')],
+        probes=[("write_unknown", "PROBE_WRITE_UNKNOWN_STATUS=200"),
+                ("write_unknown", "PROBE_WRITE_UNKNOWN_ACTIVE_CHANGED=true"),
+                ("write_unknown", "PROBE_WRITE_UNKNOWN_ACTIVE_APPROVED=True")],
+        defect=True,
+        expect=["test_a_write_naming_an_unknown_project_never_touches_the_active_one"],
+        proves=["a write naming an unknown project changed the active project"],
+    ),
+
+    # ---- P4: a delete that escapes the workspace ---------------------------------
+    Mutation(
+        "a project path outside the workspace is deleted anyway", "§11.3",
+        "the containment check on /api/project/delete — the only guard between a "
+        "caller-supplied path and `shutil.rmtree`, because `purge: true` is a "
+        "real unlink rather than a move to _trash. Promoted on its own terms: "
+        "the bytes are not in Firestore, not in _trash and not anywhere else",
+        [(MAIN, DELETE_CONTAINMENT,
+          "        root = next((r for r in roots if r in p.parents), roots[0])  # MUTANT")],
+        probes=[("containment", "PROBE_CONTAIN_OUTSIDE_SURVIVED=false"),
+                ("containment", "PROBE_CONTAIN_FILE_SURVIVED=false"),
+                ("containment", "PROBE_CONTAIN_STATUS=200")],
+        defect=True,
+        expect=["test_a_delete_outside_the_workspace_is_refused"],
+        proves=["a path outside the workspace was deleted"],
     ),
 
     # ---- P3: a project destroyed by a short copy ---------------------------------
@@ -348,6 +519,7 @@ MUTATIONS = [
                 ("move", "PROBE_MOVE_FILES_DESTROYED=1")],
         defect=True,
         expect=["test_move_tree_keeps_the_source_when_the_copy_is_short"],
+        proves=["a short copy deleted the original"],
     ),
     Mutation(
         "the move counts the copies it attempted, not the files that arrived",
@@ -360,6 +532,7 @@ MUTATIONS = [
         probes=[("move", "PROBE_MOVE_SOURCE_SURVIVED=false"),
                 ("move", "PROBE_MOVE_FILES_DESTROYED=1")],
         expect=["test_move_tree_keeps_the_source_when_the_copy_is_short"],
+        proves=["a short copy deleted the original"],
     ),
 ]
 
@@ -397,6 +570,27 @@ def probe_lines(out: str) -> list[str]:
 def shows(out: str, signature: str) -> bool:
     """Whether a probe printed exactly this line. Equality, not ``in``."""
     return signature in probe_lines(out)
+
+
+def failure_lines(out: str) -> str:
+    """Only the lines pytest marks as the FAILING statement and its explanation.
+
+    Matching `proves` / `not_proves` against the whole suite output does not
+    work, and the first run with these fields enforced is what showed it.
+    pytest's long traceback prints the failing test's source from the def down
+    to the failure: the failing statement is prefixed ``>``, its explanation
+    ``E``, and every earlier line -- including earlier assertions and their
+    message strings -- is printed UNPREFIXED as context.
+
+    So a substring search over the raw output cannot tell "this assertion
+    failed" from "this assertion sits above the one that did". It reported three
+    not_proves violations in mutate_paid_path.py that were nothing of the kind:
+    the money assertion had passed, and its source was merely visible above the
+    refusal check that failed. Restricting the search to ``>``/``E`` lines is
+    what makes the distinction the field was added to draw.
+    """
+    return "\n".join(ln for ln in out.splitlines()
+                      if ln.lstrip().startswith(("E ", "> ")))
 
 
 def failing_tests(out: str) -> list[str]:
@@ -510,6 +704,13 @@ def main() -> int:
             print(f"  - {n}")
         return 1
 
+    silent = [m.name for m in MUTATIONS if not m.proves and not m.proves_note]
+    if silent:
+        print("mutations with neither `proves` nor a written `proves_note`:")
+        for n in silent:
+            print(f"  - {n}")
+        return 1
+
     if args.discover:
         return discover()
 
@@ -567,6 +768,23 @@ def main() -> int:
         for want in mut.expect:
             if not any(want in t for t in failed):
                 unproven.append(f"{mut.name}: expected {want} to fail")
+        failed_asserts = failure_lines(suite_out)
+        for phrase in mut.proves:
+            shown = phrase in failed_asserts
+            print(f"    assertion {'FIRED' if shown else 'NEVER RAN'}: {phrase!r}")
+            if not shown:
+                unproven.append(
+                    f"{mut.name}: no failing assertion said {phrase!r} — the test "
+                    f"died on a cheaper assertion first, so the defect was never "
+                    f"demonstrated")
+        for phrase in mut.not_proves:
+            if phrase in failed_asserts:
+                print(f"    assertion UNEXPECTEDLY FIRED: {phrase!r}")
+                unproven.append(
+                    f"{mut.name}: {phrase!r} also failed — the test may be red "
+                    f"for a reason other than the one named")
+        if mut.proves_note and not mut.proves:
+            print(f"    no assertion pinned: {mut.proves_note}")
 
         for name in sorted({n for n, _ in mut.probes}):
             lines = probe_lines(probe_out.get(name, ""))

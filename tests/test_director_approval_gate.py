@@ -72,14 +72,25 @@ def _plan(status: str = "draft", warnings: list | None = None) -> director.Cover
     return p
 
 
+# Assertion order, and why it is the way it is.
+#
+# These tests exist because a guard that returns a polite error and starts the
+# job anyway reads as passing, so what they assert on is DISPATCH. But they were
+# asserting the status code FIRST, and under every mutation that opens the gate
+# the status moves too -- so the status assertion failed, pytest stopped, and
+# the line that says work was handed to generation never ran. The table went red
+# having demonstrated a number, not a spend. Mutation testing surfaced it
+# (scratch/mutate_pass_a.py reported five of these as "the test died on a
+# cheaper assertion first"), and the fix is ordering: dispatch, then status.
+
 # --- TG-01: a draft plan can never reach generation -----------------------------
 
 def test_a_draft_plan_is_refused_at_compile(studio):
     client, dispatched = studio
     _plan("draft")
     r = client.post("/api/director/compile/s001")
-    assert r.status_code == 409
     assert dispatched == [], "a draft plan was handed to generation"
+    assert r.status_code == 409
 
 
 def test_the_force_flag_no_longer_bypasses_approval(studio):
@@ -87,8 +98,8 @@ def test_the_force_flag_no_longer_bypasses_approval(studio):
     client, dispatched = studio
     _plan("draft")
     r = client.post("/api/director/compile/s001?force=true")
-    assert r.status_code == 409
     assert dispatched == [], "force=true sent an unapproved plan into generation"
+    assert r.status_code == 409
 
 
 @pytest.mark.parametrize("force", ["true", "false", "1", "TRUE"])
@@ -96,8 +107,9 @@ def test_no_spelling_of_force_gets_a_draft_through(studio, force):
     """The flag is gone, so unknown query parameters must simply be ignored."""
     client, dispatched = studio
     _plan("draft")
-    assert client.post(f"/api/director/compile/s001?force={force}").status_code == 409
-    assert dispatched == []
+    r = client.post(f"/api/director/compile/s001?force={force}")
+    assert dispatched == [], f"force={force} sent an unapproved plan into generation"
+    assert r.status_code == 409
 
 
 def test_a_locked_plan_does_compile(studio):
@@ -115,8 +127,9 @@ def test_a_locked_plan_with_an_undecided_warning_still_cannot_compile(studio):
     client, dispatched = studio
     _plan("locked", [WARNING])
     r = client.post("/api/director/compile/s001")
+    assert dispatched == [], \
+        "a plan locked before the review rule was handed to generation"
     assert r.status_code == 409
-    assert dispatched == []
 
 
 # --- TG-02: unresolved critic findings cannot be silently bulk-approved ---------
@@ -126,8 +139,8 @@ def test_scene_lock_refuses_a_plan_with_an_undecided_warning(studio):
     client, _ = studio
     _plan("draft", [WARNING])
     r = client.post("/api/director/lock_scene", json={"beats": ["s001"]})
-    assert r.status_code == 400
     assert director.load_plan("s001").status == "draft", "locked despite the warning"
+    assert r.status_code == 400
 
 
 def test_beat_lock_refuses_a_plan_with_an_undecided_warning(studio):
@@ -135,8 +148,9 @@ def test_beat_lock_refuses_a_plan_with_an_undecided_warning(studio):
     client, _ = studio
     _plan("draft", [WARNING])
     r = client.post("/api/director/lock/s001")
+    assert director.load_plan("s001").status == "draft", \
+        "the single-beat route locked despite the warning"
     assert r.status_code == 400
-    assert director.load_plan("s001").status == "draft"
 
 
 def test_a_clean_plan_locks_normally(studio):

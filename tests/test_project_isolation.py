@@ -195,6 +195,71 @@ def test_an_unknown_project_is_never_silently_served_the_active_one(client):
     assert r.json().get("stages") is None
 
 
+def test_a_write_naming_an_unknown_project_never_touches_the_active_one(client):
+    """The case the refusal exists for; the reads above are the cheap half.
+
+    Refusing GETs and falling back on everything else leaves every other test in
+    this file passing -- they are all GETs -- while a POST that named a project
+    the server cannot resolve lands in whichever film is active. `/api/approve`
+    is the sharpest version: it sets `approved` on every beat and
+    `storyboard_approved` on the episode, so the fallback does not merely write,
+    it clears Gate 1 on a film nobody named.
+
+    The beat below carries a chosen image on purpose. Without it the endpoint
+    refuses on "no beats to approve" and this test would pass whether the guard
+    exists or not.
+    """
+    c, a = client
+    a.manifest_path.write_text(
+        '{"title": "alpha", "storyboard_approved": false, "shots": ['
+        '{"scene_id": "s001", "motion_type": "ai_video", '
+        '"video_model": "seedance_2_0", "draft_image": "assets/s001/v0.png", '
+        '"approved": false}]}',
+        encoding="utf-8")
+    before = a.manifest_path.read_bytes()
+
+    r = c.post("/api/approve", headers={"X-Project-Id": "no_such_project"})
+
+    assert a.manifest_path.read_bytes() == before, \
+        "a write naming an unknown project changed the active project"
+    assert r.status_code == 404
+
+    # The control: a write that names nothing must still work, or a mutation
+    # that refused every POST would read as a fix.
+    assert c.post("/api/approve").status_code == 200
+
+
+def test_a_delete_outside_the_workspace_is_refused(workspace, tmp_path_factory):
+    """Containment, and the only guard between a caller-supplied path and rmtree.
+
+    `purge: true` is a real `shutil.rmtree`, not a move to `_trash`, so nothing
+    recovers what it removes -- no Firestore copy, no trash directory.
+
+    The typed confirmation is supplied CORRECTLY on purpose. Every later guard in
+    the handler -- protected directories, nested projects, the typed name --
+    would also refuse this request, so a test that let one of those answer first
+    would pass with containment removed. This one gets past all of them and is
+    stopped by containment or not at all.
+    """
+    client, _M, _root = workspace
+    outside = tmp_path_factory.mktemp("outside") / "NotOurs"
+    outside.mkdir()
+    (outside / "storyboard_manifest.json").write_text('{"title": "NotOurs"}',
+                                                      encoding="utf-8")
+    (outside / "keepme.txt").write_text("bytes that exist nowhere else",
+                                        encoding="utf-8")
+
+    r = client.post("/api/project/delete", json={
+        "rel": str(outside / "storyboard_manifest.json"),
+        "confirm": "notours", "purge": True})
+
+    assert (outside / "keepme.txt").is_file(), \
+        "a path outside the workspace was deleted"
+    assert outside.is_dir()
+    assert r.status_code == 400
+    assert "outside the workspace" in r.text
+
+
 def test_naming_the_active_project_explicitly_is_accepted(client):
     c, a = client
     r = c.get("/api/stages", headers={"X-Project-Id": a.project_id})

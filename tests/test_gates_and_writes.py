@@ -340,9 +340,20 @@ def test_move_tree_keeps_the_source_when_the_copy_is_short(tmp_path, monkeypatch
         return real_copyfile(a, b, *args, **kw)
     monkeypatch.setattr(M.shutil, "copyfile", flaky)
 
-    with pytest.raises(RuntimeError, match="refusing to delete"):
+    # The destruction first, the refusal second. Wrapped in pytest.raises, a
+    # _move_tree that wrongly SUCCEEDS fails on "DID NOT RAISE" and the line
+    # below never runs -- so under exactly the regression this guards, the suite
+    # reddens without ever asserting that the original film is still there.
+    try:
         M._move_tree(src, tmp_path / "_trash" / "Ep")
-    assert src.exists() and (src / "render" / "s001.mp4").is_file()
+        refused = None
+    except BaseException as exc:  # noqa: BLE001 -- classified below
+        refused = exc
+
+    assert src.exists() and (src / "render" / "s001.mp4").is_file(), \
+        "a short copy deleted the original"
+    assert isinstance(refused, RuntimeError) and "refusing to delete" in str(refused), \
+        f"the short copy was accepted; got {refused!r}"
 
 
 def test_another_project_s_job_does_not_block_this_switch(client, monkeypatch, tmp_path):

@@ -456,7 +456,26 @@ class Mutation:
     probes: list[tuple[str, str]] = field(default_factory=list)
     defect: bool = False
     expect: list[str] = field(default_factory=list)
+    # The third obligation, and the one this file originally declared and never
+    # used. `expect` proves the right TEST died; these prove the right ASSERTION
+    # inside it ran. A test that dies on `pytest.raises(...)` not raising, or on
+    # a status check placed above the money check, reddens the table having
+    # demonstrated nothing -- and three tests in this repo were doing exactly
+    # that until mutation testing found them.
+    #
+    # `proves`      -- text that MUST appear in the mutated suite's output. An
+    #                  assertion message where one exists, the assertion source
+    #                  otherwise; pytest prints both for the failing assert.
+    # `not_proves`  -- text that must NOT appear: the cheaper neighbouring
+    #                  assertion, so a test red for the wrong reason is caught.
+    # `proves_note` -- required when `proves` is empty. Says in writing why no
+    #                  assertion can be pinned and what carries the evidence
+    #                  instead. main() refuses to run if a mutation has neither,
+    #                  so "the probe covers it" is a recorded decision rather
+    #                  than an omission that reads like one.
     proves: list[str] = field(default_factory=list)
+    not_proves: list[str] = field(default_factory=list)
+    proves_note: str = ""
 
 
 # --- anchors ------------------------------------------------------------------
@@ -528,6 +547,8 @@ MUTATIONS = [
                 ("boundary", "PROBE_BOUND_POST_BOUGHT_TWICE=true")],
         defect=True,
         expect=["test_a_crash_after_charging_does_not_buy_the_clip_again"],
+        proves=["the crash window bought the clip a second time"],
+        not_proves=["the replay was not refused"],
     ),
     Mutation(
         "the same request opens a second attempt", "§11.1",
@@ -548,6 +569,7 @@ MUTATIONS = [
         expect=["test_a_duplicate_request_does_not_open_a_second_attempt",
                 "test_a_worker_restart_does_not_re_bill",
                 "test_the_two_guards_are_not_the_same_guard"],
+        proves=["a repeated request was allowed to spend again"],
     ),
     Mutation(
         "media already bought for these inputs is bought again", "§11.1",
@@ -560,6 +582,7 @@ MUTATIONS = [
         expect=["test_unchanged_inputs_reuse_the_media_already_bought",
                 "test_a_lost_paid_marker_does_not_re_buy_the_clip",
                 "test_the_captured_project_still_blocks_a_second_charge_after_the_switch"],
+        proves=["the clip was bought twice after the marker was lost"],
     ),
     Mutation(
         "a recorded success whose media is gone is reused anyway", "§11.1",
@@ -576,6 +599,7 @@ MUTATIONS = [
                 ("rebuy", "PROBE_REBUY_TRUNCATED_REPLACED=false")],
         expect=["test_a_recorded_success_whose_media_is_gone_is_not_reusable",
                 "test_a_recorded_paid_clip_that_got_truncated_is_regenerated"],
+        proves=['assert how == "created"'],
     ),
     Mutation(
         "a zero-byte download counts as the clip", "§11.1",
@@ -593,6 +617,10 @@ MUTATIONS = [
         # one had to be made exactly as strict or it becomes the weaker of the
         # two and decides first.
         expect=["test_a_recorded_paid_clip_that_got_truncated_is_regenerated"],
+        proves_note=(
+            "the test asserts a re-render count with a bare assert and no "
+            "message, and the count IS the money; PROBE_REBUY_TRUNCATED_REPLACED"
+            "=false carries the same fact independently"),
     ),
 
     # ---- the caller's half: only "created" may spend ----------------------------
@@ -610,6 +638,7 @@ MUTATIONS = [
         # marker can see it -- which is the whole reason the ledger exists.
         expect=["test_a_lost_paid_marker_does_not_re_buy_the_clip",
                 "test_the_captured_project_still_blocks_a_second_charge_after_the_switch"],
+        proves=["the clip was bought twice after the marker was lost"],
     ),
     Mutation(
         "an attempt that may have been billed is not surfaced to a human",
@@ -621,6 +650,8 @@ MUTATIONS = [
           "                        if False:  # MUTANT")],
         probes=[("rebuy", "PROBE_REBUY_STUCK_ERROR_NAMES_RUNNING=false")],
         expect=["test_a_crash_after_charging_does_not_buy_the_clip_again"],
+        proves=["the replay was not refused"],
+        not_proves=["the crash window bought the clip a second time"],
     ),
 
     # ---- the dispatch boundary (S4-R02) -----------------------------------------
@@ -643,6 +674,8 @@ MUTATIONS = [
         defect=True,
         expect=["test_a_failure_before_dispatch_is_an_ordinary_retryable_failure",
                 "test_a_pre_dispatch_failure_does_not_strand_the_beat"],
+        proves=["a pre-dispatch failure was left in doubt"],
+        not_proves=["the provider was called"],
     ),
     Mutation(
         "DEFECT S4-01: a failure after dispatch is recorded as an ordinary failure",
@@ -659,6 +692,7 @@ MUTATIONS = [
                 ("boundary", "PROBE_BOUND_POST_BOUGHT_TWICE=true")],
         defect=True,
         expect=["test_a_failed_paid_generation_stays_attached_and_in_doubt"],
+        proves=["an unknown provider outcome recorded as failed"],
     ),
 
     # ---- terminal facts (S4-R03) -------------------------------------------------
@@ -676,12 +710,17 @@ MUTATIONS = [
         expect=["test_the_same_status_with_a_different_output_is_a_conflict",
                 "test_the_same_status_with_a_different_cost_is_a_conflict",
                 "test_a_failure_with_a_different_reason_is_a_conflict"],
+        proves=["the conflicting cost was accepted"],
+        not_proves=["a second completion rewrote the bill"],
     ),
     Mutation(
         "a finished attempt can be rewritten by a late callback", "§11.6",
-        "terminality itself — a succeeded, paid attempt becomes failed with its "
-        "output and cost still on the record, and the reported bill drops to "
-        "zero while the clip is in the cut",
+        "terminality itself — a succeeded, paid attempt is rewritten as failed "
+        "by a late callback, and the record of what actually happened is gone. "
+        "Note what this mutation does NOT do any more: the reported bill stays "
+        "at $0.60, because §6.1's billed() counts a recorded output or cost "
+        "independently of status. The two fixes overlap, so the assertion pinned "
+        "below is the stored record rather than the total",
         [(GEN, TERMINAL_GUARD, "        if False:  # MUTANT")],
         probes=[("terminal", "PROBE_TERM_REWRITTEN_AS_FAILED=returned:failed"),
                 ("terminal", "PROBE_TERM_STATUS_AFTER_LATE_FAIL=failed")],
@@ -689,6 +728,7 @@ MUTATIONS = [
         expect=["test_a_succeeded_attempt_cannot_be_rewritten_as_failed",
                 "test_a_failed_attempt_cannot_be_rewritten_as_succeeded",
                 "test_abandon_cannot_overwrite_a_recorded_failure"],
+        proves=["the stored record changed"],
     ),
 
     # ---- which tier a beat lands in when nobody said ----------------------------
@@ -709,6 +749,7 @@ MUTATIONS = [
                 ("tier", "PROBE_TIER_PAID_COUNT=2"),
                 ("tier", "PROBE_TIER_s001=ai_video/paid")],
         expect=["test_missing_motion_type_defaults_to_parallax"],
+        proves=["assert back.shots[0].needs_paid_video() is False"],
     ),
     Mutation(
         "a tier nothing recognises falls back into the paid tier",
@@ -724,6 +765,7 @@ MUTATIONS = [
                 ("tier", "PROBE_TIER_PAID_COUNT=2"),
                 ("tier", "PROBE_TIER_s002=ai_video/paid")],
         expect=["test_an_unrecognised_motion_type_never_lands_in_the_paid_tier"],
+        proves=["assert back.shots[0].needs_paid_video() is False"],
     ),
     Mutation(
         "a Shot built with no tier stated is a paid shot",
@@ -735,6 +777,7 @@ MUTATIONS = [
           "    motion_type: MotionType = MotionType.AI_VIDEO  # MUTANT")],
         probes=[("tier", "PROBE_TIER_BARE_SHOT_IS_PAID=true")],
         expect=["test_a_bare_shot_is_not_a_paid_shot"],
+        proves=['assert Shot(scene_id="s001").needs_paid_video() is False'],
     ),
 ]
 
@@ -785,6 +828,27 @@ def shows(out: str, signature: str) -> bool:
     """Whether a probe printed exactly this line. Equality, not ``in``:
     ``PROBE_REBUY_STUCK_TOTAL_PAID=1`` is a substring of ``...=12``."""
     return signature in probe_lines(out)
+
+
+def failure_lines(out: str) -> str:
+    """Only the lines pytest marks as the FAILING statement and its explanation.
+
+    Matching `proves` / `not_proves` against the whole suite output does not
+    work, and the first run with these fields enforced is what showed it.
+    pytest's long traceback prints the failing test's source from the def down
+    to the failure: the failing statement is prefixed ``>``, its explanation
+    ``E``, and every earlier line -- including earlier assertions and their
+    message strings -- is printed UNPREFIXED as context.
+
+    So a substring search over the raw output cannot tell "this assertion
+    failed" from "this assertion sits above the one that did". It reported three
+    not_proves violations in mutate_paid_path.py that were nothing of the kind:
+    the money assertion had passed, and its source was merely visible above the
+    refusal check that failed. Restricting the search to ``>``/``E`` lines is
+    what makes the distinction the field was added to draw.
+    """
+    return "\n".join(ln for ln in out.splitlines()
+                      if ln.lstrip().startswith(("E ", "> ")))
 
 
 def failing_tests(out: str) -> list[str]:
@@ -917,6 +981,18 @@ def main() -> int:
             print(f"  - {n}")
         return 1
 
+    # The reachability obligation, enforced rather than remembered. A mutation
+    # must either name the assertion that has to fire, or say in writing why it
+    # cannot and what carries the evidence instead. Refusing to run is what
+    # stops "the probe covers this" from being a thing nobody ever wrote down --
+    # which is how the field sat declared and unused here in the first place.
+    silent = [m.name for m in MUTATIONS if not m.proves and not m.proves_note]
+    if silent:
+        print("mutations with neither `proves` nor a written `proves_note`:")
+        for n in silent:
+            print(f"  - {n}")
+        return 1
+
     # The repository root is itself a project and a mutated run really can file a
     # generation ledger into it. Refuse to start on an occupied path rather than
     # clearing it: a generation ledger is the record of what was paid, and
@@ -987,11 +1063,24 @@ def main() -> int:
         for want in mut.expect:
             if not any(want in t for t in failed):
                 unproven.append(f"{mut.name}: expected {want} to fail")
+        failed_asserts = failure_lines(suite_out)
         for phrase in mut.proves:
-            if phrase not in suite_out:
+            shown = phrase in failed_asserts
+            print(f"    assertion {'FIRED' if shown else 'NEVER RAN'}: {phrase!r}")
+            if not shown:
                 unproven.append(
                     f"{mut.name}: no failing assertion said {phrase!r} — the test "
-                    f"died on a cheaper assertion first")
+                    f"died on a cheaper assertion first, so the defect was never "
+                    f"demonstrated")
+        for phrase in mut.not_proves:
+            if phrase in failed_asserts:
+                print(f"    assertion UNEXPECTEDLY FIRED: {phrase!r}")
+                unproven.append(
+                    f"{mut.name}: {phrase!r} also failed — this mutation is not "
+                    f"supposed to reach that assertion, so the test may be red "
+                    f"for a reason other than the one named")
+        if mut.proves_note and not mut.proves:
+            print(f"    no assertion pinned: {mut.proves_note}")
 
         for name in sorted({n for n, _ in mut.probes}):
             lines = probe_lines(probe_out.get(name, ""))
