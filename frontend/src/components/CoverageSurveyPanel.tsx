@@ -1,8 +1,13 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { CoverageSurvey, SurveyBeat } from "../types/director";
-import { fetchCoverageSurvey, redirectSceneCoverage, waitForJob } from "../lib/directorApi";
+import {
+  fetchCoverageSurvey,
+  fetchRunningPlanJobs,
+  redirectSceneCoverage,
+  waitForJob,
+} from "../lib/directorApi";
 import { Compass, Sparkles, AlertTriangle, Play, ChevronRight, CheckCircle2, RefreshCw, Clock } from "lucide-react";
 
 interface CoverageSurveyPanelProps {
@@ -25,6 +30,11 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
   const [planningBeats, setPlanningBeats] = useState<string | null>(null);
   const [planLog, setPlanLog] = useState<string>("");
   const [planProblem, setPlanProblem] = useState<PlanProblem | null>(null);
+  // Which beat this panel last carried through to a finished plan. The workspace
+  // it opens sits far below the fold, so without this the entire visible outcome
+  // of a ninety-second wait was a component off-screen quietly changing scene --
+  // indistinguishable, from where the user sits, from the button doing nothing.
+  const [planned, setPlanned] = useState<string | null>(null);
 
   const loadSurvey = () => {
     setLoading(true);
@@ -40,8 +50,77 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
       });
   };
 
+  // Held in a ref, not closed over. The parent passes an inline arrow, so
+  // `onSelectBeats` is a new function every render; in a dependency array it
+  // would re-run the re-attach effect on every render, polling
+  // /api/assemble/status forever and re-entering a job already being watched.
+  const onSelectBeatsRef = useRef(onSelectBeats);
+  useEffect(() => {
+    onSelectBeatsRef.current = onSelectBeats;
+  });
+
+  /**
+   * Watch a plan job through to its outcome, and present that outcome.
+   *
+   * Shared by the button and by the re-attach on mount, deliberately: the two
+   * must not be able to disagree about what "done" looks like. Returns nothing;
+   * everything it has to say it says through state.
+   */
+  const followPlanJob = useCallback(async (beatKey: string, jobKey: string) => {
+    setPlanningBeats(beatKey);
+    setPlanLog("");
+    setPlanProblem(null);
+    try {
+      const done = await waitForJob(jobKey, { onLog: setPlanLog });
+      if (!done.ok) {
+        setPlanProblem({
+          key: beatKey,
+          kind: "failed",
+          message:
+            done.status === "timeout"
+              ? `The planner for ${beatKey} is still running — it has not finished, so there ` +
+                `is no plan to open yet. Leave it and reopen the beat shortly.`
+              : `Planning ${beatKey} failed, so no coverage plan was written. ` +
+                `${(done.log || "").slice(-300)}`.trim(),
+        });
+        return;
+      }
+      setPlanned(beatKey);
+      onSelectBeatsRef.current(beatKey.split(","));
+    } finally {
+      setPlanningBeats(null);
+      setPlanLog("");
+    }
+  }, []);
+
   useEffect(() => {
     loadSurvey();
+  }, []);
+
+  /**
+   * Re-attach to a plan this browser already asked for and then forgot.
+   *
+   * The job lives on the server, so a remount — a stage round trip, a re-render
+   * that drops this panel, or a plain page reload — loses the React state that
+   * was watching it while the job itself carries on. Asking the server what is
+   * running is the only thing that survives all three; lifting the state into a
+   * parent would survive only the first.
+   *
+   * Deliberately fire-and-forget on failure: a status endpoint that cannot be
+   * read is not a reason to refuse to show the survey.
+   */
+  useEffect(() => {
+    let live = true;
+    fetchRunningPlanJobs()
+      .then((running) => {
+        const beat = Object.keys(running)[0];
+        if (!live || !beat) return;
+        return followPlanJob(beat, running[beat]);
+      })
+      .catch(() => { /* the survey stands on its own; nothing to re-attach to */ });
+    return () => { live = false; };
+    // Mount only: re-attaching is exactly what a fresh mount has to do.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /**
@@ -73,6 +152,7 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
     setPlanningBeats(key);
     setPlanLog("");
     setPlanProblem(null);
+    setPlanned(null);
     try {
       const res = await redirectSceneCoverage(beatList, "Initial scene coverage planning");
       if (!res.job) {
@@ -87,21 +167,10 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
         });
         return;
       }
-      const done = await waitForJob(res.job, { onLog: setPlanLog });
-      if (!done.ok) {
-        setPlanProblem({
-          key,
-          kind: "failed",
-          message:
-            done.status === "timeout"
-              ? `The planner for ${key} is still running — it has not finished, so there ` +
-                `is no plan to open yet. Leave it and reopen the beat shortly.`
-              : `Planning ${key} failed, so no coverage plan was written. ` +
-                `${(done.log || "").slice(-300)}`.trim(),
-        });
-        return;
-      }
-      onSelectBeats(beatList);
+      // The same watcher the re-attach uses, so the two cannot disagree about
+      // what finishing looks like. It owns clearing `planningBeats`.
+      await followPlanJob(key, res.job);
+      return;
     } catch (e: any) {
       const status = e?.status;
       setPlanProblem(
@@ -188,8 +257,39 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
         </div>
       </div>
 
+      {/* The outcome of the last plan, stated where the button was pressed.
+          The workspace this opens is stacked below the fold, so on its own it
+          is not an outcome the user can see. */}
+      {planned && (
+        <div
+          data-testid="plan-done-banner"
+          className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 font-mono text-xs"
+        >
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          <span>
+            <strong>Beat {planned} is planned.</strong> Its coverage is open in the Director
+            workspace below — scroll down, or use the beat card, to review the shots.
+          </span>
+        </div>
+      )}
+
       {/* Recommended Scenes & Beats List */}
       <div className="flex flex-col gap-2">
+        {(!survey.beats || survey.beats.length === 0) && (
+          // An empty list rendered as an empty list is why a Direct stage with
+          // no beats read as a broken Direct stage: no rows, no error, nothing
+          // in the console, and no way to tell "nothing to cover" from "this
+          // screen failed". Say which.
+          <div
+            data-testid="survey-empty"
+            className="px-3.5 py-3 rounded-xl border border-zinc-700 bg-zinc-950/60 text-zinc-300 font-mono text-xs leading-relaxed"
+          >
+            <strong className="text-amber-400">No beats to survey.</strong> The survey
+            answered, and the active project has no narration beats in it — so there is
+            nothing to plan coverage for yet. Draft or load a script first; this panel is
+            not broken and no request failed.
+          </div>
+        )}
         {survey.beats && survey.beats.map((beat) => {
           const isHigh = beat.recommend === 3;
           const isMed = beat.recommend === 2;

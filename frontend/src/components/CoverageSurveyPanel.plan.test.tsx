@@ -25,15 +25,22 @@ vi.mock("../lib/directorApi", () => ({
   fetchCoverageSurvey: vi.fn(),
   redirectSceneCoverage: vi.fn(),
   waitForJob: vi.fn(),
+  fetchRunningPlanJobs: vi.fn(),
 }));
 
 import CoverageSurveyPanel from "./CoverageSurveyPanel";
-import { fetchCoverageSurvey, redirectSceneCoverage, waitForJob } from "../lib/directorApi";
+import {
+  fetchCoverageSurvey,
+  redirectSceneCoverage,
+  waitForJob,
+  fetchRunningPlanJobs,
+} from "../lib/directorApi";
 import type { CoverageSurvey } from "../types/director";
 
 const mockSurvey = vi.mocked(fetchCoverageSurvey);
 const mockPlan = vi.mocked(redirectSceneCoverage);
 const mockWait = vi.mocked(waitForJob);
+const mockRunning = vi.mocked(fetchRunningPlanJobs);
 
 const SURVEY: CoverageSurvey = {
   episode_seconds: 600,
@@ -83,6 +90,9 @@ const flush = () => act(async () => {});
 beforeEach(() => {
   vi.clearAllMocks();
   mockSurvey.mockResolvedValue(SURVEY);
+  // Nothing already running: these tests are about starting one. The re-attach
+  // path has its own file.
+  mockRunning.mockResolvedValue({});
 });
 
 afterEach(cleanup);

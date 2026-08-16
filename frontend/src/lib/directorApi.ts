@@ -214,6 +214,37 @@ export async function waitForJob(
   }
 }
 
+/** The job key POST /api/director/plan derives for a beat (`backend/main.py`). */
+export const PLAN_JOB_PREFIX = "director_plan:";
+
+/**
+ * Which coverage-plan jobs the server has running right now, beat -> job key.
+ *
+ * The job outlives the browser. `start_job` spawns a server-side thread and the
+ * ~90s plan carries on regardless of what the page does — but the state that
+ * remembers it is React state, so a remount destroys it: `planningBeats` is
+ * wiped, every button re-enables, and the pending `waitForJob` promise is
+ * orphaned with its `setState` calls landing on a dead component. The plan then
+ * lands with nobody watching for it, which reads exactly like the plan never
+ * running.
+ *
+ * Lifting the state to a parent would only survive a child remount. This
+ * survives a page reload and a second tab too, because the server — not the
+ * browser — is what actually knows a plan is running.
+ */
+export async function fetchRunningPlanJobs(): Promise<Record<string, string>> {
+  const res = await fetch(`${API_BASE}/api/assemble/status`, { headers: getAuthHeaders() });
+  const data = await res.json().catch(() => ({}));
+  const jobs = (data && data.jobs) || {};
+  const running: Record<string, string> = {};
+  Object.keys(jobs).forEach((key) => {
+    if (!key.startsWith(PLAN_JOB_PREFIX)) return;
+    if (jobs[key]?.status !== "running") return;
+    running[key.slice(PLAN_JOB_PREFIX.length)] = key;
+  });
+  return running;
+}
+
 /**
  * POST /api/director/lock/{beat_id}?locked=true|false OR POST /api/director/lock_scene
  * Requires X-Studio-Key auth header

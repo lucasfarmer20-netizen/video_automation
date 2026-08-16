@@ -145,6 +145,8 @@ export default function WorkspacePage() {
   const scriptDraftStatus = useRef<string | undefined>(undefined);
   // Consecutive polls in which a running script_draft went missing.
   const draftMisses = useRef(0);
+  /** The Director workspace, so a finished plan can bring the user to it. */
+  const directorWorkspaceRef = useRef<HTMLDivElement | null>(null);
   const [dismissedErrors, setDismissedErrors] = useState<Record<string, string>>({});
   const [chatHistory, setChatHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1556,7 +1558,21 @@ Moved to: ${res.moved_to}`);
 
               <CoverageSurveyPanel
                 onSelectBeats={(beatList) => {
-                  if (beatList.length > 0) setSelectedSceneId(beatList[0]);
+                  if (beatList.length === 0) return;
+                  setSelectedSceneId(beatList[0]);
+                  // Setting the scene id is not, on its own, an outcome anyone
+                  // can see: the survey, the overview and the workspace are one
+                  // stacked column, and the workspace sits below the fold. After
+                  // a ninety-second wait the whole visible result was an
+                  // off-screen component quietly changing which beat it showed,
+                  // which is indistinguishable from the button having done
+                  // nothing. Take the user to the thing they waited for.
+                  requestAnimationFrame(() => {
+                    directorWorkspaceRef.current?.scrollIntoView({
+                      behavior: "smooth",
+                      block: "start",
+                    });
+                  });
                 }}
               />
               <FilmOverviewPanel
@@ -1564,12 +1580,14 @@ Moved to: ${res.moved_to}`);
                 activeSceneId={selectedSceneId}
                 onSelectScene={(scId) => setSelectedSceneId(scId)}
               />
-              <DirectorWorkspace
-                sceneId={selectedSceneId}
-                activeProjectTitle={project.title || "Active"}
-                mediaUrl={mediaUrl}
-                onBackToStoryboard={() => setActiveStage("script")}
-              />
+              <div ref={directorWorkspaceRef} data-testid="director-workspace-anchor">
+                <DirectorWorkspace
+                  sceneId={selectedSceneId}
+                  activeProjectTitle={project.title || "Active"}
+                  mediaUrl={mediaUrl}
+                  onBackToStoryboard={() => setActiveStage("script")}
+                />
+              </div>
             </div>
           ) : activeStage === "script" && activeView === "canvas" ? (
             <div className="h-[380px] sm:h-[500px] md:h-[550px] w-full shrink-0">

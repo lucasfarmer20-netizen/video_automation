@@ -11,7 +11,7 @@
  * on is actually produced here.
  */
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { redirectSceneCoverage } from "./directorApi";
+import { redirectSceneCoverage, fetchRunningPlanJobs } from "./directorApi";
 
 /** One canned reply from POST /api/director/plan. */
 function reply(status: number, body: unknown | undefined) {
@@ -86,5 +86,55 @@ describe("POST /api/director/plan, as its callers see it", () => {
 
     expect(res.job).toBe("director_plan:s003");
     expect(res.started).toBe(true);
+  });
+});
+
+/**
+ * The seam CoverageSurveyPanel's tests mock away. Re-attaching after a remount
+ * is only as good as this reading the registry correctly, and a panel test that
+ * stubs it would not notice if it stopped.
+ */
+describe("which plan jobs the server has running", () => {
+  test("a running plan is reported, keyed by its beat", async () => {
+    vi.stubGlobal("fetch", reply(200, {
+      ok: true,
+      jobs: { "director_plan:s001": { status: "running", log: "Planning coverage..." } },
+    }));
+
+    expect(await fetchRunningPlanJobs()).toEqual({ s001: "director_plan:s001" });
+  });
+
+  test("a finished plan is not reported as running", async () => {
+    // Re-attaching to a job that already ended would hang the panel on a
+    // "still planning" line forever — the one direction of error the fix must
+    // not introduce while removing the other.
+    vi.stubGlobal("fetch", reply(200, {
+      ok: true,
+      jobs: {
+        "director_plan:s001": { status: "done", log: "Process completed successfully." },
+        "director_plan:s002": { status: "error", log: "planner raised" },
+      },
+    }));
+
+    expect(await fetchRunningPlanJobs()).toEqual({});
+  });
+
+  test("other running jobs are not mistaken for plans", async () => {
+    vi.stubGlobal("fetch", reply(200, {
+      ok: true,
+      jobs: {
+        narration: { status: "running", log: "" },
+        script_draft: { status: "running", log: "" },
+        "director_compile:s001": { status: "running", log: "" },
+      },
+    }));
+
+    expect(await fetchRunningPlanJobs()).toEqual({});
+  });
+
+  test("an unreadable registry is empty, not a crash", async () => {
+    vi.stubGlobal("fetch", reply(500, undefined));
+
+    expect(await fetchRunningPlanJobs()).toEqual({});
   });
 });
