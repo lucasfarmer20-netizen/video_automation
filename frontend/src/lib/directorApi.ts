@@ -160,9 +160,18 @@ export async function redirectSceneCoverage(
     }),
   });
 
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) {
-    throw new Error(data.error || `Planning failed with status ${res.status}`);
+    // The status travels with the error. 409 is not a failure and not something
+    // the user did wrong -- start_job refused because a plan for this beat is
+    // already running, and it will finish. A caller that only sees the message
+    // cannot tell that apart from "planning failed", which is how a refusal
+    // came to be reported as a success.
+    const err = new Error(
+      data.error || `Planning failed with status ${res.status}`
+    ) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
 
   return data;
