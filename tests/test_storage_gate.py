@@ -1,0 +1,386 @@
+"""The storage gate: an unavailable durable store is stated, never substituted.
+
+``backend/main.py`` wrapped ``manifest.load_project()`` in ``except Exception``
+and fell through to the disk manifest on any failure. Two different answers
+arrived as one:
+
+* **not found** -- the store answered and holds no document for this project.
+  Legitimate, and the disk manifest is the right answer.
+* **unavailable** -- the store did not answer at all. Not legitimate, and the
+  disk manifest is not evidence about the project.
+
+Both produced a healthy 200 over the disk copy, which on Cloud Run can be the
+repo baked into the image (``COPY . .`` under ``/app``) and so is ephemeral. The
+symptom was live in production: every ``/api/roughcut/plan`` call logged
+``Firestore load_project failed: 404`` and returned 200 anyway.
+
+The reproduction here is not "no database exists" -- that was only how it was
+noticed. It is the honest condition underneath: **the store cannot answer, and
+we must not serve local state as though it were authoritative.**
+
+Assertion order is deliberate throughout. The assertion that fails under the
+original defect runs FIRST in every test, so no cheaper assertion can fail ahead
+of it and report a pass-for-the-wrong-reason as coverage.
+"""
+
+from __future__ import annotations
+
+import sys
+import types
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+for _m in ("anthropic", "fal_client", "elevenlabs"):
+    sys.modules.setdefault(_m, types.ModuleType(_m))
+
+from fastapi import HTTPException  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from backend import config, manifest, projects  # noqa: E402
+from backend import main as M  # noqa: E402
+
+
+# --- doubles --------------------------------------------------------------------
+#
+# The real client is not installed in this interpreter (conftest documents that
+# as deliberate), so the store is stubbed at the seam load_project actually uses.
+# Each double fails at a DIFFERENT point, because the two points have different
+# consequences: a project read that dies returns nothing, while a beats stream
+# that dies mid-iteration returns a storyboard that has lost beats -- which is
+# indistinguishable from one that never had them.
+
+
+class _Unreachable:
+    """Every read raises, as an unreachable/absent/denied backend does."""
+
+    def __init__(self, exc=None):
+        self._exc = exc or RuntimeError("404 The database (default) does not exist")
+
+    def collection(self, _name):
+        return self
+
+    def document(self, _doc_id):
+        return self
+
+    def get(self):
+        raise self._exc
+
+
+class _DeadBeatsStream:
+    """The project document reads; its beats subcollection dies mid-stream.
+
+    The partial-read case. `stream()` is lazy, so the failure lands during
+    iteration -- after the project document has already come back clean.
+    """
+
+    def __init__(self, project_data, beats_before_failure=2):
+        self._project = project_data
+        self._n = beats_before_failure
+
+    # -- db --
+    def collection(self, _name):
+        return self
+
+    def document(self, _doc_id):
+        return self
+
+    def get(self):
+        return self
+
+    # -- DocumentSnapshot --
+    @property
+    def exists(self):
+        return True
+
+    def to_dict(self):
+        return self._project
+
+    # -- beats subcollection --
+    def order_by(self, _field):
+        return self
+
+    def stream(self):
+        def gen():
+            for i in range(self._n):
+                yield _Snap({"scene_id": f"s{i + 1:03d}", "narration": "kept"})
+            raise RuntimeError("503 Deadline exceeded reading beats")
+
+        return gen()
+
+
+class _Snap:
+    def __init__(self, data):
+        self._data = data
+
+    def to_dict(self):
+        return self._data
+
+
+class _Empty:
+    """The store answers, and holds no document for this project."""
+
+    def collection(self, _name):
+        return self
+
+    def document(self, _doc_id):
+        return self
+
+    def get(self):
+        return self
+
+    @property
+    def exists(self):
+        return False
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    """A project whose DISK manifest holds recognisable, non-empty state.
+
+    The title is what a substituted answer would leak, so it is the string every
+    "did not substitute" assertion looks for.
+    """
+    root = tmp_path / "bestiary" / "leshy"
+    root.mkdir(parents=True)
+    mf = root / "storyboard_manifest.json"
+    manifest.save(
+        manifest.Storyboard(
+            title="ON-DISK-ONLY",
+            channel="bestiary",
+            shots=[manifest.Shot(scene_id="s001", narration="from disk")],
+        ),
+        mf,
+    )
+    ctx = projects.ProjectContext.from_manifest(mf)
+    monkeypatch.setattr(config, "MANIFEST_PATH", mf)
+    monkeypatch.setattr(M, "get_active_manifest_path", lambda: str(mf))
+    return ctx
+
+
+@pytest.fixture
+def client(project):
+    return TestClient(M.app, raise_server_exceptions=False), project
+
+
+# --- 1. the manifest layer tells the two cases apart -----------------------------
+
+def test_an_unreachable_store_raises_rather_than_reporting_no_record(monkeypatch):
+    """The headline. `None` here is what the caller reads as "no document"."""
+    monkeypatch.setattr(manifest, "db", _Unreachable())
+
+    with pytest.raises(manifest.StorageUnavailable):
+        manifest.load_project("leshy")
+
+
+def test_a_dead_beats_stream_is_unavailable_not_a_shorter_storyboard(monkeypatch):
+    """A partial read must not surface as a storyboard that lost its beats.
+
+    This is the arm that a fix could plausibly miss: the project document reads
+    cleanly, so the obvious guard (wrap the `.get()`) leaves this path returning
+    a Storyboard with a truncated `shots` list. `save_project` then deletes every
+    beat document absent from what it writes, so the truncation becomes durable.
+    """
+    monkeypatch.setattr(
+        manifest, "db", _DeadBeatsStream({"title": "T", "channel": "bestiary"}))
+
+    with pytest.raises(manifest.StorageUnavailable):
+        manifest.load_project("leshy")
+
+
+def test_no_document_is_still_none(monkeypatch):
+    """Not-found is a legitimate answer and must NOT have become an error.
+
+    The failure this guards is over-correction: a fix that raises on everything
+    breaks the ordinary case where a project simply has no Firestore record yet,
+    which is how every project starts.
+    """
+    monkeypatch.setattr(manifest, "db", _Empty())
+
+    assert manifest.load_project("leshy") is None
+
+
+def test_an_unconfigured_firestore_is_not_an_outage(monkeypatch):
+    """Local development. `db is None` is decided once, at import, by design.
+
+    Raising here would take every workstation checkout offline -- Firestore is
+    legitimately absent locally and the JSON manifest is the store of record,
+    not a fallback.
+    """
+    monkeypatch.setattr(manifest, "db", None)
+
+    assert manifest.load_project("leshy") is None
+
+
+def test_a_parse_defect_is_not_reported_as_a_storage_outage(monkeypatch):
+    """Mislabelling sends whoever reads the message to look at infrastructure.
+
+    `from_dict` sits outside the classification guard on purpose: a failure
+    there is a defect in manifest.py, not evidence about the store.
+    """
+    class _Doc:
+        def collection(self, _n): return self
+        def document(self, _d): return self
+        def get(self): return self
+        @property
+        def exists(self): return True
+        def to_dict(self): raise ValueError("not the store's fault")
+        def order_by(self, _f): return self
+        def stream(self): return iter(())
+
+    monkeypatch.setattr(manifest, "db", _Doc())
+
+    with pytest.raises(ValueError):
+        manifest.load_project("leshy")
+
+
+# --- 2. the caller handles them differently --------------------------------------
+
+def test_get_current_project_refuses_rather_than_serving_the_disk_copy(project):
+    """THE DEFECT. An unreachable store used to answer with the disk manifest.
+
+    First assertion is the one the defect fails: with the old
+    `except Exception -> fall through`, this call RETURNS a Storyboard instead of
+    raising, so `pytest.raises` fails before anything else is checked.
+    """
+    with projects.use(project):
+        original = manifest.db
+        manifest.db = _Unreachable()
+        try:
+            with pytest.raises(HTTPException) as caught:
+                M.get_current_project()
+        finally:
+            manifest.db = original
+
+    exc = caught.value
+    assert exc.status_code == 503
+    assert exc.detail["storage_gate"] == "unavailable"
+    # And the refusal is not quietly carrying the substituted state anyway.
+    assert "ON-DISK-ONLY" not in str(exc.detail)
+
+
+def test_no_record_still_falls_back_to_the_disk_manifest(project):
+    """The legitimate case, unchanged. This is also every local run.
+
+    Asserted through the real caller rather than through load_project, because
+    the fix lives in the caller and an over-correction there (refusing on `None`
+    as well) is the most likely way to break it.
+    """
+    with projects.use(project):
+        original = manifest.db
+        manifest.db = _Empty()
+        try:
+            sb = M.get_current_project()
+        finally:
+            manifest.db = original
+
+    assert sb.title == "ON-DISK-ONLY"
+    assert [s.scene_id for s in sb.shots] == ["s001"]
+
+
+# --- 3. the write side, which is the same defect ---------------------------------
+
+def test_a_save_that_never_reached_the_store_is_not_reported_as_a_save(project):
+    """`save_current_project` printed a warning and carried on to the JSON write.
+
+    So during the outage the studio answered 200 to every edit while nothing was
+    persisted anywhere that survives a cold start.
+    """
+    before = project.manifest_path.read_text(encoding="utf-8")
+
+    with projects.use(project):
+        original = manifest.db
+        manifest.db = _Unreachable()
+        try:
+            with pytest.raises(HTTPException) as caught:
+                M.save_current_project(manifest.Storyboard(title="EDIT", id=project.project_id))
+        finally:
+            manifest.db = original
+
+    assert caught.value.status_code == 503
+    # The mirror is not half-written: leaving the two stores disagreeing about a
+    # project nobody has been told is in trouble is the failure, not the cure.
+    assert project.manifest_path.read_text(encoding="utf-8") == before
+
+
+def test_saving_locally_still_works_with_no_firestore_configured(project):
+    """The local-development path must stay exactly as it was."""
+    with projects.use(project):
+        original = manifest.db
+        manifest.db = None
+        try:
+            M.save_current_project(manifest.Storyboard(title="EDIT", id=project.project_id))
+        finally:
+            manifest.db = original
+
+    assert manifest.load(project.manifest_path).title == "EDIT"
+
+
+# --- 4. through the API, where the defect was actually observed ------------------
+
+def test_the_studio_boot_read_refuses_instead_of_answering_200(client):
+    """`/api/project/active` is what the studio loads a film with.
+
+    The recorded production symptom was a 200 carrying disk state. The first
+    assertion is therefore the status: under the defect this is 200 and fails
+    here, before any assertion about the body can pass for the wrong reason.
+    """
+    c, _ = client
+    original = manifest.db
+    manifest.db = _Unreachable()
+    try:
+        r = c.get("/api/project/active")
+    finally:
+        manifest.db = original
+
+    assert r.status_code == 503, r.text
+    # Not flattened into a generic 500 by the handler's `except Exception` arm --
+    # the client has to be able to tell "retry, the store is down" from "this
+    # server is broken".
+    assert r.json()["detail"]["storage_gate"] == "unavailable"
+    assert "ON-DISK-ONLY" not in r.text
+
+
+def test_the_refusal_names_the_project_it_is_about(client):
+    c, ctx = client
+    original = manifest.db
+    manifest.db = _Unreachable()
+    try:
+        r = c.get("/api/project/active")
+    finally:
+        manifest.db = original
+
+    assert r.json()["detail"]["project_id"] == ctx.project_id
+
+
+def test_a_second_endpoint_refuses_the_same_way(client):
+    """Not one patched handler: the gate is at the shared read.
+
+    `/api/stages` is the spine the studio draws its navigation from, and it
+    reaches the store through the same `get_current_project`.
+    """
+    c, _ = client
+    original = manifest.db
+    manifest.db = _Unreachable()
+    try:
+        r = c.get("/api/stages")
+    finally:
+        manifest.db = original
+
+    assert r.status_code == 503, r.text
+    assert r.json()["detail"]["storage_gate"] == "unavailable"
+
+
+def test_an_ordinary_request_is_unaffected_when_the_store_has_no_record(client):
+    """The whole suite runs in this mode, and so does every local checkout."""
+    c, _ = client
+    original = manifest.db
+    manifest.db = _Empty()
+    try:
+        r = c.get("/api/project/active")
+    finally:
+        manifest.db = original
+
+    assert r.status_code == 200, r.text
+    assert r.json()["project"]["title"] == "ON-DISK-ONLY"
