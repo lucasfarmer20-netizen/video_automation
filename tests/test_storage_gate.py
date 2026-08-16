@@ -156,6 +156,14 @@ def project(tmp_path, monkeypatch):
     ctx = projects.ProjectContext.from_manifest(mf)
     monkeypatch.setattr(config, "MANIFEST_PATH", mf)
     monkeypatch.setattr(M, "get_active_manifest_path", lambda: str(mf))
+    # The active-project pointer defaults to Path(".active_project") -- the
+    # REPOSITORY ROOT when /gcs is absent, which is every workstation. The
+    # create-path tests below call set_active_manifest_path for real, so without
+    # this they write that file into the checkout and leave it behind: the same
+    # test-debris-in-the-workspace class as prompt_ledger.jsonl, reintroduced by
+    # the tests that close a storage defect. Same monkeypatch three other test
+    # modules already use (test_gates_and_writes.py:76, test_project_isolation.py:331).
+    monkeypatch.setattr(M, "ACTIVE_PROJECT_FILE", tmp_path / ".active_project")
     return ctx
 
 
@@ -370,6 +378,124 @@ def test_a_second_endpoint_refuses_the_same_way(client):
 
     assert r.status_code == 503, r.text
     assert r.json()["detail"]["storage_gate"] == "unavailable"
+
+
+def test_creating_a_project_is_refused_when_the_store_cannot_record_it(client, tmp_path,
+                                                                       monkeypatch):
+    """/api/project/new carried the pre-fix write arm verbatim.
+
+    It is the one path that does not read before it writes, so the read gate
+    never covered it: during an outage it wrote the JSON manifest, swallowed the
+    durable failure, made the new project active and answered 200 {ok: true} --
+    then the studio's very next read hit the storage gate.
+
+    Status first: under the defect this is 200, so it fails before any assertion
+    about the body or the disk can pass for the wrong reason.
+    """
+    c, _ = client
+    monkeypatch.setattr(M, "WORKSPACE_ROOT", tmp_path)
+    original = manifest.db
+    manifest.db = _Unreachable()
+    try:
+        r = c.post("/api/project/new", json={"name": "leshy2", "channel": "bestiary"})
+    finally:
+        manifest.db = original
+
+    assert r.status_code == 503, r.text
+    assert r.json()["detail"]["storage_gate"] == "unavailable"
+
+
+def test_a_refused_create_leaves_no_project_behind(client, tmp_path, monkeypatch):
+    """Ordering, not just the arm.
+
+    Writing the JSON first and refusing afterwards leaves a manifest on disk
+    with no durable record -- and _scan_projects lists it, so the user is told
+    the create failed and then watches the project appear in the sidebar. The
+    durable write goes first precisely so a refusal leaves nothing that anything
+    lists.
+    """
+    c, _ = client
+    monkeypatch.setattr(M, "WORKSPACE_ROOT", tmp_path)
+    original = manifest.db
+    manifest.db = _Unreachable()
+    try:
+        c.post("/api/project/new", json={"name": "leshy2", "channel": "bestiary"})
+    finally:
+        manifest.db = original
+
+    # The manifest is what makes a directory a project -- an empty directory is
+    # invisible to _scan_projects and to the bootstrap. Named exactly, because
+    # the fixture's own project lives under this tmp_path too and a broad glob
+    # would find that one and pass on the wrong evidence.
+    assert not (tmp_path / "bestiary" / "leshy2" / "storyboard_manifest.json").exists()
+
+
+def test_creating_a_project_still_works_with_no_firestore_configured(client, tmp_path,
+                                                                     monkeypatch):
+    """The local path, which is every workstation and the whole suite."""
+    c, _ = client
+    monkeypatch.setattr(M, "WORKSPACE_ROOT", tmp_path)
+    original = manifest.db
+    manifest.db = None
+    try:
+        r = c.post("/api/project/new", json={"name": "leshy2", "channel": "bestiary"})
+    finally:
+        manifest.db = original
+
+    assert r.status_code == 200, r.text
+    assert (tmp_path / "bestiary" / "leshy2" / "storyboard_manifest.json").is_file()
+
+
+# --- 5. the refusal is readable by anyone, so it says nothing about the estate ---
+
+def test_the_refusal_does_not_publish_what_the_store_is(client, capsys):
+    """These endpoints are unauthenticated GETs.
+
+    ``require_studio_key`` only enforces X-Studio-Key on non-GET methods, and
+    the exception underneath this refusal is a google.cloud one whose text names
+    the GCP project and database -- or the service account, on a permission
+    failure. page.tsx renders whatever arrives verbatim, so str(exc) here is
+    published to anyone with the URL.
+
+    The leak assertion runs first: it is the one that fails if the body goes
+    back to carrying the exception.
+    """
+    c, _ = client
+    original = manifest.db
+    manifest.db = _Unreachable(RuntimeError(
+        "403 Permission denied on project my-gcp-project-42 "
+        "for serviceAccount:studio@my-gcp-project-42.iam.gserviceaccount.com"))
+    try:
+        r = c.get("/api/project/active")
+    finally:
+        manifest.db = original
+
+    body = r.text
+    for secret in ("my-gcp-project-42", "serviceAccount", "iam.gserviceaccount.com",
+                   "Permission denied"):
+        assert secret not in body, f"{secret!r} was published in the refusal body"
+    # Still states the block rather than saying nothing.
+    assert r.json()["detail"]["error"] == M.STORAGE_GATE_MESSAGE
+    assert r.json()["detail"]["storage_gate"] == "unavailable"
+
+
+def test_the_diagnosis_is_relocated_to_the_log_not_lost(client, capsys):
+    """Withholding it from the body only works if the operator can still read it.
+
+    Same line pipeline_worker draws for the other public GET: the detail goes to
+    stdout, which is Cloud Logging, and never into a public response.
+    """
+    c, _ = client
+    original = manifest.db
+    manifest.db = _Unreachable(RuntimeError("403 Permission denied on my-gcp-project-42"))
+    try:
+        c.get("/api/project/active")
+    finally:
+        manifest.db = original
+
+    logged = capsys.readouterr().out
+    assert "my-gcp-project-42" in logged
+    assert "Storage gate:" in logged
 
 
 def test_an_ordinary_request_is_unaffected_when_the_store_has_no_record(client):

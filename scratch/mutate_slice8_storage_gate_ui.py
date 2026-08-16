@@ -314,6 +314,15 @@ def main() -> int:
         print("frontend/node_modules is absent — run `npm ci` in frontend/ first.")
         return 1
 
+    # A previous run killed between writing the probe spec and its `finally`
+    # unlink leaves the file behind, where it would be collected as a real test
+    # and counted in the baseline. Gitignored as a second line of defence, but
+    # ignored is not absent -- clear it here so the baseline is the suite.
+    if PROBE_SPEC.exists():
+        print(f"clearing a stale probe spec left by an interrupted run: "
+              f"{PROBE_SPEC.name}")
+        PROBE_SPEC.unlink()
+
     touched = sorted({p for m in MUTATIONS for p, _, _ in m.edits})
     pristine = {p: _read(p) for p in touched}
     before = digest(touched)

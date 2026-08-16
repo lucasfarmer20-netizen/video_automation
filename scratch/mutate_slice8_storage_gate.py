@@ -81,10 +81,18 @@ class Snap:
 
 
 class Unreachable:
-    """Every read raises, as an unreachable/absent/denied backend does."""
+    """Every read raises, as an unreachable/absent/denied backend does.
+
+    The message carries PROBE-GCP-ESTATE because a real google.cloud exception
+    names the GCP project, the database, or the service account -- and every
+    endpoint carrying this refusal is an unauthenticated GET, so whether that
+    text reaches the response body is itself something to measure.
+    """
     def collection(self, n): return self
     def document(self, d): return self
-    def get(self): raise RuntimeError("404 The database (default) does not exist")
+    def get(self):
+        raise RuntimeError("404 The database (default) does not exist "
+                           "for project PROBE-GCP-ESTATE")
 
 
 class DeadBeats:
@@ -152,6 +160,28 @@ r = client.get("/api/project/active")
 print("PROBE_ACTIVE_STATUS=%d" % r.status_code)
 print("PROBE_ACTIVE_GATE_KEY=" + gate(r))
 print("PROBE_ACTIVE_SERVED_DISK_TITLE=" + served(r))
+# The refusal is readable by anyone: require_studio_key only gates non-GET.
+print("PROBE_ACTIVE_BODY_NAMES_ESTATE="
+      + ("true" if "PROBE-GCP-ESTATE" in r.text else "false"))
+'''
+
+# The one path that does not read before it writes, so the read gate never
+# covered it.
+PROBE_CREATE = _PRELUDE + '''
+import backend.main as _M
+_M.WORKSPACE_ROOT = tmp
+manifest.db = Unreachable()
+
+r = client.post("/api/project/new", json={"name": "leshy2", "channel": "bestiary"})
+print("PROBE_CREATE_STATUS=%d" % r.status_code)
+ok = False
+try:
+    ok = bool(r.json().get("ok"))
+except Exception:
+    pass
+print("PROBE_CREATE_REPORTED_OK=" + ("true" if ok else "false"))
+left = (tmp / "bestiary" / "leshy2" / "storyboard_manifest.json").exists()
+print("PROBE_CREATE_MANIFEST_LEFT=" + ("true" if left else "false"))
 '''
 
 # The partial read: project document fine, subcollection dies half way.
@@ -232,6 +262,7 @@ PROBES = {
     "notfound": PROBE_NOTFOUND,
     "local": PROBE_LOCAL,
     "write": PROBE_WRITE,
+    "create": PROBE_CREATE,
 }
 
 
@@ -301,6 +332,15 @@ MAIN_SAVE = (
     "        raise storage_gate_unavailable(exc, sb.id) from exc"
 )
 GATE_KEY = '            "storage_gate": "unavailable",'
+GATE_REDACTION = '            "error": STORAGE_GATE_MESSAGE,'
+CREATE_ARM = (
+    "        try:\n"
+    "            manifest.save_project(sb)\n"
+    "        except manifest.StorageUnavailable as exc:\n"
+    "            print(f\"Storage gate: {exc}\")\n"
+    "            raise storage_gate_unavailable(exc, f_id) from exc\n"
+    "        manifest.save(sb, manifest_file)"
+)
 GATE_STATUS = "        status_code=503,"
 ACTIVE_RERAISE = (
     "    except HTTPException:\n"
@@ -388,7 +428,52 @@ MUTATIONS = [
         expect=["test_a_save_that_never_reached_the_store_is_not_reported_as_a_save"],
     ),
 
+    Mutation(
+        "DEFECT: creating a project reports success the store never recorded",
+        "CLAUDE.md gates / §11.4",
+        "the pre-fix arm on /api/project/new -- the one path that does not read "
+        "before it writes, so the read gate never covered it. It wrote the JSON "
+        "manifest, swallowed the durable failure, made the project active and "
+        "answered 200 {ok: true}; the studio's next read then hit the gate",
+        [(MAIN, CREATE_ARM,
+          "        manifest.save(sb, manifest_file)  # MUTANT\n"
+          "        try:\n"
+          "            manifest.save_project(sb)\n"
+          "        except Exception as fe:\n"
+          "            print(f\"Warning: Firestore save_project failed: {fe}\")")],
+        probes=[("create", "PROBE_CREATE_STATUS=200"),
+                ("create", "PROBE_CREATE_REPORTED_OK=true"),
+                ("create", "PROBE_CREATE_MANIFEST_LEFT=true")],
+        defect=True,
+        expect=["test_creating_a_project_is_refused_when_the_store_cannot_record_it",
+                "test_a_refused_create_leaves_no_project_behind"],
+    ),
+
     # ---- faithful mutations of the fix ------------------------------------------
+    Mutation(
+        "the refusal publishes what the store is", "CLAUDE.md secrets",
+        "the redaction -- str(exc) from google.cloud names the GCP project and "
+        "database, or the service account on a permission failure, and every "
+        "endpoint carrying this refusal is an unauthenticated GET that page.tsx "
+        "renders verbatim",
+        [(MAIN, GATE_REDACTION, '            "error": str(exc),  # MUTANT')],
+        probes=[("unavailable", "PROBE_ACTIVE_BODY_NAMES_ESTATE=true")],
+        expect=["test_the_refusal_does_not_publish_what_the_store_is"],
+    ),
+    Mutation(
+        "a refused create still leaves a manifest on disk", "CLAUDE.md gates",
+        "the ORDERING, with the refusal itself intact -- the user is told the "
+        "create failed and then watches the project appear in the sidebar, "
+        "because _scan_projects lists any directory holding a manifest",
+        [(MAIN, CREATE_ARM,
+          "        manifest.save(sb, manifest_file)  # MUTANT\n"
+          "        try:\n"
+          "            manifest.save_project(sb)\n"
+          "        except manifest.StorageUnavailable as exc:\n"
+          "            raise storage_gate_unavailable(exc, f_id) from exc")],
+        probes=[("create", "PROBE_CREATE_MANIFEST_LEFT=true")],
+        expect=["test_a_refused_create_leaves_no_project_behind"],
+    ),
     Mutation(
         "a beats stream that dies returns the beats it managed to read",
         "CLAUDE.md gates",
@@ -476,7 +561,8 @@ MUTATIONS = [
     Mutation(
         "saving explodes when no Firestore is configured", "CLAUDE.md runtime",
         "save_project's local-development guard — every write on a workstation "
-        "becomes a 503 about a store that was never meant to be there",
+        "becomes a 503 about a store that was never meant to be there, on the "
+        "edit path AND on the create path",
         [(MANIFEST, SAVE_DB_NONE,
           "    if False:  # MUTANT\n"
           "        return\n"
@@ -484,7 +570,8 @@ MUTATIONS = [
           "    try:\n"
           "        _save_project_to_firestore(sb)")],
         probes=[("local", "PROBE_LOCAL_SAVE=raised:HTTP503")],
-        expect=["test_saving_locally_still_works_with_no_firestore_configured"],
+        expect=["test_saving_locally_still_works_with_no_firestore_configured",
+                "test_creating_a_project_still_works_with_no_firestore_configured"],
     ),
     Mutation(
         "the local mirror is written anyway before refusing", "CLAUDE.md gates",

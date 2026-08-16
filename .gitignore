@@ -56,3 +56,18 @@ _migrate_tmp/
 # stamped with pytest tmp-project names, were sitting here and were swept into a
 # commit by a `git add -A`. Test debris must not be committable.
 prompt_ledger.jsonl
+
+# Probe spec written into src/ for the duration of one mutation run by
+# scratch/mutate_slice8_storage_gate_ui.py. vitest only collects
+# src/**/*.test.tsx, so it has to land there. The harness unlinks it in a
+# `finally`, which a Ctrl-C between write and unlink does not reach -- and an
+# un-ignored test file left in the tree is the same debris class as the ledger
+# above.
+frontend/src/app/zz_storage_probe.test.tsx
+
+# Active-project pointer. main.py:208 resolves it to /gcs/.active_project when
+# the mount exists and to Path(".active_project") -- the repository root --
+# otherwise, so every local run of the studio writes it here. Tests monkeypatch
+# M.ACTIVE_PROJECT_FILE to tmp_path and should keep doing so; this is the
+# backstop for the app itself, which cannot.
+.active_project

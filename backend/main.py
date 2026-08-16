@@ -251,6 +251,27 @@ def set_active_manifest_path(path: str):
     config.set_active_manifest(resolved)
 
 
+# What the refusal says on the wire. Deliberately fixed, and deliberately not
+# `str(exc)`.
+#
+# `require_studio_key` only enforces X-Studio-Key on non-GET methods, and every
+# endpoint carrying this refusal is a GET -- so this string is readable by anyone
+# with the URL. The exception underneath it is a google.cloud one, and its text
+# names the GCP project and database, or the service account on a permission
+# failure. `page.tsx` renders whatever arrives here verbatim, so that would have
+# been published to an unauthenticated caller on every outage.
+#
+# The diagnosis is not lost, it is relocated: every raise site prints the full
+# StorageUnavailable message to stdout, which is Cloud Logging. Same line
+# pipeline_worker.py:96-108 already draws for the other public GET -- the job
+# buffer gets the type and message, the traceback goes to the log.
+STORAGE_GATE_MESSAGE = (
+    "The durable store could not be reached, so this request was refused rather "
+    "than answered from local disk. Nothing has been changed. The cause is in "
+    "the server log."
+)
+
+
 def storage_gate_unavailable(exc: Exception, project_id: str) -> HTTPException:
     """The refusal served when the durable store cannot answer.
 
@@ -295,7 +316,10 @@ def storage_gate_unavailable(exc: Exception, project_id: str) -> HTTPException:
     return HTTPException(
         status_code=503,
         detail={
-            "error": str(exc),
+            # Fixed, not str(exc) -- see STORAGE_GATE_MESSAGE above. These
+            # endpoints are unauthenticated GETs and the exception text names
+            # GCP infrastructure.
+            "error": STORAGE_GATE_MESSAGE,
             # Machine-readable, so a client branches on the cause rather than on
             # the absence of data -- "no project" and "cannot reach the store"
             # render as the same empty payload otherwise.
@@ -408,6 +432,30 @@ def save_current_project(sb: Storyboard):
     # the refusal is the only outcome that keeps them consistent. Local
     # development is unaffected: with Firestore unconfigured, save_project()
     # returns without error and the JSON write below is the real one.
+    #
+    # THE COST, stated rather than discovered. Several callers spend money
+    # before they reach this line -- /api/regenerate/{scene_id} runs the paid
+    # assets.generate_for_shot and then saves, and the draft and video paths
+    # have the same shape. An outage beginning between the read and this save
+    # leaves generated media on disk, the manifest pointer to it unwritten, a
+    # 503 at the caller and a retry that pays again.
+    #
+    # What survives that differs by path, and the difference is worth knowing
+    # before someone reconciles a bill:
+    #
+    #   * PAID VIDEO records an attempt in generation/<beat>.json via
+    #     generation.begin() BEFORE dispatch, so the exposure is recorded
+    #     independently of this save and spend()/at_risk() still see it.
+    #   * DRAFT IMAGES do not. assets.py records to the PROMPT ledger
+    #     (backend/ledger.py) -- strategy telemetry for scoring prompts, not an
+    #     attempt record and not a bill. So a refused save on that path loses
+    #     the only manifest-side trace of images that were paid for, and nothing
+    #     will tell you they exist except the files themselves.
+    #
+    # Paid knowingly. The alternative leaves the two stores disagreeing, and a
+    # manifest claiming media the durable store never heard of is how the next
+    # save deletes it. Closing the draft-image half properly means an attempt
+    # ledger on that path, which is generation.py's job, not this wrapper's.
     try:
         manifest.save_project(sb)
     except manifest.StorageUnavailable as exc:
@@ -1468,16 +1516,35 @@ async def new_project(request: Request):
         manifest_file = proj_dir / "storyboard_manifest.json"
         
         sb = Storyboard(title=name, channel=channel)
-        manifest.save(sb, manifest_file)
-        
-        # Save to Firestore
         f_id = get_project_id_from_path(manifest_file)
         sb.id = f_id
+
+        # The durable store goes FIRST, and a failure refuses the whole create.
+        #
+        # This arm was the pre-fix one verbatim -- `except Exception: print(...)`
+        # -- and it is the same defect the rest of this slice removes, reached
+        # from the one path that does not read before it writes. During an outage
+        # it wrote the JSON manifest, swallowed the durable failure, made the new
+        # project active and answered 200 `{ok: true}`. The studio then reported
+        # the film created and its very next read hit the storage gate.
+        #
+        # Ordering, not just the arm. Writing the JSON first and refusing
+        # afterwards would leave a manifest on disk with no durable record --
+        # `_scan_projects` lists it, so the user is told the create failed and
+        # then watches the project appear in the sidebar anyway. That is the
+        # two-stores-disagreeing state save_current_project refuses to create,
+        # rebuilt here. Durable-first means a refusal leaves only an empty
+        # directory, which nothing lists and nothing bootstraps.
+        #
+        # Locally this is unchanged: save_project() returns immediately when
+        # Firestore is unconfigured, and the JSON write below is the real one.
         try:
             manifest.save_project(sb)
-        except Exception as fe:
-            print(f"Warning: Firestore save_project failed: {fe}")
-        
+        except manifest.StorageUnavailable as exc:
+            print(f"Storage gate: {exc}")
+            raise storage_gate_unavailable(exc, f_id) from exc
+        manifest.save(sb, manifest_file)
+
         set_active_manifest_path(manifest_file)
         config.set_active_manifest(manifest_file)
 
