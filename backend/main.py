@@ -619,7 +619,15 @@ def _scan_projects() -> list[dict]:
                     # showing "0 beats" despite a full storyboard on disk.
                     beats_count = len(manifest_data.get("shots") or [])
                     script_locked = bool(manifest_data.get("script_locked", False))
-                    storyboard_approved = bool(manifest_data.get("storyboard_approved", False))
+                    # Not bool(): this reads the raw JSON and so never passes
+                    # Storyboard.from_dict, which means it is the one remaining
+                    # place a loose `storyboard_approved` is read directly. With
+                    # bool(), "no" lit the sidebar's "Approved ✓" for a project
+                    # Gate 1 now (correctly) refuses to open — the UI claiming an
+                    # approval that does not exist, which is exactly what §11.4
+                    # forbids.
+                    storyboard_approved = manifest.approval_is_explicit(
+                        manifest_data.get("storyboard_approved"))
                 except Exception as exc:
                     print(f"Warning: could not read {resolved}: {exc}")
                 if not name:
@@ -1178,7 +1186,16 @@ def get_projects(channel: Optional[str] = None):
                 if doc.get("beats_count"):
                     p["beats_count"] = doc["beats_count"]
                 p["script_locked"] = doc.get("script_locked", p["script_locked"])
-                p["storyboard_approved"] = doc.get("storyboard_approved", p["storyboard_approved"])
+                # Strict for the same reason as the disk read in _scan_projects,
+                # and this is the arm that decides it in practice: a document
+                # only exists here once the project has been bootstrapped into
+                # Firestore, so for every deployed project this line OVERWRITES
+                # whatever the scan worked out. Left as a bare doc.get(), a
+                # durable `"no"` would restore the "Approved ✓" the scan had just
+                # correctly withheld -- the fix undone one line later, on the
+                # path that matters most (§11.4).
+                p["storyboard_approved"] = manifest.approval_is_explicit(
+                    doc.get("storyboard_approved", p["storyboard_approved"]))
             res.append(p)
             
         if channel:
@@ -3895,8 +3912,18 @@ def require_paid_gate(sb, what: str = "render") -> None:
     three handlers and was missing from the fourth -- which is the failure mode of
     attaching a gate to routes rather than to the spend. One helper, so a new route
     cannot regress it by omission.
+
+    The approval test goes through ``manifest.approval_is_explicit`` rather than
+    truthiness, for the reason this whole change exists: a non-boolean here is a
+    value nobody checked, and `"no"` is truthy. Not reachable today -- every
+    writer stores a real boolean, and ``from_dict`` now normalises what it loads
+    -- so this is not a live hole being plugged. It is the paid gate declining to
+    depend on that, which is the same argument that put a second check in
+    ``gate_cleared`` after the loader already had one. This is literally the
+    function money passes through; it should not be the one place that infers
+    approval instead of asking.
     """
-    if not getattr(sb, "storyboard_approved", False):
+    if not manifest.approval_is_explicit(getattr(sb, "storyboard_approved", False)):
         raise HTTPException(
             status_code=400,
             detail=f"Approve the storyboard first — that is where the {what} "

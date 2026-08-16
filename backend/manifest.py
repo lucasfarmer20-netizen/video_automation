@@ -61,6 +61,72 @@ class MotionType(str, Enum):
     AI_VIDEO = "ai_video"
 
 
+def approval_is_explicit(value: object) -> bool:
+    """Is ``value`` an approval a human actually gave? Contract §5.4.
+
+    ``value is True``, and nothing else. Not truthiness -- truthiness is the
+    defect this replaces. :meth:`Storyboard.gate_cleared` read ``s.approved``
+    for its truth value, and every non-empty string is truthy, so a Tier-C beat
+    carrying ``approved: "no"`` -- or ``"false"``, or ``"pending"`` -- cleared
+    Gate 1 and reached the paid video API. The string said no; Python said yes.
+
+    ``1`` fails too, and deliberately, and the reason is not pedantry about
+    ``1 == True``. It is that a field holding ``1`` was written by something
+    which did not know the field is a boolean, and nothing here can tell what
+    else that writer got wrong -- the same beat's ``video_model`` came out of
+    the same hand. ``"true"`` fails for the identical reason: a serialiser
+    loose enough to stringify a boolean is not a serialiser whose other fields
+    have been checked. Gate 1 exists so that nobody has to guess.
+
+    The direction of error is the whole design, and it is not symmetric. A beat
+    wrongly shown as unapproved costs one click. A beat wrongly treated as
+    approved costs money on work nobody sanctioned. So everything ambiguous
+    resolves to NOT approved.
+
+    Named after :func:`backend.director.approval_is_current`, which asks the
+    other half of §5.4 -- that one asks whether an approval still covers the
+    plan it was given for, this one asks whether there is an approval at all.
+    """
+    return value is True
+
+
+def _explicit_approval_flag(raw: object, field: str, where: str) -> bool:
+    """One approval flag read off untrusted JSON, plus a note when it wasn't one.
+
+    Degrades to ``False`` rather than raising, for the reason the unknown-key
+    filter in :meth:`Storyboard.from_dict` exists: a ``from_dict`` that raises
+    takes the project offline, because ``get_current_project``
+    (backend/main.py:280-294) answers a manifest that exists but will not parse
+    with HTTP 500 rather than overwriting it. That trade is only acceptable
+    because this degrade runs toward the safe side -- unlike the ledger's
+    ``_SHAPE``/``_valid`` gate (backend/generation.py:135-191), which raises,
+    because a spend total silently computed over a bad row is a wrong bill and
+    there is no safe direction to fall in.
+
+    Absent and ``null`` degrade silently. Neither is a mistyped value; both mean
+    "no decision recorded", which is what the ``False`` default already says. A
+    wrong *type* is worth saying out loud -- the same rule, for the same reason,
+    as the ``sfx_layers`` note below: a note that fires on the idiom the loader
+    accepts everywhere else teaches people to ignore notes.
+
+    Note what this does NOT do: it never spells out what an approval is. It asks
+    :func:`approval_is_explicit` and believes the answer. An earlier revision
+    wrote ``return raw is True`` here, which is the same rule and was the
+    problem -- the mutation harness weakened ``approval_is_explicit`` to
+    ``bool(value)`` and this function went on refusing correctly, because it was
+    no longer consulting it in any way that mattered. Two copies of a rule are
+    two rules, and the second one is the one nobody remembers to change.
+    """
+    if approval_is_explicit(raw):
+        return True
+    if raw is False or raw is None:
+        return False
+    print(f"manifest: {field}={raw!r} on {where} is {type(raw).__name__}, not a "
+          f"boolean; reading it as NOT approved (§5.4). Re-approve to restore "
+          f"it -- Gate 1 will not spend on a value nobody checked.")
+    return False
+
+
 @dataclass
 class Camera:
     move: str = "push_in"
@@ -274,10 +340,31 @@ class Storyboard:
     shots: List[Shot] = field(default_factory=list)
 
     def gate_cleared(self) -> bool:
-        if not self.storyboard_approved:
+        """Gate 1: may the pipeline call a paid video API? Contract §5.4.
+
+        Both approval terms go through :func:`approval_is_explicit`, and this is
+        the last line of defence rather than the only one -- ``from_dict``
+        already refuses to build a shot around a non-boolean ``approved``, so a
+        manifest loaded from disk or Firestore has been normalised before it
+        reaches here.
+
+        Asserting it a second time is the shape backend/main.py:3129-3139 uses
+        for the compile route, and it is load-bearing for the same reason: not
+        every Storyboard comes through ``from_dict``. ``/api/approve`` sets
+        ``s.approved`` on a live object (backend/main.py:4315), pipeline stages
+        build shots in memory, and any endpoint added later can assign the field
+        directly. Those never pass the boundary check, so this is the only check
+        they get -- and a gate that trusts its input is one edit away from being
+        bypassed.
+
+        ``video_model`` keeps its ``bool()`` on purpose. That term asks whether
+        a model was *chosen*, so an empty string and ``None`` are the same
+        answer; it is not a permission, and nothing is authorised by it.
+        """
+        if not approval_is_explicit(self.storyboard_approved):
             return False
         return all(
-            s.approved and bool(s.video_model)
+            approval_is_explicit(s.approved) and bool(s.video_model)
             for s in self.shots
             if s.needs_paid_video()
         )
@@ -376,6 +463,24 @@ class Storyboard:
                 # instead would be worse: the value would sit in the manifest
                 # unreadable by anything, and Gate 1 could not reason about it.
                 # This is a known cost, not an oversight.
+                # Approval is a boolean or it is not an approval (§5.4). This is
+                # the tier rule below applied to the other half of Gate 1, and
+                # for the same stated reason: a value nobody checked must move
+                # the beat AWAY from spend, never toward the paid video API.
+                # Before this, a hand-edited or loosely-serialised
+                # `approved: "no"` reached gate_cleared() intact and passed its
+                # truthiness test, so the beat that said no was billed.
+                #
+                # Know that this degrade, like the tier's, is PERSISTED -- the
+                # Firestore bootstrap at backend/main.py:88-94, or any PATCH
+                # afterwards, writes `false` back over the unreadable value. That
+                # is intended here rather than merely tolerated: what the file
+                # says afterwards is what the gate believes, instead of a value
+                # the gate has to keep re-deciding about. The alternative --
+                # coercing "no" to True so the beat still looks approved -- is
+                # the original defect with a migration's name on it.
+                fields["approved"] = _explicit_approval_flag(
+                    shot.get("approved"), "approved", f"beat {scene}")
                 raw_tier = shot.get("motion_type", "parallax")
                 try:
                     fields["motion_type"] = MotionType(raw_tier)
@@ -414,7 +519,13 @@ class Storyboard:
             channel=data.get("channel", "bestiary"),
             cultural_origin=data.get("cultural_origin", ""),
             script_locked=data.get("script_locked", False),
-            storyboard_approved=data.get("storyboard_approved", False),
+            # The project-level half of §5.4, normalised for the same reason as
+            # the per-beat half: gate_cleared() short-circuits on this field, so
+            # `storyboard_approved: "no"` used to satisfy `if not ...` and hand
+            # the decision straight to the per-shot loop.
+            storyboard_approved=_explicit_approval_flag(
+                data.get("storyboard_approved"), "storyboard_approved",
+                f"project {project_id!r}"),
             music_track=data.get("music_track"),
             music_prompt=data.get("music_prompt", "") or "",
             voice_id=data.get("voice_id", "") or "",
