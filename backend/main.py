@@ -1186,7 +1186,16 @@ def get_projects(channel: Optional[str] = None):
                 if doc.get("beats_count"):
                     p["beats_count"] = doc["beats_count"]
                 p["script_locked"] = doc.get("script_locked", p["script_locked"])
-                p["storyboard_approved"] = doc.get("storyboard_approved", p["storyboard_approved"])
+                # Strict for the same reason as the disk read in _scan_projects,
+                # and this is the arm that decides it in practice: a document
+                # only exists here once the project has been bootstrapped into
+                # Firestore, so for every deployed project this line OVERWRITES
+                # whatever the scan worked out. Left as a bare doc.get(), a
+                # durable `"no"` would restore the "Approved ✓" the scan had just
+                # correctly withheld -- the fix undone one line later, on the
+                # path that matters most (§11.4).
+                p["storyboard_approved"] = manifest.approval_is_explicit(
+                    doc.get("storyboard_approved", p["storyboard_approved"]))
             res.append(p)
             
         if channel:

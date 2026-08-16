@@ -108,9 +108,19 @@ def _explicit_approval_flag(raw: object, field: str, where: str) -> bool:
     wrong *type* is worth saying out loud -- the same rule, for the same reason,
     as the ``sfx_layers`` note below: a note that fires on the idiom the loader
     accepts everywhere else teaches people to ignore notes.
+
+    Note what this does NOT do: it never spells out what an approval is. It asks
+    :func:`approval_is_explicit` and believes the answer. An earlier revision
+    wrote ``return raw is True`` here, which is the same rule and was the
+    problem -- the mutation harness weakened ``approval_is_explicit`` to
+    ``bool(value)`` and this function went on refusing correctly, because it was
+    no longer consulting it in any way that mattered. Two copies of a rule are
+    two rules, and the second one is the one nobody remembers to change.
     """
-    if approval_is_explicit(raw) or raw is False or raw is None:
-        return raw is True
+    if approval_is_explicit(raw):
+        return True
+    if raw is False or raw is None:
+        return False
     print(f"manifest: {field}={raw!r} on {where} is {type(raw).__name__}, not a "
           f"boolean; reading it as NOT approved (§5.4). Re-approve to restore "
           f"it -- Gate 1 will not spend on a value nobody checked.")
