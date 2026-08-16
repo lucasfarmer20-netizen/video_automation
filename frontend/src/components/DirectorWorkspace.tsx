@@ -16,7 +16,9 @@ import {
   waitForJob,
   critiqueCoverage,
   decideDirectorWarning,
+  compileCoverage,
 } from "../lib/directorApi";
+import type { CompileRefusal } from "../lib/directorApi";
 
 import DirectorShotCard from "./DirectorShotCard";
 import ShotInspectorDrawer from "./ShotInspectorDrawer";
@@ -67,6 +69,63 @@ const QUICK_SHORTCUTS = [
   "+ Reduce generation cost",
 ];
 
+/**
+ * Why a compile did not run — kept as distinct as the server keeps it.
+ *
+ * `POST /api/director/compile/{beat}` answers five different refusals, and each
+ * of its messages tells the human a different next action:
+ *
+ *   draft               the plan was never locked -> lock it
+ *   approval_drifted    it WAS locked, then edited -> review and lock again
+ *   stale               the script line moved under it -> review and lock again
+ *   unresolved_warnings a locked plan with undecided findings -> decide them
+ *   busy                a compile for this beat is already running -> wait
+ *   missing             there is no plan for this beat at all
+ *   failed              the job ran and did not produce a beat clip, or the
+ *                       request itself failed
+ *
+ * Collapsing those into "compile failed" would discard the only part of the
+ * reply that is actionable, so the server's own sentence is rendered verbatim
+ * and the kind only decides the framing around it.
+ */
+type CompileProblemKind =
+  | "draft"
+  | "approval_drifted"
+  | "stale"
+  | "unresolved_warnings"
+  | "busy"
+  | "missing"
+  | "failed";
+
+type CompileProblem = { kind: CompileProblemKind; message: string };
+
+/**
+ * Classify a refusal from the server's payload, never from its prose.
+ *
+ * `approval_drifted` is a boolean the route always sends on the draft 409, so
+ * `false` is meaningful and must be distinguished from absent: it is what tells
+ * "never locked" apart from "locked, then edited".
+ */
+function classifyCompileRefusal(err: CompileRefusal | undefined): CompileProblem {
+  const message = err?.message || "The compile request failed before it started.";
+  if (err?.approvalDrifted === true) return { kind: "approval_drifted", message };
+  if (err?.approvalDrifted === false) return { kind: "draft", message };
+  if (err?.stale) return { kind: "stale", message };
+  if (err?.warnings) return { kind: "unresolved_warnings", message };
+  if (err?.status === 404) return { kind: "missing", message };
+  if (err?.status === 409) return { kind: "busy", message };
+  return { kind: "failed", message };
+}
+
+/** Refusals the server raises before `start_job`, so nothing was bought. */
+const SPENT_NOTHING: CompileProblemKind[] = [
+  "draft",
+  "approval_drifted",
+  "stale",
+  "unresolved_warnings",
+  "busy",
+];
+
 export default function DirectorWorkspace({
   sceneId,
   activeProjectTitle,
@@ -91,6 +150,13 @@ export default function DirectorWorkspace({
   const [problemDrawerOpen, setProblemDrawerOpen] = useState<boolean>(false);
   const [takeModalShot, setTakeModalShot] = useState<DirectorShot | null>(null);
   const [redirecting, setRedirecting] = useState<boolean>(false);
+
+  // Compile (the thing a locked plan exists for) — see handleCompileCoverage.
+  const [compileGateOpen, setCompileGateOpen] = useState<boolean>(false);
+  const [compilingBeat, setCompilingBeat] = useState<string | null>(null);
+  const [compileLog, setCompileLog] = useState<string>("");
+  const [compileProblem, setCompileProblem] = useState<CompileProblem | null>(null);
+  const [compileDone, setCompileDone] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -169,6 +235,107 @@ export default function DirectorWorkspace({
       : sceneId;
     await setCoverageStatus(beatsToLock, shouldLock);
     setCoveragePlan({ ...coveragePlan, status: shouldLock ? "locked" : "draft" });
+  };
+
+  /**
+   * Compile the locked plan — the control the studio did not have.
+   *
+   * `POST /api/director/compile/{beat}` has existed and been fully gated since
+   * Spike B, and nothing in the frontend called it. A user could survey the
+   * episode, plan a scene, decide its warnings and lock it, and then have no way
+   * to turn any of that into assets: "I don't know if it is generating the new
+   * assets, and if not, I don't know how to generate them."
+   *
+   * Three things this handler must get right:
+   *
+   * 1. **It is a long-running job.** The POST returns the moment `start_job`
+   *    spawns a thread. Compiling renders every shot and, for `ai_video` ones,
+   *    waits on a paid video model — minutes, not seconds. `waitForJob` is the
+   *    pattern `handleRedirectScene` and `CoverageSurveyPanel.handlePlanBeats`
+   *    both converged on after fire-and-forget cost this project two rounds.
+   *
+   * 2. **A refusal is not a failure and the refusals are not each other.** Each
+   *    409 says precisely what to do next, so the server's sentence is what
+   *    reaches the screen. Nothing is retried, and there is no force flag to
+   *    offer: a client-side bypass of the draft check is exactly what the
+   *    backend deleted.
+   *
+   * 3. **§11.4 — nothing claims "compiled" but the server.** A finished job is
+   *    evidence the thread ended, not that a beat clip exists. The plan is
+   *    refetched and the success line is written from the status that comes
+   *    back; if the job ended and the plan does not say `compiled`, this says
+   *    so instead of congratulating the user.
+   *
+   * The plan is locked per scene, so it compiles per scene: one job per beat in
+   * `scene_beats`, in order, stopping at the first beat that refuses rather than
+   * spending on later beats after an unexplained one.
+   */
+  const handleCompileCoverage = async () => {
+    if (!coveragePlan || compilingBeat) return;
+    const beats =
+      coveragePlan.scene_beats && coveragePlan.scene_beats.length > 0
+        ? coveragePlan.scene_beats
+        : [sceneId];
+
+    setCompileGateOpen(false);
+    setCompileProblem(null);
+    setCompileDone(null);
+    setCompileLog("");
+
+    try {
+      for (const beat of beats) {
+        setCompilingBeat(beat);
+        const res = await compileCoverage(beat);
+        if (!res.job) {
+          // Started, but unnamed: there is nothing to watch, so this screen
+          // cannot know when it ends — and must not imply that it has.
+          setCompileProblem({
+            kind: "failed",
+            message:
+              `The compile for ${beat} started, but the server did not name the job, ` +
+              `so this screen cannot tell when it finishes or whether it succeeded. ` +
+              `Watch the job log before starting another.`,
+          });
+          return;
+        }
+        const done = await waitForJob(res.job, { onLog: setCompileLog });
+        if (!done.ok) {
+          setCompileProblem({
+            kind: "failed",
+            message:
+              done.status === "timeout"
+                ? `The compile for ${beat} is still running — it has not finished, so ` +
+                  `there is no beat clip yet. Leave it and reopen this scene shortly.`
+                : `Compiling ${beat} failed, so the beat clip was not written. ` +
+                  `${(done.log || "").slice(-300)}`.trim(),
+          });
+          return;
+        }
+      }
+
+      // §11.4. The job ending is not the claim; the saved plan is.
+      const fresh = await fetchCoveragePlan(beats);
+      setCoveragePlan(fresh);
+      if (fresh.status === "compiled") {
+        setCompileDone(
+          `${beats.join(", ")} compiled — the plan now reads "${fresh.status}". ` +
+            `Open Cinema Scrubber or Montage Matrix to review the takes.`
+        );
+      } else {
+        setCompileProblem({
+          kind: "failed",
+          message:
+            `The compile job for ${beats.join(", ")} finished, but the saved plan still ` +
+            `reads "${fresh.status}" — so there is no compiled coverage to review yet. ` +
+            `Check the job log before spending again.`,
+        });
+      }
+    } catch (e) {
+      setCompileProblem(classifyCompileRefusal(e as CompileRefusal));
+    } finally {
+      setCompilingBeat(null);
+      setCompileLog("");
+    }
   };
 
   const [critiquing, setCritiquing] = useState<boolean>(false);
@@ -349,6 +516,11 @@ export default function DirectorWorkspace({
   }
 
   const isLocked = coveragePlan.status === "locked" || coveragePlan.status === "compiled";
+  // What compiling BUYS. The server counts the paid shots; falling back to the
+  // plan's own ai_video shots keeps the quote honest if the summary is absent.
+  const paidShots =
+    coveragePlan.paid_shots ??
+    coveragePlan.coverage.filter((s) => s.motion_type === "ai_video").length;
   const coverageTotalSum = coveragePlan.coverage.reduce((acc, s) => acc + s.camera.duration, 0);
   const targetDuration = coveragePlan.beat_duration || coveragePlan.total_duration;
   const isDurationMatched = Math.abs(coverageTotalSum - targetDuration) <= 0.1;
@@ -465,8 +637,171 @@ export default function DirectorWorkspace({
               </>
             )}
           </button>
+
+          {/* The control the locked plan exists for.
+              Deliberately NOT disabled while the plan reads "draft". The draft
+              check lives on the server, where it cannot be stepped over, and its
+              refusal is the sentence that tells the user what to do; hiding the
+              button behind a client-side guess would replace that sentence with
+              a greyed-out control and no explanation — and would make the
+              approval-drift refusal, which is the case where the client believes
+              it IS locked, unreachable. */}
+          <button
+            data-testid="compile-open-gate"
+            onClick={() => setCompileGateOpen((open) => !open)}
+            disabled={Boolean(compilingBeat)}
+            title="Render every shot in this plan and buy the paid video shots"
+            className="px-5 py-2.5 rounded-xl font-mono text-xs font-bold transition-all duration-200 flex items-center gap-2 shadow-lg bg-purple-600 hover:bg-purple-500 text-zinc-50 border border-purple-400/40 disabled:opacity-50"
+          >
+            {compilingBeat ? (
+              <Sparkles className="w-4 h-4 animate-spin" />
+            ) : (
+              <Film className="w-4 h-4" />
+            )}
+            <span>
+              {compilingBeat ? `COMPILING (${compilingBeat})…` : "COMPILE COVERAGE"}
+            </span>
+          </button>
         </div>
       </div>
+
+      {/* SECTION 1A: The spend gate.
+          Gate 1's premise is that money is committed by a deliberate, informed
+          human decision, so the price is on screen BEFORE the request is made,
+          not in a receipt afterwards. Opening this panel calls nothing. */}
+      {compileGateOpen && !compilingBeat && (
+        <div
+          data-testid="compile-cost-gate"
+          className="glass-panel p-4 rounded-xl border border-purple-500/40 bg-purple-500/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+        >
+          <div className="flex items-start gap-3">
+            <DollarSign className="w-5 h-5 text-purple-300 shrink-0 mt-0.5" />
+            <div className="text-xs font-mono text-zinc-200 leading-relaxed">
+              <strong className="text-purple-200">
+                Compiling {(coveragePlan.scene_beats && coveragePlan.scene_beats.length > 0
+                  ? coveragePlan.scene_beats
+                  : [sceneId]
+                ).join(", ")}{" "}
+                spends money.
+              </strong>
+              <br />
+              It generates {coveragePlan.coverage.length} shot
+              {coveragePlan.coverage.length === 1 ? "" : "s"}, of which{" "}
+              <strong className="text-purple-200">{paidShots} paid video shot
+              {paidShots === 1 ? "" : "s"}</strong>{" "}
+              are bought from a video model. Estimated cost{" "}
+              <strong className="text-purple-200">
+                ${coveragePlan.estimated_cost.toFixed(2)}
+              </strong>
+              . Spending is not reversible.
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              data-testid="compile-cancel"
+              onClick={() => setCompileGateOpen(false)}
+              className="px-3.5 py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs font-mono font-bold rounded-lg transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              data-testid="compile-confirm"
+              onClick={handleCompileCoverage}
+              className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-zinc-50 text-xs font-mono font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow"
+            >
+              <Film className="w-3.5 h-3.5" />
+              <span>COMPILE &amp; SPEND ${coveragePlan.estimated_cost.toFixed(2)}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* The job, while it runs. Minutes of silence is what made "did that
+          button do anything?" the only available reading. */}
+      {compilingBeat && (
+        <div
+          data-testid="compile-running"
+          className="glass-panel p-3.5 rounded-xl border border-purple-500/40 bg-purple-500/10 flex flex-col gap-2"
+        >
+          <div className="flex items-center gap-2 text-xs font-mono text-purple-200">
+            <Sparkles className="w-4 h-4 animate-spin shrink-0" />
+            <span>
+              Compiling {compilingBeat} — rendering every shot and buying the paid ones.
+              This screen updates when the server says the plan is compiled.
+            </span>
+          </div>
+          {compileLog && (
+            <pre className="max-h-24 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-[11px] font-mono text-zinc-400 whitespace-pre-wrap">
+              {compileLog.slice(-600)}
+            </pre>
+          )}
+        </div>
+      )}
+
+      {/* The refusal, in the server's own words. */}
+      {compileProblem && (
+        <div
+          data-testid="compile-problem"
+          data-kind={compileProblem.kind}
+          className={`glass-panel p-3.5 rounded-xl border flex items-start justify-between gap-3 ${
+            compileProblem.kind === "busy"
+              ? "border-zinc-700 bg-zinc-900/60"
+              : compileProblem.kind === "failed"
+                ? "border-red-500/50 bg-red-950/40"
+                : "border-amber-500/50 bg-amber-500/10"
+          }`}
+        >
+          <div className="flex items-start gap-2.5">
+            {compileProblem.kind === "busy" ? (
+              <Clock className="w-4 h-4 text-zinc-300 shrink-0 mt-0.5" />
+            ) : (
+              <AlertTriangle
+                className={`w-4 h-4 shrink-0 mt-0.5 ${
+                  compileProblem.kind === "failed" ? "text-red-400" : "text-amber-400"
+                }`}
+              />
+            )}
+            <span
+              className={`text-xs font-mono leading-relaxed ${
+                compileProblem.kind === "busy"
+                  ? "text-zinc-200"
+                  : compileProblem.kind === "failed"
+                    ? "text-red-200"
+                    : "text-amber-200"
+              }`}
+            >
+              {compileProblem.message}
+              {SPENT_NOTHING.includes(compileProblem.kind) && (
+                <span className="block mt-1 text-[11px] text-zinc-400">
+                  This request did not start a compile, so nothing was generated and
+                  nothing was charged for it.
+                </span>
+              )}
+            </span>
+          </div>
+          <button
+            onClick={() => setCompileProblem(null)}
+            className="shrink-0 text-zinc-400 hover:text-zinc-200 text-xs font-mono font-bold"
+            aria-label="Dismiss"
+          >
+            &#10005;
+          </button>
+        </div>
+      )}
+
+      {/* Success, written from the status the server sent back — never from the
+          fact that a job ended. */}
+      {compileDone && (
+        <div
+          data-testid="compile-done"
+          className="glass-panel p-3.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 flex items-center gap-2.5"
+        >
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span className="text-xs font-mono text-emerald-200 leading-relaxed">
+            {compileDone}
+          </span>
+        </div>
+      )}
 
       {/* SECTION 1B: Visual Strategy & Blocking (if present) */}
       {coveragePlan.visual_strategy && (

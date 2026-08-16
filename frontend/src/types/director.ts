@@ -134,6 +134,9 @@ export interface DirectorCoveragePlan {
    *  here is unresolved and blocks locking (contract 5.4). */
   warning_dispositions?: Record<string, WarningDisposition>;
   estimated_cost: number;
+  /** Shots that will be bought from a paid video model when this compiles.
+   *  Server-counted (`summary.paid_shots`); the compile gate quotes it. */
+  paid_shots?: number;
 }
 
 export interface SurveyBeat {

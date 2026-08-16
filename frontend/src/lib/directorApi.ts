@@ -118,6 +118,15 @@ export async function fetchCoveragePlan(
         coverage: plan.coverage || [],
         warnings: plan.warnings || [],
         estimated_cost: data.summary?.estimated_cost || plan.estimated_cost || 0,
+        // What compiling this scene will BUY, as the server counts it. The
+        // summary spans every beat in `beats`, which is exactly the set the
+        // compile control sends. Falling back to counting this beat's own
+        // ai_video shots is a floor, never an overstatement.
+        paid_shots:
+          data.summary?.paid_shots ??
+          (plan.coverage || []).filter(
+            (s: { motion_type?: string }) => s.motion_type === "ai_video"
+          ).length,
       };
     }
   }
@@ -396,6 +405,85 @@ export async function setCoverageStatus(
   const data = await res.json();
   if (!res.ok || !data.ok) {
     throw new Error(data.error || `Locking beat ${beatIdOrBeats} failed with status ${res.status}`);
+  }
+
+  return data;
+}
+
+/**
+ * A compile the server refused, carrying what it refused *for*.
+ *
+ * `compile_director_coverage` answers four distinct 409s and a 404, and each
+ * message says something different about what to do next: lock the plan, review
+ * a drifted approval, re-approve after a script edit, decide the outstanding
+ * critic warnings, or wait for the compile already running. Thrown as a bare
+ * Error those become one undifferentiated "compile failed", which throws away
+ * the most useful thing the backend produces.
+ *
+ * The discriminators below are the server's OWN payload fields, not a guess
+ * parsed out of the message text — so a reworded message cannot silently
+ * re-classify a refusal.
+ */
+export type CompileRefusal = Error & {
+  status?: number;
+  /** Present on the draft 409. `true` = it WAS approved and then drifted. */
+  approvalDrifted?: boolean;
+  /** Present when the beat's script line changed under the plan. */
+  stale?: Record<string, unknown>;
+  /** Present when a locked plan still carries undecided critic findings. */
+  warnings?: DirectorWarning[];
+};
+
+/** Everything POST /api/director/compile/{beat} can answer with, either way. */
+type CompileReply = {
+  ok?: boolean;
+  started?: boolean;
+  job?: string;
+  beat_id?: string;
+  shots?: number;
+  /** The refusal, in the route's own words. */
+  error?: string;
+  /** The 404's words: that one is an HTTPException, so FastAPI uses `detail`. */
+  detail?: string;
+  approval_drifted?: boolean;
+  stale?: Record<string, unknown>;
+  warnings?: DirectorWarning[];
+};
+
+/**
+ * POST /api/director/compile/{beat_id} — render the coverage, buy the paid shots.
+ *
+ * This is the endpoint a locked plan exists for, and until now nothing in the
+ * studio called it: the user could plan a scene, resolve its warnings and lock
+ * it, and there was no control anywhere that turned that into assets.
+ *
+ * Like the planner it answers the instant `start_job` spawns a thread, so `job`
+ * is the only honest signal of completion — see `waitForJob`.
+ *
+ * There is deliberately no `force` parameter. The backend removed one because
+ * `force=true` skipped the draft check and could send an unapproved plan into
+ * paid generation; the recovery is to lock the plan, not to step over the gate.
+ */
+export async function compileCoverage(beatId: string): Promise<CompileReply> {
+  const res = await fetch(
+    `${API_BASE}/api/director/compile/${encodeURIComponent(beatId)}`,
+    { method: "POST", headers: getAuthHeaders() }
+  );
+
+  const data: CompileReply = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) {
+    // `detail` is the 404: that one is raised as an HTTPException, so FastAPI
+    // serialises it under `detail` and there is no `error` key to read.
+    const err = new Error(
+      data.error || data.detail || `Compiling ${beatId} failed with status ${res.status}`
+    ) as CompileRefusal;
+    err.status = res.status;
+    if (typeof data.approval_drifted === "boolean") {
+      err.approvalDrifted = data.approval_drifted;
+    }
+    if (data.stale) err.stale = data.stale;
+    if (data.warnings) err.warnings = data.warnings;
+    throw err;
   }
 
   return data;
