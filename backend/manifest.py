@@ -25,6 +25,36 @@ except Exception as exc:  # noqa: BLE001 — the app still runs on local JSON ma
 MANIFEST_VERSION = 1
 
 
+class StorageUnavailable(RuntimeError):
+    """The durable store is configured but could not answer. NOT "no record".
+
+    Two answers used to arrive at the caller as the same thing -- an exception it
+    swallowed, or ``None``:
+
+    * **not found**: the store answered, and this project has no document there.
+      Legitimate, common, and correctly handled by reading the JSON manifest.
+    * **unavailable**: the store did not answer at all -- unreachable backend,
+      missing database, denied credentials, a stream that died halfway through
+      the beats.
+
+    Only the first is evidence about the project. The second is evidence about
+    the infrastructure, and treating it as the first is how a caller comes to
+    serve whatever happens to be on local disk as though it were authoritative.
+    On Cloud Run that disk is frequently ``/app`` -- the repo baked into the
+    image by ``COPY . .`` -- which is ephemeral, so the substituted state
+    disappears at the next cold start with nothing having reported a problem.
+
+    Named for :class:`backend.generation.LedgerUnreadable`, and for the same
+    reason: "present but unreadable" and "not there" are different facts, and a
+    plausible value in place of an unavailable one is worse than an error,
+    because nobody can tell it is wrong.
+
+    ``db is None`` is deliberately NOT this error. That is decided once, at
+    import, and means Firestore was never configured for this process -- the
+    local JSON manifest is then the store of record rather than a fallback.
+    """
+
+
 class MotionType(str, Enum):
     STATIC = "static"
     PARALLAX = "parallax"
@@ -411,31 +441,108 @@ def narrator_name(sb: Optional[Storyboard]) -> str:
 
 
 def load_project(project_id: str) -> Optional[Storyboard]:
-    """Load a storyboard manifest and its shots from Firestore."""
-    p_ref = db.collection("projects").document(project_id)
-    p_doc = p_ref.get()
+    """Load a storyboard manifest and its shots from Firestore.
+
+    Three outcomes, and they are three, not two:
+
+    * a :class:`Storyboard` -- the store answered and holds this project;
+    * ``None`` -- the store answered and holds no document for this project, or
+      Firestore is not configured for this process at all;
+    * :class:`StorageUnavailable` -- the store could not answer.
+
+    Every caller used to see the third as the second (via its own
+    ``except Exception``), which is the whole defect: "there is no record" and
+    "I could not look" lead to different correct behaviour, and only the first
+    of them justifies reading local disk instead.
+    """
+    if db is None:
+        # Firestore was never configured here -- decided at import above, and
+        # printed there once rather than on every read. Local JSON is the store
+        # of record in that mode (the documented local-development path), so
+        # this is "no document here", not "the store is down".
+        return None
+
+    try:
+        p_ref = db.collection("projects").document(project_id)
+        p_doc = p_ref.get()
+    except Exception as exc:  # noqa: BLE001 -- classified, not swallowed
+        # Deliberately broad, and deliberately NOT a fall-through. google.cloud
+        # is an optional dependency here, so naming its exception classes would
+        # mean importing a package that may be absent; and the failure modes are
+        # open-ended anyway (transport, auth, quota, a 404 for the database
+        # itself). What matters is that every one of them leaves this function
+        # as a typed error the caller must decide about, instead of as a `None`
+        # indistinguishable from an empty store.
+        raise StorageUnavailable(
+            f"could not read project {project_id!r} from the durable store: "
+            f"{exc.__class__.__name__}: {exc}. Refusing to answer from local "
+            f"disk as though it were authoritative -- on Cloud Run that copy "
+            f"may be the image's ephemeral one."
+        ) from exc
+
     if not p_doc.exists:
         return None
-    
-    # Load shots
-    shots_ref = p_ref.collection("beats").order_by("scene_id").stream()
-    shots_list = [shot.to_dict() for shot in shots_ref]
-    
+
+    try:
+        shots_ref = p_ref.collection("beats").order_by("scene_id").stream()
+        shots_list = [shot.to_dict() for shot in shots_ref]
+    except Exception as exc:  # noqa: BLE001 -- classified, not swallowed
+        # A separate arm because the beats arrive as a lazily-evaluated stream:
+        # the project document can read cleanly and the subcollection still die
+        # mid-iteration. Letting that surface as a Storyboard with an empty or
+        # truncated `shots` list is the confident-zero failure exactly -- a
+        # storyboard that has lost beats looks like a storyboard that never had
+        # them, and the first save afterwards would make that permanent, since
+        # save_project() deletes every beat document absent from what it writes.
+        raise StorageUnavailable(
+            f"read project {project_id!r} from the durable store but could not "
+            f"read its beats: {exc.__class__.__name__}: {exc}. A partial "
+            f"storyboard is not a shorter one."
+        ) from exc
+
+    # Outside the guard on purpose: a failure in from_dict is a defect in this
+    # module's parsing, not evidence about the store, and mislabelling it would
+    # send the caller looking at infrastructure.
     return Storyboard.from_dict(project_id, p_doc.to_dict(), shots_list)
 
 
 def save_project(sb: Storyboard) -> None:
-    """Save storyboard manifest and all its shots to Firestore."""
+    """Save storyboard manifest and all its shots to Firestore.
+
+    Raises :class:`StorageUnavailable` when the write could not reach the
+    durable store, for the same reason ``load_project`` does: a save that
+    silently did not happen is reported to the user as a save that did, and the
+    local JSON mirror it leaves behind is ephemeral on Cloud Run.
+
+    Returns quietly when Firestore is not configured (``db is None``). That is
+    not a failed write -- in that mode there is no Firestore to write to and the
+    local manifest is the store of record.
+    """
     if not sb.id:
         raise ValueError("Storyboard ID is required to save to Firestore")
-    
+
+    if db is None:
+        return
+
+    try:
+        _save_project_to_firestore(sb)
+    except Exception as exc:  # noqa: BLE001 -- classified, not swallowed
+        raise StorageUnavailable(
+            f"could not write project {sb.id!r} to the durable store: "
+            f"{exc.__class__.__name__}: {exc}. The change has NOT been "
+            f"persisted durably."
+        ) from exc
+
+
+def _save_project_to_firestore(sb: Storyboard) -> None:
+    """The Firestore write itself. Split out so its caller can classify it."""
     p_ref = db.collection("projects").document(sb.id)
-    
+
     # Save main project metadata
     data = sb.to_dict()
     shots_data = data.pop("shots", [])
     p_ref.set(data)
-    
+
     # Save shots to subcollection.
     #
     # This upserted and never deleted, and `load_project` streams the WHOLE
