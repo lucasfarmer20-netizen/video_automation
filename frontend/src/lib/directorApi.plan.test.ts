@@ -11,7 +11,11 @@
  * on is actually produced here.
  */
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { redirectSceneCoverage, fetchRunningPlanJobs } from "./directorApi";
+import {
+  redirectSceneCoverage,
+  fetchRunningPlanJobs,
+  fetchBeatCoverageStates,
+} from "./directorApi";
 
 /** One canned reply from POST /api/director/plan. */
 function reply(status: number, body: unknown | undefined) {
@@ -86,6 +90,135 @@ describe("POST /api/director/plan, as its callers see it", () => {
 
     expect(res.job).toBe("director_plan:s003");
     expect(res.started).toBe(true);
+  });
+});
+
+/**
+ * Which beats already have coverage, and whether the planner will refuse them.
+ *
+ * The panel decides what to OFFER from this. If it under-reports "locked", the
+ * survey goes back to inviting the user into a refusal it cannot satisfy —
+ * which is the defect. Mocked away in the panel's own tests, so it is proved
+ * here.
+ */
+describe("reading existing coverage for the survey's beats", () => {
+  const sceneReply = (beats: unknown[]) => reply(200, { ok: true, beats });
+
+  test("locked coverage is reported as locked, with its shot count", async () => {
+    vi.stubGlobal("fetch", sceneReply([
+      { beat_id: "s001", plan: { status: "locked", coverage: [1, 2, 3, 4, 5, 6, 7, 8, 9] } },
+    ]));
+
+    expect(await fetchBeatCoverageStates(["s001"])).toEqual({
+      s001: { status: "locked", shots: 9, locked: true },
+    });
+  });
+
+  test("compiled coverage is locked too — the planner refuses both", async () => {
+    // `director.plan_scene` declines "locked coverage" for either status. A
+    // client that only knew about "locked" would offer PLAN SCENE on a compiled
+    // beat and earn the same refusal by a different name.
+    vi.stubGlobal("fetch", sceneReply([
+      { beat_id: "s002", plan: { status: "compiled", coverage: [1, 2] } },
+    ]));
+
+    const states = await fetchBeatCoverageStates(["s002"]);
+    expect(states.s002.locked).toBe(true);
+    expect(states.s002.status).toBe("compiled");
+  });
+
+  test("draft coverage exists but is not locked", async () => {
+    vi.stubGlobal("fetch", sceneReply([
+      { beat_id: "s003", plan: { status: "draft", coverage: [1, 2, 3] } },
+    ]));
+
+    expect(await fetchBeatCoverageStates(["s003"])).toEqual({
+      s003: { status: "draft", shots: 3, locked: false },
+    });
+  });
+
+  test("a beat with no plan is absent, not present-and-empty", async () => {
+    // Absent is what the panel reads as "offer PLAN SCENE". An entry with
+    // shots: 0 would suppress the only action that beat has.
+    vi.stubGlobal("fetch", sceneReply([
+      { beat_id: "s004", plan: null },
+      { beat_id: "s005", plan: { status: "locked", coverage: [1] } },
+    ]));
+
+    const states = await fetchBeatCoverageStates(["s004", "s005"]);
+    expect(states.s004).toBeUndefined();
+    expect(states.s005.shots).toBe(1);
+  });
+
+  test("no beats means no request at all", async () => {
+    const fetchMock = sceneReply([]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await fetchBeatCoverageStates([])).toEqual({});
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("every beat is asked for in one request", async () => {
+    const fetchMock = sceneReply([]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchBeatCoverageStates(["s001", "s002", "s003"]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("beats=s001%2Cs002%2Cs003");
+  });
+
+  test("a refused read throws rather than reporting everything unplanned", async () => {
+    // Silently returning {} would put PLAN SCENE back on every locked beat.
+    vi.stubGlobal("fetch", reply(500, { ok: false, error: "scene read failed" }));
+
+    await expect(fetchBeatCoverageStates(["s001"])).rejects.toThrow("scene read failed");
+  });
+});
+
+/**
+ * What actually goes on the wire.
+ *
+ * The panel's tests assert the ARGUMENT handed to a mocked
+ * `redirectSceneCoverage`. That says nothing about the body this function then
+ * builds — a hardcoded `replan: true` in the request passes every one of them
+ * while overriding, on every ordinary plan, the guard that protects locked
+ * coverage. Asserting the argument is not asserting the request.
+ */
+describe("the replan flag, as the server receives it", () => {
+  /** The parsed JSON body of the single fetch that was made. */
+  const sentBody = (fetchMock: ReturnType<typeof vi.fn>) =>
+    JSON.parse(fetchMock.mock.calls[0][1].body as string);
+
+  test("an ordinary plan asks the server NOT to overwrite existing coverage", async () => {
+    const fetchMock = reply(200, { ok: true, started: true, job: "director_plan:s001" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await redirectSceneCoverage(["s001"], "Initial scene coverage planning");
+
+    // The whole point of the guard. `replan` must be false unless a user was
+    // shown what it discards and said yes.
+    expect(sentBody(fetchMock).replan).toBe(false);
+  });
+
+  test("a confirmed re-plan asks for the override, explicitly", async () => {
+    const fetchMock = reply(200, { ok: true, started: true, job: "director_plan:s001" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await redirectSceneCoverage(["s001"], "Re-planning", [], undefined, undefined, true);
+
+    expect(sentBody(fetchMock).replan).toBe(true);
+  });
+
+  test("the beats and critique flag still travel with it", async () => {
+    const fetchMock = reply(200, { ok: true, started: true, job: "director_plan:s001" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await redirectSceneCoverage(["s001", "s002"], "notes");
+
+    const body = sentBody(fetchMock);
+    expect(body.beats).toEqual(["s001", "s002"]);
+    expect(body.critique).toBe(true);
   });
 });
 

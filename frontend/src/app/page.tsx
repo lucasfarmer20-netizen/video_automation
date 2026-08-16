@@ -39,6 +39,7 @@ import LockedCoverageModal from "../components/LockedCoverageModal";
 import CoverageSurveyPanel from "../components/CoverageSurveyPanel";
 import { MOCK_SCENES , setActiveProjectId } from "../lib/directorApi";
 import { NO_SLOT_VIEW, viewForProject } from "../lib/slots";
+import { stageFromHash, hashForStage, hashAlreadyNames } from "../lib/stageRoute";
 import type { SlotTakes, SlotView, TimelineSlot } from "../lib/slots";
 
 // Setup API URL mapping
@@ -147,6 +148,14 @@ export default function WorkspacePage() {
   const draftMisses = useRef(0);
   /** The Director workspace, so a finished plan can bring the user to it. */
   const directorWorkspaceRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * Whether the URL has been read yet.
+   *
+   * The write-back effect must not run before the read effect, or the first
+   * commit would replace `#direct` with `#script` — the initial state value —
+   * and the reload would land on Script anyway, which is the bug.
+   */
+  const stageReadFromUrl = useRef(false);
   const [dismissedErrors, setDismissedErrors] = useState<Record<string, string>>({});
   const [chatHistory, setChatHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -496,6 +505,37 @@ export default function WorkspacePage() {
       console.error("Failed to poll background jobs", e);
     }
   };
+
+  /**
+   * The stage lives in the URL, so a reload comes back to it.
+   *
+   * Read on mount rather than in the `useState` initialiser: this is a client
+   * component that Next still prerenders, and reading `window` in the
+   * initialiser is a hydration mismatch. One frame on Script is the cost.
+   *
+   * `hashchange` is here because Back and Forward are the two ways a user moves
+   * between stages without touching the nav, and a URL that changed while the
+   * screen did not would be worse than no routing at all.
+   */
+  useEffect(() => {
+    const applyHash = () => {
+      const fromUrl = stageFromHash(window.location.hash);
+      if (fromUrl) setActiveStage(fromUrl);
+      stageReadFromUrl.current = true;
+    };
+    applyHash();
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+  }, []);
+
+  useEffect(() => {
+    if (!stageReadFromUrl.current) return;
+    // replaceState, not pushState: moving between stages is not a page
+    // navigation, and one history entry per stage click would turn Back into
+    // "undo one tab press" rather than "leave the studio".
+    if (hashAlreadyNames(window.location.hash, activeStage)) return;
+    window.history.replaceState(null, "", hashForStage(activeStage));
+  }, [activeStage]);
 
   useEffect(() => {
     fetchProjects();

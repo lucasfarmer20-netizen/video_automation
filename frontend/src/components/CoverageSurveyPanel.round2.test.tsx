@@ -22,6 +22,7 @@ vi.mock("../lib/directorApi", () => ({
   redirectSceneCoverage: vi.fn(),
   waitForJob: vi.fn(),
   fetchRunningPlanJobs: vi.fn(),
+  fetchBeatCoverageStates: vi.fn(),
 }));
 
 import CoverageSurveyPanel from "./CoverageSurveyPanel";
@@ -30,6 +31,7 @@ import {
   redirectSceneCoverage,
   waitForJob,
   fetchRunningPlanJobs,
+  fetchBeatCoverageStates,
 } from "../lib/directorApi";
 import type { CoverageSurvey } from "../types/director";
 
@@ -37,6 +39,7 @@ const mockSurvey = vi.mocked(fetchCoverageSurvey);
 const mockPlan = vi.mocked(redirectSceneCoverage);
 const mockWait = vi.mocked(waitForJob);
 const mockRunning = vi.mocked(fetchRunningPlanJobs);
+const mockCoverage = vi.mocked(fetchBeatCoverageStates);
 
 const SURVEY: CoverageSurvey = {
   episode_seconds: 600,
@@ -80,6 +83,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockSurvey.mockResolvedValue(SURVEY);
   mockRunning.mockResolvedValue({});
+  // No beat has coverage yet: these files are about planning one from nothing.
+  mockCoverage.mockResolvedValue({});
 });
 
 afterEach(cleanup);
@@ -160,6 +165,8 @@ describe("Finding 2 — a plan in flight outlives the component watching it", ()
   test("nothing running means nothing is claimed to be running", async () => {
     // The other direction, or "re-attach" would just be a spinner that never ends.
     mockRunning.mockResolvedValue({});
+  // No beat has coverage yet: these files are about planning one from nothing.
+  mockCoverage.mockResolvedValue({});
 
     render(<CoverageSurveyPanel onSelectBeats={vi.fn()} />);
     await screen.findByTestId("plan-beat-s003");

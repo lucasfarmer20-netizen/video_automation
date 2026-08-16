@@ -3,11 +3,13 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { CoverageSurvey, SurveyBeat } from "../types/director";
 import {
+  fetchBeatCoverageStates,
   fetchCoverageSurvey,
   fetchRunningPlanJobs,
   redirectSceneCoverage,
   waitForJob,
 } from "../lib/directorApi";
+import type { BeatCoverageState } from "../lib/directorApi";
 import { Compass, Sparkles, AlertTriangle, Play, ChevronRight, CheckCircle2, RefreshCw, Clock } from "lucide-react";
 
 interface CoverageSurveyPanelProps {
@@ -35,6 +37,20 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
   // of a ninety-second wait was a component off-screen quietly changing scene --
   // indistinguishable, from where the user sits, from the button doing nothing.
   const [planned, setPlanned] = useState<string | null>(null);
+  // What the server already holds for these beats. The survey itself is pure
+  // arithmetic over narration and never reads a plan, so without this the panel
+  // offers PLAN SCENE on locked coverage and walks the user into a refusal.
+  const [coverage, setCoverage] = useState<Record<string, BeatCoverageState>>({});
+  // The beat whose re-plan has been asked for but not yet confirmed.
+  const [confirmReplan, setConfirmReplan] = useState<string | null>(null);
+
+  /** Re-read which beats already have coverage. Never blocks the survey. */
+  const loadCoverage = useCallback((beatIds: string[]) => {
+    if (beatIds.length === 0) return;
+    fetchBeatCoverageStates(beatIds)
+      .then(setCoverage)
+      .catch(() => { /* the offer stays as it was rather than guessing */ });
+  }, []);
 
   const loadSurvey = () => {
     setLoading(true);
@@ -43,6 +59,7 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
       .then((data) => {
         setSurvey(data);
         setLoading(false);
+        loadCoverage((data.beats || []).map((b) => b.beat_id));
       })
       .catch((err) => {
         setError(err.message || "Failed to load coverage survey from GET /api/director/survey");
@@ -55,8 +72,15 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
   // would re-run the re-attach effect on every render, polling
   // /api/assemble/status forever and re-entering a job already being watched.
   const onSelectBeatsRef = useRef(onSelectBeats);
+  // Same reasoning as `onSelectBeatsRef`: `followPlanJob` is deliberately stable
+  // (mount-only re-attach depends on it), so anything it needs that changes with
+  // render is reached through a ref rather than a dependency.
+  const loadCoverageRef = useRef(loadCoverage);
+  const surveyBeatIdsRef = useRef<string[]>([]);
   useEffect(() => {
     onSelectBeatsRef.current = onSelectBeats;
+    loadCoverageRef.current = loadCoverage;
+    surveyBeatIdsRef.current = (survey?.beats || []).map((b) => b.beat_id);
   });
 
   /**
@@ -86,6 +110,8 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
         return;
       }
       setPlanned(beatKey);
+      // The offer must now match what the server holds: this beat has coverage.
+      loadCoverageRef.current(surveyBeatIdsRef.current);
       onSelectBeatsRef.current(beatKey.split(","));
     } finally {
       setPlanningBeats(null);
@@ -144,7 +170,7 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
    * finished costs a refresh; opening a finished-looking workspace over a job
    * that never ran cost a walkthrough.
    */
-  const handlePlanBeats = async (beatList: string[]) => {
+  const handlePlanBeats = async (beatList: string[], replan = false) => {
     const key = beatList.join(",");
     // Only one plan job runs at a time server-side, so starting a second from
     // this panel could only earn a 409.
@@ -153,8 +179,18 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
     setPlanLog("");
     setPlanProblem(null);
     setPlanned(null);
+    setConfirmReplan(null);
     try {
-      const res = await redirectSceneCoverage(beatList, "Initial scene coverage planning");
+      const res = await redirectSceneCoverage(
+        beatList,
+        replan ? "Re-planning scene coverage over existing plan" : "Initial scene coverage planning",
+        [],
+        undefined,
+        undefined,
+        // Only ever true because the user confirmed a prompt that named what it
+        // discards. Never a retry, never a default.
+        replan
+      );
       if (!res.job) {
         // Started, but unnamed: there is no job to watch, so this panel cannot
         // know when it finishes. It says so rather than guessing "ready".
@@ -295,6 +331,8 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
           const isMed = beat.recommend === 2;
           const isPlanning = planningBeats === beat.beat_id;
           const problem = planProblem && planProblem.key === beat.beat_id ? planProblem : null;
+          const cover = coverage[beat.beat_id];
+          const isConfirming = confirmReplan === beat.beat_id;
 
           const dots = isHigh ? "●●●" : isMed ? "●●" : "○";
           const dotColor = isHigh ? "text-red-400" : isMed ? "text-amber-400" : "text-zinc-500";
@@ -320,6 +358,25 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
                     <span className="text-[10px] font-mono text-zinc-500 uppercase px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800">
                       {beat.motion_type}
                     </span>
+                    {/* What the server already holds. The survey score alone
+                        described a beat as if nothing had ever been planned for
+                        it, which is how a locked beat kept being offered as an
+                        unplanned one — and why the shots on planned beats never
+                        surfaced anywhere the user was looking. */}
+                    {cover && (
+                      <span
+                        data-testid={`beat-coverage-${beat.beat_id}`}
+                        data-locked={cover.locked ? "true" : "false"}
+                        className={`text-[10px] font-mono font-bold uppercase px-1.5 py-0.5 rounded border ${
+                          cover.locked
+                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/40"
+                            : "bg-sky-500/10 text-sky-300 border-sky-500/40"
+                        }`}
+                      >
+                        {cover.locked ? "Locked" : "Planned"} · {cover.shots} shot
+                        {cover.shots === 1 ? "" : "s"}
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-zinc-300 font-mono mt-1 font-semibold">{beat.reason}</p>
 
@@ -352,23 +409,89 @@ export default function CoverageSurveyPanel({ onSelectBeats }: CoverageSurveyPan
                       {problem.message}
                     </p>
                   )}
+
+                  {/* Re-planning throws away work that was reviewed, had its
+                      warnings resolved, and was locked on purpose. It is not a
+                      retry of the button next to it, so it says what it costs
+                      and asks once. */}
+                  {isConfirming && cover && (
+                    <div
+                      data-testid={`replan-confirm-${beat.beat_id}`}
+                      className="mt-2 p-2.5 rounded-lg border border-red-500/40 bg-red-500/10 text-[11px] font-mono text-red-200 leading-relaxed"
+                    >
+                      <p>
+                        Re-planning {beat.beat_id} <strong>discards its {cover.shots} existing
+                        shot{cover.shots === 1 ? "" : "s"}</strong> and any warnings resolved on
+                        them, and writes a new plan in their place.
+                        {cover.locked && " This coverage is locked; that lock is what is being overridden."}
+                        {" "}It cannot be undone.
+                      </p>
+                      <div className="flex items-center gap-2 mt-2">
+                        <button
+                          data-testid={`replan-go-${beat.beat_id}`}
+                          onClick={() => handlePlanBeats([beat.beat_id], true)}
+                          className="px-2.5 py-1 rounded-md bg-red-500 hover:bg-red-400 text-zinc-950 font-bold transition"
+                        >
+                          Discard and re-plan
+                        </button>
+                        <button
+                          data-testid={`replan-cancel-${beat.beat_id}`}
+                          onClick={() => setConfirmReplan(null)}
+                          className="px-2.5 py-1 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold transition"
+                        >
+                          Keep it
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* Action Button */}
-              <button
-                data-testid={`plan-beat-${beat.beat_id}`}
-                onClick={() => handlePlanBeats([beat.beat_id])}
-                disabled={Boolean(planningBeats)}
-                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-mono font-bold rounded-lg transition flex items-center gap-1.5 shrink-0 shadow disabled:opacity-50"
-              >
-                {isPlanning ? (
-                  <Sparkles className="w-3.5 h-3.5 animate-spin" />
+              {/* Action. A beat the server already has coverage for is not on
+                  offer to plan: clicking it earned a refusal the user had been
+                  invited into, dressed as a pipeline failure. */}
+              <div className="flex items-center gap-2 shrink-0">
+                {cover ? (
+                  <>
+                    <button
+                      data-testid={`open-beat-${beat.beat_id}`}
+                      onClick={() => onSelectBeats([beat.beat_id])}
+                      className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-mono font-bold rounded-lg transition flex items-center gap-1.5 shadow"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
+                      <span>OPEN {cover.shots} SHOT{cover.shots === 1 ? "" : "S"} ({beat.beat_id})</span>
+                    </button>
+                    <button
+                      data-testid={`replan-beat-${beat.beat_id}`}
+                      onClick={() => setConfirmReplan(isConfirming ? null : beat.beat_id)}
+                      disabled={Boolean(planningBeats)}
+                      title="Throw away this coverage and plan the beat again"
+                      className="px-3 py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs font-mono font-bold rounded-lg transition flex items-center gap-1.5 disabled:opacity-50"
+                    >
+                      {isPlanning ? (
+                        <Sparkles className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-3.5 h-3.5" />
+                      )}
+                      <span>{isPlanning ? "RE-PLANNING…" : "RE-PLAN"}</span>
+                    </button>
+                  </>
                 ) : (
-                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <button
+                    data-testid={`plan-beat-${beat.beat_id}`}
+                    onClick={() => handlePlanBeats([beat.beat_id])}
+                    disabled={Boolean(planningBeats)}
+                    className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-mono font-bold rounded-lg transition flex items-center gap-1.5 shadow disabled:opacity-50"
+                  >
+                    {isPlanning ? (
+                      <Sparkles className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                    )}
+                    <span>{isPlanning ? `PLANNING (${beat.beat_id})…` : `PLAN SCENE (${beat.beat_id})`}</span>
+                  </button>
                 )}
-                <span>{isPlanning ? `PLANNING (${beat.beat_id})…` : `PLAN SCENE (${beat.beat_id})`}</span>
-              </button>
+              </div>
             </div>
           );
         })}

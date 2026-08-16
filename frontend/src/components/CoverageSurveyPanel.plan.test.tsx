@@ -26,6 +26,7 @@ vi.mock("../lib/directorApi", () => ({
   redirectSceneCoverage: vi.fn(),
   waitForJob: vi.fn(),
   fetchRunningPlanJobs: vi.fn(),
+  fetchBeatCoverageStates: vi.fn(),
 }));
 
 import CoverageSurveyPanel from "./CoverageSurveyPanel";
@@ -34,6 +35,7 @@ import {
   redirectSceneCoverage,
   waitForJob,
   fetchRunningPlanJobs,
+  fetchBeatCoverageStates,
 } from "../lib/directorApi";
 import type { CoverageSurvey } from "../types/director";
 
@@ -41,6 +43,7 @@ const mockSurvey = vi.mocked(fetchCoverageSurvey);
 const mockPlan = vi.mocked(redirectSceneCoverage);
 const mockWait = vi.mocked(waitForJob);
 const mockRunning = vi.mocked(fetchRunningPlanJobs);
+const mockCoverage = vi.mocked(fetchBeatCoverageStates);
 
 const SURVEY: CoverageSurvey = {
   episode_seconds: 600,
@@ -93,6 +96,8 @@ beforeEach(() => {
   // Nothing already running: these tests are about starting one. The re-attach
   // path has its own file.
   mockRunning.mockResolvedValue({});
+  // No beat has coverage yet: these files are about planning one from nothing.
+  mockCoverage.mockResolvedValue({});
 });
 
 afterEach(cleanup);

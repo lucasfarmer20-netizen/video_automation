@@ -139,7 +139,13 @@ export async function redirectSceneCoverage(
   commandText: string,
   quickShortcuts: string[] = [],
   preferences?: CreativePreferences,
-  profile?: string
+  profile?: string,
+  // Plan over coverage the server would otherwise protect. Defaulted to false
+  // and never inferred: the planner refuses locked beats precisely because that
+  // coverage was reviewed and locked on purpose, and a client that quietly
+  // retried with replan=true would turn a guard into a formality. Only a user
+  // who has been told what it discards may set this.
+  replan = false
 ): Promise<{ ok: boolean; job?: string; started?: boolean; error?: string }> {
   const beatList = Array.isArray(beats) ? beats : beats.split(",");
   const combinedNotes = [
@@ -157,6 +163,7 @@ export async function redirectSceneCoverage(
       profile: profile || "historical_docudrama",
       notes: combinedNotes,
       critique: true,
+      replan,
     }),
   });
 
@@ -212,6 +219,66 @@ export async function waitForJob(
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
+}
+
+/** What the survey needs to know about a beat it is offering to plan. */
+export interface BeatCoverageState {
+  /** The plan's own status: "draft", "locked", "compiled", … */
+  status: string;
+  /** How many DirectorShots the plan holds. */
+  shots: number;
+  /** Locked or compiled coverage: finished work the server refuses to overwrite. */
+  locked: boolean;
+}
+
+/**
+ * Which of these beats already have coverage, and whether it is locked.
+ *
+ * GET /api/director/survey is pure arithmetic over narration — it never reads a
+ * plan, so it cannot tell a planned beat from an unplanned one. That is why the
+ * survey went on offering PLAN SCENE for a beat whose coverage was locked, and
+ * why clicking it earned a refusal the user had been invited into:
+ *
+ *   ValueError: every requested beat already has locked coverage (s001).
+ *                Pass replan=true to plan over it.
+ *
+ * The server is right to refuse — locked coverage is work that was reviewed,
+ * had its warnings resolved, and was deliberately locked. One read of
+ * /api/director/scene covers every beat at once, so the offer can match what
+ * the server will actually accept.
+ */
+export async function fetchBeatCoverageStates(
+  beatIds: string[]
+): Promise<Record<string, BeatCoverageState>> {
+  if (beatIds.length === 0) return {};
+  const res = await fetch(
+    `${API_BASE}/api/director/scene?beats=${encodeURIComponent(beatIds.join(","))}`,
+    { headers: getAuthHeaders() }
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) {
+    throw new Error(data.error || `Could not read existing coverage (${res.status})`);
+  }
+  /** Only the parts of a `/api/director/scene` entry this reader needs. */
+  interface SceneEntry {
+    beat_id?: string;
+    plan?: { status?: string; coverage?: unknown[] } | null;
+  }
+  const out: Record<string, BeatCoverageState> = {};
+  (data.beats || []).forEach((entry: SceneEntry) => {
+    if (!entry?.plan || !entry.beat_id) return;
+    const status = String(entry.plan.status || "draft");
+    out[entry.beat_id] = {
+      status,
+      shots: (entry.plan.coverage || []).length,
+      // Both statuses mean the same thing to the planner: it will refuse
+      // without replan. Deciding that here, once, keeps the client from
+      // inventing a second definition of "locked" that can drift from the one
+      // the server enforces.
+      locked: status === "locked" || status === "compiled",
+    };
+  });
+  return out;
 }
 
 /** The job key POST /api/director/plan derives for a beat (`backend/main.py`). */
