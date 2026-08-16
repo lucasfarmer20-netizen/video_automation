@@ -60,6 +60,55 @@ pinned to an earlier commit could not read them.
   trains people to ignore red. Severity Low (workstation-only); the reason was
   signal integrity, not reachability.
 
+- **Storage gate (slice 8, PR #16, 2026-08-15).** `backend/main.py` wrapped
+  `manifest.load_project()` in `except Exception` and fell through to the disk
+  manifest on any failure, so "no Firestore record" (legitimate) and "the
+  durable store is unreachable" (not) both answered 200 over a disk copy that
+  is ephemeral on Cloud Run. Closed by `manifest.StorageUnavailable`: not-found
+  and `db is None` stay `None`, unreachable raises, and `get_current_project` /
+  `save_current_project` fail closed with 503 + `storage_gate: "unavailable"`.
+  The studio renders that as a stated block instead of the "No Active Project
+  Loaded" screen, whose call to action is *create a new project*. Mutation
+  evidence: `scratch/mutate_slice8_storage_gate.py` (11/11 killed) and
+  `scratch/mutate_slice8_storage_gate_ui.py` (7/7 killed).
+  **Still open, deliberately — two, both accepted with reasons:**
+
+  1. `manifest.list_projects` keeps its broad `except` at `/api/projects`, where
+     the disk scan is the primary source and Firestore only refines it — a
+     documented degrade, not a substitution.
+
+  2. **A refused save strands paid draft images, and the user pays twice.**
+     `save_current_project` deliberately does not write the JSON mirror when the
+     durable store is unreachable, because half a save leaves the two stores
+     disagreeing. The cost of that consistency lands on whoever is generating:
+     `/api/regenerate/{scene_id}` runs the paid `assets.generate_for_shot` and
+     then saves (same shape at the draft and video job paths). An outage
+     beginning inside that window — tens of seconds for image generation,
+     against outages measured in minutes — leaves the images on disk, the
+     manifest pointer unwritten, a 503 at the caller, and a retry that pays fal
+     again. Before this slice the JSON write at least captured
+     `draft_variations`.
+
+     The two paths are NOT symmetric, and the difference is the whole finding:
+
+     * **Paid video** records an attempt via `generation.begin(...,
+       estimated_cost=PAID_CLIP_COST)` at `backend/director.py:1287` **before**
+       `generate_paid_clip` at `1334`, so the exposure survives a refused save
+       and `spend()` / `at_risk()` still see it.
+     * **Draft images** have no equivalent. `assets.py` writes the *prompt*
+       ledger (`backend/ledger.py`) — strategy telemetry for scoring prompts,
+       not an attempt record and not a bill. `generation.unknown_spend()` is a
+       reporting helper, not a ledger. So nothing records that those images were
+       bought except the files themselves.
+
+     Accepted rather than fixed here: the alternative is half-writing the
+     mirror, and a manifest claiming media the durable store never heard of is
+     how the next save deletes it. **Closing it properly means an attempt ledger
+     on the draft-image path**, which is `generation.py`'s job and not this
+     wrapper's. Anything touching spend escalates by policy, so this is flagged
+     rather than folded into a later slice quietly. Do not re-file it as an
+     oversight; do file the follow-up.
+
 ## Explicitly out of scope
 
 - Windows-only transient `os.replace` behaviour — settled. The reader-side form

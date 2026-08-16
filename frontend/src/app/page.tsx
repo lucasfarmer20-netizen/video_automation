@@ -91,6 +91,28 @@ interface Job {
   log: string;
 }
 
+/**
+ * The storage gate's own answer, or null.
+ *
+ * Keyed on the STATED cause in the body, and on nothing else. Inferring "the
+ * store is down" from a status, or from the absence of a project, is precisely
+ * the collapse the backend fix removes — two different causes rendered as one
+ * answer — rebuilt on the client. A 503 on its own is not evidence: a proxy, a
+ * cold start or the platform emits one while saying nothing about the durable
+ * store, and equally a gateway that rewrites 503 to 502 must not be able to
+ * silently switch this screen off. The server says which it is; this reads it.
+ *
+ * The message falls back rather than assuming `error` is present, so a reply
+ * that names the gate but carries no sentence still produces a stated block
+ * instead of throwing inside the caller's try and reaching no screen at all.
+ */
+type StorageGateReply = { detail?: { storage_gate?: string; error?: string } };
+
+const storageGateBlock = (data: StorageGateReply | null | undefined): string | null => {
+  if (data?.detail?.storage_gate !== "unavailable") return null;
+  return String(data?.detail?.error || "The durable store could not be reached.");
+};
+
 export default function WorkspacePage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<any | null>(null);
@@ -136,6 +158,13 @@ export default function WorkspacePage() {
   // identically-named slot until the new read lands. `viewForProject` is what
   // makes that impossible; see lib/slots.ts.
   const [slotView, setSlotView] = useState<SlotView>(NO_SLOT_VIEW);
+  // The durable store said it could not answer (HTTP 503, `storage_gate:
+  // "unavailable"` — see storage_gate_unavailable in backend/main.py). Held
+  // separately from `activeProject` because "there is no project" and "I could
+  // not reach the store" are different facts and must not render as the same
+  // screen: the no-project screen offers to INITIALISE A FRESH WORKSPACE, which
+  // over a project that is merely unreachable is the worst available action.
+  const [storageBlock, setStorageBlock] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const [voiceStudioOpen, setVoiceStudioOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -198,6 +227,13 @@ export default function WorkspacePage() {
       const res = await fetch(`${API_BASE}/api/project/active`, { headers: authHeaders() });
       if (isStaleReply(res)) return false;
       const data = await res.json();
+      // Checked before `data.ok`, and before anything is installed. The server
+      // refuses rather than answering with local state it cannot vouch for, so
+      // there is nothing to render here — what there is to do is SAY SO. Read
+      // from the stated cause, never inferred from the absence of a project.
+      const block = storageGateBlock(data);
+      setStorageBlock(block);
+      if (block) return false;
       if (data.ok) {
         // Adopt the server's id for this project; every later request names it
         // explicitly instead of relying on the shared active-project pointer.
@@ -522,7 +558,14 @@ export default function WorkspacePage() {
     let errMsg = `Server error (${res.status} ${res.statusText})`;
     try {
       const parsed = JSON.parse(text);
-      if (parsed.error || parsed.detail) errMsg = parsed.error || parsed.detail;
+      // `detail` is a string for most refusals and an OBJECT for the storage
+      // gate, which carries a machine-readable cause alongside the sentence.
+      // Taking it verbatim put "[object Object]" in front of the user on the
+      // one failure they most need to read.
+      const detail = typeof parsed.detail === "object" && parsed.detail
+        ? (parsed.detail.error || JSON.stringify(parsed.detail))
+        : parsed.detail;
+      if (parsed.error || detail) errMsg = parsed.error || detail;
     } catch {
       if (text) errMsg += `: ${text.slice(0, 150)}`;
     }
@@ -1088,6 +1131,50 @@ Moved to: ${res.moved_to}`);
       <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center text-zinc-400 gap-4 font-mono select-none">
         <div className="w-10 h-10 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
         <span className="text-xs uppercase tracking-widest text-zinc-500">Loading Workspace...</span>
+      </div>
+    );
+  }
+
+  // Checked BEFORE the no-project screen below, which is the whole point. That
+  // screen's call to action is "Initialize Project Workspace" — creating a new
+  // film. Over a project that exists and is merely unreachable, that is the
+  // single most destructive thing the studio can offer, and it was what a user
+  // saw for the entire outage. So this branch states the block and offers only
+  // the action that can actually help: ask again.
+  if (storageBlock) {
+    return (
+      <div
+        data-testid="storage-gate-block"
+        className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center text-zinc-300 gap-4 font-mono p-6"
+      >
+        <div className="bg-zinc-900 border border-red-500/30 rounded-2xl p-8 max-w-lg w-full space-y-4 shadow-2xl">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 shrink-0 rounded-full bg-red-500/10 border border-red-500/20 text-red-400 flex items-center justify-center text-lg font-bold">
+              !
+            </div>
+            <h3 className="text-lg font-bold text-zinc-100">Durable storage unavailable</h3>
+          </div>
+          <p className="text-xs text-zinc-400 leading-relaxed">
+            The studio could not reach the store your projects live in, so it is
+            not showing you a film. Anything it drew from local disk right now
+            could be out of date or gone at the next restart, and there would be
+            no way to tell which.
+          </p>
+          <p className="text-xs text-zinc-500 leading-relaxed">
+            <span className="text-zinc-400">Nothing has been lost and nothing has been changed.</span>{" "}
+            Your work is where you left it; this is a read that could not be
+            answered, not a project that failed.
+          </p>
+          <pre className="text-[10px] text-red-300/80 bg-zinc-950 border border-zinc-800 rounded-lg p-3 whitespace-pre-wrap break-words">
+            {storageBlock}
+          </pre>
+          <button
+            onClick={() => whileLoading(fetchActiveProject)}
+            className="w-full py-2.5 bg-zinc-100 hover:bg-white text-zinc-950 font-bold text-xs rounded-xl shadow-lg transition"
+          >
+            Try again
+          </button>
+        </div>
       </div>
     );
   }

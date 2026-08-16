@@ -251,6 +251,84 @@ def set_active_manifest_path(path: str):
     config.set_active_manifest(resolved)
 
 
+# What the refusal says on the wire. Deliberately fixed, and deliberately not
+# `str(exc)`.
+#
+# `require_studio_key` only enforces X-Studio-Key on non-GET methods, and every
+# endpoint carrying this refusal is a GET -- so this string is readable by anyone
+# with the URL. The exception underneath it is a google.cloud one, and its text
+# names the GCP project and database, or the service account on a permission
+# failure. `page.tsx` renders whatever arrives here verbatim, so that would have
+# been published to an unauthenticated caller on every outage.
+#
+# The diagnosis is not lost, it is relocated: every raise site prints the full
+# StorageUnavailable message to stdout, which is Cloud Logging. Same line
+# pipeline_worker.py:96-108 already draws for the other public GET -- the job
+# buffer gets the type and message, the traceback goes to the log.
+STORAGE_GATE_MESSAGE = (
+    "The durable store could not be reached, so this request was refused rather "
+    "than answered from local disk. Nothing has been changed. The cause is in "
+    "the server log."
+)
+
+
+def storage_gate_unavailable(exc: Exception, project_id: str) -> HTTPException:
+    """The refusal served when the durable store cannot answer.
+
+    THE DESIGN DECISION, and why it went this way.
+
+    The choice was between (a) failing closed, and (b) rendering whatever local
+    disk holds while naming the storage gate as unavailable alongside it. Both
+    "state the block"; they differ in whether the studio still has something to
+    draw. (b) is what ``unknown_spend()`` does for money, so it was the
+    presumptive answer -- and it is the wrong one *here*, for a reason specific
+    to this call site rather than to the rule.
+
+    ``get_current_project()`` is not a read. Its result is the base object for
+    every write: 46 handlers in this file do
+    ``sb = get_current_project(); ...mutate...; save_current_project(sb)``.
+    Handing back a disk-derived storyboard during an outage therefore does not
+    merely show stale state -- it *arms* the next write with it. When the store
+    comes back, the first save posts that disk copy over the durable document,
+    and ``manifest.save_project`` deletes every beat document absent from what
+    it writes. So a beat list truncated by an outage becomes a beat list
+    truncated for good. Substituting here does not risk a wrong screen; it risks
+    destroying the very state the durable store was protecting.
+
+    (a) also has the property (b) lacks: it is not a claim. A 503 asserts
+    nothing about the project. A rendered storyboard asserts a great deal, and a
+    banner over the top of it does not retract any of it -- that is slice 5b's
+    finding, that showing nothing beats showing a borrowed stand-in.
+
+    Failing closed silently would be its own defect, so the body names the gate
+    in a form the studio can branch on -- ``storage_gate: "unavailable"`` --
+    rather than leaving the client to pattern-match prose. The studio renders
+    that as a stated block (see ``frontend/src/app/page.tsx``); without it the
+    503 lands on the "No Active Project Loaded" screen, which invites the user
+    to *initialise a fresh workspace* over a project that is merely unreachable.
+    An unrenderable screen would have been its own defect, and that one was
+    worse than unrenderable.
+
+    503 rather than 500: this is temporary and retryable by definition, and the
+    distinction is what tells the studio to offer "try again" instead of "your
+    project is broken".
+    """
+    return HTTPException(
+        status_code=503,
+        detail={
+            # Fixed, not str(exc) -- see STORAGE_GATE_MESSAGE above. These
+            # endpoints are unauthenticated GETs and the exception text names
+            # GCP infrastructure.
+            "error": STORAGE_GATE_MESSAGE,
+            # Machine-readable, so a client branches on the cause rather than on
+            # the absence of data -- "no project" and "cannot reach the store"
+            # render as the same empty payload otherwise.
+            "storage_gate": "unavailable",
+            "project_id": project_id,
+        },
+    )
+
+
 def get_current_project() -> Storyboard:
     """The storyboard for THIS request's project, with robust fallback creation.
 
@@ -264,11 +342,23 @@ def get_current_project() -> Storyboard:
     active_path = str(ctx.manifest_path) if ctx else get_active_manifest_path()
     f_id = ctx.project_id if ctx else get_project_id_from_path(active_path)
     sb = None
+    # Only StorageUnavailable is caught, and it is not a fall-through. The
+    # blanket `except Exception` that used to sit here caught the unreachable
+    # store and the absent document alike and let BOTH drop to the disk manifest
+    # below, so an outage answered 200 over ephemeral state. Anything else
+    # escaping load_project is a parse defect in backend/manifest.py -- not
+    # evidence that the disk copy is authoritative -- and belongs at the top
+    # level as a 500, next to the refusal at the bottom of this function.
+    #
+    # `None` still means "the store answered; it has no document for this
+    # project", which is the case the disk fallback exists for and the case
+    # local development is always in.
     try:
         sb = manifest.load_project(f_id)
-    except Exception as fe:
-        print(f"Warning: Firestore load_project failed: {fe}")
-        
+    except manifest.StorageUnavailable as exc:
+        print(f"Storage gate: {exc}")
+        raise storage_gate_unavailable(exc, f_id) from exc
+
     if not sb:
         p = Path(active_path)
         if p.exists() and p.is_file():
@@ -330,14 +420,139 @@ def save_current_project(sb: Storyboard):
     if ctx is not None:
         # Keep the document id and the file in agreement with the bound project.
         sb.id = ctx.project_id
+    # The write-side twin of the read gate above, and the same rule: a save that
+    # did not reach the durable store must not be reported as a save. This arm
+    # used to print a warning and carry on to the JSON write, so during the
+    # Firestore outage the studio answered 200 to every edit while nothing was
+    # persisted anywhere that survives a cold start.
+    #
+    # The local JSON write is deliberately NOT attempted on this path. It is a
+    # mirror of the durable document, and writing half a save leaves the two
+    # stores disagreeing about a project nobody has been told is in trouble --
+    # the refusal is the only outcome that keeps them consistent. Local
+    # development is unaffected: with Firestore unconfigured, save_project()
+    # returns without error and the JSON write below is the real one.
+    #
+    # THE COST, stated rather than discovered. Several callers spend money
+    # before they reach this line -- /api/regenerate/{scene_id} runs the paid
+    # assets.generate_for_shot and then saves, and the draft and video paths
+    # have the same shape. An outage beginning between the read and this save
+    # leaves generated media on disk, the manifest pointer to it unwritten, a
+    # 503 at the caller and a retry that pays again.
+    #
+    # What survives that differs by path, and the difference is worth knowing
+    # before someone reconciles a bill:
+    #
+    #   * PAID VIDEO records an attempt in generation/<beat>.json via
+    #     generation.begin() BEFORE dispatch, so the exposure is recorded
+    #     independently of this save and spend()/at_risk() still see it.
+    #   * DRAFT IMAGES do not. assets.py records to the PROMPT ledger
+    #     (backend/ledger.py) -- strategy telemetry for scoring prompts, not an
+    #     attempt record and not a bill. So a refused save on that path loses
+    #     the only manifest-side trace of images that were paid for, and nothing
+    #     will tell you they exist except the files themselves.
+    #
+    # Paid knowingly. The alternative leaves the two stores disagreeing, and a
+    # manifest claiming media the durable store never heard of is how the next
+    # save deletes it. Closing the draft-image half properly means an attempt
+    # ledger on that path, which is generation.py's job, not this wrapper's.
     try:
         manifest.save_project(sb)
-    except Exception as fe:
-        print(f"Warning: Firestore save_project failed: {fe}")
+    except manifest.StorageUnavailable as exc:
+        print(f"Storage gate: {exc}")
+        raise storage_gate_unavailable(exc, sb.id) from exc
     # Save back to local/GCS JSON for CLI & local sync. No explicit path: the
     # default already resolves the bound project, and naming one here is exactly
     # how this went wrong before.
     manifest.save(sb)
+
+
+DRAFT_IMAGE_COST = 0.15   # nano2 / Gemini 3 Pro Image, ~$0.15 per 2K image
+
+
+def record_paid_drafts(shot: Shot, backend: str, generate) -> None:
+    """Run a paid draft generation with a durable record of it on both sides.
+
+    THE DECISION, and why it is neither of the two obvious ones.
+
+    ``save_current_project`` refuses without writing the JSON mirror when the
+    durable store is unreachable, and the cost of that consistency lands here:
+    these callers spend money and *then* save, so an outage beginning inside
+    that window used to leave images on disk with nothing anywhere recording
+    that they were bought (contract §11.4, the write-side form of §11.2 -- money
+    spent, no record). Two fixes suggest themselves and both fail:
+
+    * **Write the mirror anyway.** It is not read. ``get_current_project`` takes
+      Firestore and only falls to disk when there is no document, so for an
+      existing project the mirror is never consulted -- and the next successful
+      save overwrites it from Firestore state. That is a record with an
+      unpredictable lifetime, which is not a record.
+    * **Refuse before the paid call.** Already true: ``get_current_project()``
+      at the top of each of these handlers raises 503 if the store is down when
+      the request starts. The residual window is an outage beginning *during*
+      generation, and no pre-check closes that one.
+
+    So the record goes where the paid VIDEO path already puts it: an attempt in
+    ``generation/<beat>.json``, written before dispatch, on the GCS mount,
+    atomic, and independent of Firestore. A refused save then costs the manifest
+    pointer and nothing else -- ``spend()`` and ``at_risk()`` still see the money.
+
+    RECORDING ONLY, NOT GATING, and that is deliberate. ``signature`` and
+    ``idempotency_key`` are left empty, which skips begin()'s reuse and
+    in_flight arms (generation.py:332-347) so this always returns "created".
+    Enabling them here would refuse a deliberate re-draft -- the user asking for
+    new variations of a beat they already have -- which is exactly the
+    legitimate re-buy that S4-01's remediation was reverted for. This path needs
+    the ledger's memory, not its veto.
+
+    OPENING THE ATTEMPT FAILS CLOSED. If the record cannot be written, nothing
+    is dispatched -- because "money spent, no record" is the defect this exists
+    to remove, and swallowing the failure here would recreate it one layer in.
+    It is also begin()'s own contract: the caller must not spend unless it got
+    "created". An earlier revision printed a warning and generated anyway, which
+    hid a TypeError from this very call site behind a line nobody reads.
+
+    SETTLING it does not. By then the provider has been called and the money is
+    already recorded; a settle that fails leaves the attempt RUNNING, which
+    reads as at-risk rather than as nothing, and that is the conservative state
+    to be stuck in.
+    """
+    # signature="" on purpose -- see RECORDING ONLY above. It is required by
+    # begin() rather than defaulted, so passing it is not an oversight.
+    att, how = generation.begin(beat_id=shot.scene_id, shot_id=shot.scene_id,
+                                signature="", kind="image", backend=backend,
+                                paid=True, estimated_cost=DRAFT_IMAGE_COST)
+    if how != "created":
+        # begin()'s contract, honoured rather than assumed: "the caller must not
+        # spend money unless it got created". With signature="" this branch is
+        # unreachable today -- which is exactly why it is written down. Discarding
+        # the disposition would mean that the day someone gives this path a
+        # signature (to dedupe, to add idempotency), it would start paying on a
+        # "reused" or "in_flight" answer and record nothing new for the charge.
+        # A mutation setting a signature proves the branch is live.
+        raise HTTPException(
+            status_code=409,
+            detail=(f"the generation ledger answered {how!r} for {shot.scene_id}; "
+                    f"refusing to generate. Resolve it before drafting again."),
+        )
+
+    try:
+        generate()
+    except Exception as exc:
+        # in_doubt, not fail: the provider may already have been called and
+        # charged, and nothing here can tell. Same rule the video path uses.
+        try:
+            generation.in_doubt(shot.scene_id, att.id, f"draft generation raised: {exc}")
+        except Exception as led:  # noqa: BLE001
+            print(f"Warning: could not mark draft attempt in doubt: {led}")
+        raise
+
+    try:
+        chosen = (shot.draft_variations or [""])[0]
+        generation.succeed(shot.scene_id, att.id, output=chosen,
+                           cost=DRAFT_IMAGE_COST * max(1, len(shot.draft_variations)))
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: could not settle draft attempt for {shot.scene_id}: {exc}")
 
 
 def _scan_projects() -> list[dict]:
@@ -598,6 +813,8 @@ def set_active_video_clip(sb: Storyboard, shot: Shot, video_rel_path: str, out_d
     try:
         frame_out_path = config.assets_dir() / shot.scene_id / f"final_frame_{shot.scene_id}.png"
         assets.extract_final_frame(dest_path, frame_out_path)
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error extracting final frame for {shot.scene_id}: {e}")
 
@@ -687,7 +904,8 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
             if not shot.draft_image:
                 backend = getattr(shot, "image_model", None) or getattr(sb.render, "backend", None) or "nano2"
                 log(f"Generating drafts for {shot.scene_id} using {backend}...")
-                assets.generate_for_shot(shot, n=_takes(sb), backend=backend, render=sb.render)
+                record_paid_drafts(shot, backend, lambda: assets.generate_for_shot(
+                    shot, n=_takes(sb), backend=backend, render=sb.render))
                 shot.chosen_variation = 0
                 shot.draft_image = shot.draft_variations[0]
                 save_shot_assets(shot)
@@ -782,7 +1000,8 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
                     if not local_image_path or not local_image_path.exists():
                         log(f"Still image draft not found for {shot.scene_id}, generating still drafts...")
                         try:
-                            assets.generate_for_shot(shot, n=_takes(sb), backend=sb.render.backend, render=sb.render)
+                            record_paid_drafts(shot, sb.render.backend, lambda: assets.generate_for_shot(
+                                shot, n=_takes(sb), backend=sb.render.backend, render=sb.render))
                             shot.chosen_variation = 0
                             shot.draft_image = shot.draft_variations[0]
                             save_shot_assets(shot)
@@ -921,6 +1140,18 @@ def ensure_gcs_projects():
 
 
 # --- API ENDPOINTS ---
+#
+# Handler convention: every `except Exception -> 500` arm is preceded by
+# `except HTTPException: raise`. An HTTPException is a *deliberate* refusal that
+# already carries its status and body; catching it in the generic arm rewrites
+# every one of them as a 500 whose body is the string "503: {'error': ...}".
+# Thirty-nine handlers were doing exactly that, so a refusal the client is meant
+# to branch on arrived as an indistinguishable server fault.
+#
+# The storage gate is what made this load-bearing rather than tidy. A flattened
+# 503 tells the studio "this server is broken" when the truth is "the durable
+# store is unreachable, retry" -- and the studio's boot read, /api/project/active,
+# was one of the thirty-nine.
 
 @app.get("/api/projects")
 def get_projects(channel: Optional[str] = None):
@@ -953,6 +1184,8 @@ def get_projects(channel: Optional[str] = None):
         if channel:
             res = [p for p in res if p["channel"] == channel]
         return {"ok": True, "projects": res}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -1143,6 +1376,8 @@ def get_active_project():
                 "ai_video": "Tier C: Paid fal video generation",
             }
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -1170,6 +1405,8 @@ def get_stages():
         data["project_id"] = sb.id
         data["project_title"] = sb.title
         return data
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -1330,6 +1567,8 @@ async def update_project_meta(request: Request):
             
         save_current_project(sb)
         return {"ok": True, "title": sb.title, "channel": sb.channel}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -1367,16 +1606,35 @@ async def new_project(request: Request):
         manifest_file = proj_dir / "storyboard_manifest.json"
         
         sb = Storyboard(title=name, channel=channel)
-        manifest.save(sb, manifest_file)
-        
-        # Save to Firestore
         f_id = get_project_id_from_path(manifest_file)
         sb.id = f_id
+
+        # The durable store goes FIRST, and a failure refuses the whole create.
+        #
+        # This arm was the pre-fix one verbatim -- `except Exception: print(...)`
+        # -- and it is the same defect the rest of this slice removes, reached
+        # from the one path that does not read before it writes. During an outage
+        # it wrote the JSON manifest, swallowed the durable failure, made the new
+        # project active and answered 200 `{ok: true}`. The studio then reported
+        # the film created and its very next read hit the storage gate.
+        #
+        # Ordering, not just the arm. Writing the JSON first and refusing
+        # afterwards would leave a manifest on disk with no durable record --
+        # `_scan_projects` lists it, so the user is told the create failed and
+        # then watches the project appear in the sidebar anyway. That is the
+        # two-stores-disagreeing state save_current_project refuses to create,
+        # rebuilt here. Durable-first means a refusal leaves only an empty
+        # directory, which nothing lists and nothing bootstraps.
+        #
+        # Locally this is unchanged: save_project() returns immediately when
+        # Firestore is unconfigured, and the JSON write below is the real one.
         try:
             manifest.save_project(sb)
-        except Exception as fe:
-            print(f"Warning: Firestore save_project failed: {fe}")
-        
+        except manifest.StorageUnavailable as exc:
+            print(f"Storage gate: {exc}")
+            raise storage_gate_unavailable(exc, f_id) from exc
+        manifest.save(sb, manifest_file)
+
         set_active_manifest_path(manifest_file)
         config.set_active_manifest(manifest_file)
 
@@ -1393,6 +1651,8 @@ async def new_project(request: Request):
             "rel": str(manifest_file.resolve()).replace("\\", "/"),
             "project_id": f_id,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -1423,6 +1683,8 @@ async def update_render_knobs(request: Request):
             
         save_current_project(sb)
         return {"ok": True, "render": asdict(r)}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -1475,6 +1737,8 @@ async def update_motion(request: Request):
                 setattr(sb.motion, key, max(lo, min(hi, float(data[key]))))
         save_current_project(sb)
         return {"ok": True, "motion": asdict(sb.motion)}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -1749,6 +2013,8 @@ async def upload_character_reference(name: str, file: UploadFile = File(...)):
         return {"ok": True, "name": name,
                 "reference_image": chars[name]["reference_image"],
                 "path": str(dest)}
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
 
@@ -1769,6 +2035,8 @@ async def put_character(name: str, request: Request):
         return {"ok": True, "name": name, "character": spec,
                 "has_anchor": bool((spec.get("structural_anchor") or "").strip()),
                 "written": str(config.characters_config())}
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
 
@@ -1807,6 +2075,8 @@ async def run_casting_audition(request: Request):
                                 content={"ok": False, "error": "an audition is already running"})
         return {"ok": True, "started": True, "job": "casting",
                 "project": sb.title}
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
 
@@ -2389,6 +2659,8 @@ def get_timeline_slots():
         return {"ok": True,
                 "slots": [s.to_dict() for s in current],
                 "coverage": slotmod.coverage(current)}
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -2798,6 +3070,8 @@ async def put_director_plan(beat_id: str, request: Request):
         return {"ok": True, "written": str(path), "shots": len(plan.coverage),
                 "coverage_total": round(plan.total_duration(), 3),
                 "problems": problems}
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
 
@@ -2926,6 +3200,8 @@ async def run_identity_spike(request: Request):
         return {"ok": True, "started": True, "cells": cfg.cells, "takes": cfg.takes}
     except KeyError as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": f"missing field: {e}"})
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
 
@@ -2941,6 +3217,8 @@ async def score_identity_spike(request: Request):
         return {"ok": True}
     except KeyError as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": f"missing field: {e}"})
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
 
@@ -3065,6 +3343,8 @@ async def update_mix(request: Request):
             sb.mix.solo = s
         save_current_project(sb)
         return {"ok": True, "mix": asdict(sb.mix)}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -3088,6 +3368,8 @@ async def set_global_reference(file: UploadFile = File(...)):
         
         save_current_project(sb)
         return {"ok": True, "reference_image": sb.render.reference_image}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -3117,6 +3399,8 @@ def list_music():
                 })
         sb = get_current_project()
         return {"ok": True, "tracks": tracks, "selected": sb.music_track or ""}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -3225,6 +3509,8 @@ def clear_global_reference():
         sb.render.reference_image_url = ""
         save_current_project(sb)
         return {"ok": True}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -3643,7 +3929,8 @@ async def generate_shot_video(scene_id: str, request: Request):
         local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
         if not local_image_path or not local_image_path.exists():
             print("Auto-generating still drafts before video render...")
-            assets.generate_for_shot(shot, n=_takes(sb), backend=sb.render.backend, render=sb.render)
+            record_paid_drafts(shot, sb.render.backend, lambda: assets.generate_for_shot(
+                shot, n=_takes(sb), backend=sb.render.backend, render=sb.render))
             shot.chosen_variation = 0
             shot.draft_image = shot.draft_variations[0]
             save_current_project(sb)
@@ -3763,9 +4050,12 @@ async def regenerate(scene_id: str, request: Request):
             or assets.DEFAULT_BACKEND
         )
 
-        assets.generate_for_shot(shot, n=_takes(sb), backend=backend, render=sb.render)
+        record_paid_drafts(shot, backend, lambda: assets.generate_for_shot(
+            shot, n=_takes(sb), backend=backend, render=sb.render))
         save_current_project(sb)
         return {"ok": True, "variations": shot.draft_variations, "backend": backend}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -3835,6 +4125,8 @@ async def apply_chat_prompts(scene_id: str, request: Request):
             
         save_current_project(sb)
         return {"ok": True}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -3971,6 +4263,8 @@ async def script_from_chat_endpoint(request: Request):
             return JSONResponse(status_code=400, content={"ok": False, "error": "A script drafting job is already in progress."})
 
         return {"ok": True, "job_id": "script_draft", "status": "running"}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -3984,6 +4278,8 @@ def lock_script_endpoint():
         return {"ok": True}
     except ValueError as ve:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(ve)})
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -3999,6 +4295,8 @@ async def chat_develop(request: Request):
         system_prompt = script.get_system_prompt(channel)
         reply = claude_chat(system_prompt, messages)
         return {"ok": True, "reply": reply}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4020,6 +4318,8 @@ def approve_endpoint():
         sb.storyboard_approved = True
         save_current_project(sb)
         return {"ok": True, "gate_cleared": sb.gate_cleared(), "paid": [s.scene_id for s in sb.paid_shots()]}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4175,6 +4475,8 @@ def roughcut_plan():
                 "blocked_on": nxt["blocked"] if nxt else None,
                 "warnings": warnings,
                 "needs_human": bool(nxt and nxt.get("manual"))}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4307,6 +4609,8 @@ def build_rough_cut(force_paid: bool = False):
 
         start_job("rough_cut", fn)
         return {"ok": True, "stage": "rough_cut"}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4448,6 +4752,8 @@ async def voice_design_endpoint(request: Request):
         # Previews are auditions, not voices: each generated_voice_id must be
         # promoted via /api/voice/save before narration can use it.
         return {"ok": True, **res}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4462,6 +4768,8 @@ def list_voices_endpoint():
             "voices": audio.list_voices(),
             "selected": (getattr(sb, "voice_id", "") or "").strip(),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4526,6 +4834,8 @@ async def voice_sample_endpoint(request: Request):
             "chars": len(text),
             "text": text,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4556,6 +4866,8 @@ async def voice_settings_endpoint(request: Request):
             "stability": config.ELEVENLABS_STABILITY,
             "style_exaggeration": config.ELEVENLABS_STYLE_EXAGGERATION
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4862,6 +5174,8 @@ def audio_peaks():
                 print(f"peaks: could not write cache ({exc})")
 
         return {"ok": True, "peaks": out}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4916,6 +5230,8 @@ def transcode_audio_endpoint(normalize_sfx: bool = False):
 
         start_job("transcode", fn)
         return {"ok": True, "stage": "transcode"}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4927,6 +5243,8 @@ def get_metadata():
         sb = get_current_project()
         md = metadata.load_saved(sb)
         return {"ok": True, "metadata": md.to_dict() if md else None}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4950,6 +5268,8 @@ def generate_metadata_endpoint():
 
         start_job("metadata", fn)
         return {"ok": True, "stage": "metadata"}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4963,6 +5283,8 @@ async def update_metadata(request: Request):
         md = metadata.Metadata.from_dict(data)
         p = metadata.save(md, sb)
         return {"ok": True, "saved": _safe_rel_path(p), "metadata": md.to_dict()}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4998,6 +5320,8 @@ async def build_export_bundle(request: Request):
         return {"ok": True, "stage": "bundle", "version": version}
     except exports.ExportError as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -5040,6 +5364,8 @@ async def run_frozen_export(request: Request):
         return {"ok": True, "stage": "export", "version": version, "preset": preset}
     except exports.ExportError as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -5067,6 +5393,8 @@ def export_history():
                 seen.add(v)
                 versions.append(exports.verification(v))
         return {"ok": True, "exports": entries, "verification": versions}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
