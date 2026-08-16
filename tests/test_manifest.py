@@ -176,6 +176,41 @@ def test_gate_shut_when_any_one_of_several_paid_shots_has_no_video_model(
     assert _siblings_are_ready(paid, broken_at)
 
 
+@pytest.mark.parametrize("approved", [None, 0], ids=["json-null", "zero"])
+def test_an_approval_that_is_not_true_never_clears_the_gate(approved):
+    """§5.4: approval must be explicit before paid generation.
+
+    `Storyboard.from_dict` filters unknown keys but does not coerce types, so
+    whatever the manifest carries reaches the predicate unchanged -- a JSON null
+    arrives as None. The gate shuts because `s.approved` is a truthiness test,
+    and that is the property being pinned here.
+
+    It needs pinning because over True and False alone, `s.approved` and
+    `s.approved is not False` behave identically: every gate test above passed
+    under that rewrite, which opened Gate 1 on a paid beat nobody had approved.
+    A predicate is only as tested as the values it has been shown.
+    """
+    sb = Storyboard.from_dict("p", {"storyboard_approved": True}, [
+        {"scene_id": "s001", "motion_type": "ai_video",
+         "video_model": "seedance_2_0", "approved": approved}])
+
+    assert sb.gate_cleared() is False
+    assert sb.shots[0].needs_paid_video() is True, "the fixture must be Tier C"
+    assert sb.shots[0].approved is not True
+
+
+def test_a_beat_with_no_approval_key_at_all_never_clears_the_gate():
+    """The ordinary case for a manifest written before per-beat approval, or by
+    a partial writer. The dataclass default is False, so this is the same
+    question one layer down."""
+    sb = Storyboard.from_dict("p", {"storyboard_approved": True}, [
+        {"scene_id": "s001", "motion_type": "ai_video",
+         "video_model": "seedance_2_0"}])
+
+    assert sb.gate_cleared() is False
+    assert sb.shots[0].approved is False
+
+
 def test_gate_open_when_approved_and_every_paid_shot_is_ready():
     sb = Storyboard(title="T", storyboard_approved=True,
                     shots=[_paid("s001"), _paid("s002"), _free("s003")])
@@ -285,8 +320,12 @@ def test_missing_motion_type_defaults_to_parallax():
     """Tier B is ~70% of shots and costs nothing, so it is the safe default: a
     beat with no tier recorded must never default into the paid tier."""
     back = Storyboard.from_dict("p", {}, [{"scene_id": "s001"}])
-    assert back.shots[0].motion_type is MotionType.PARALLAX
+    # The spend question first, the enum second. Both fail if the default moves,
+    # but only the first one names the consequence, and pytest stops at the
+    # first -- so a mutation table would otherwise record this test dying on
+    # "which member is it" rather than on "this beat is now billable".
     assert back.shots[0].needs_paid_video() is False
+    assert back.shots[0].motion_type is MotionType.PARALLAX
 
 
 def test_missing_camera_becomes_a_default_camera():
@@ -597,6 +636,36 @@ def test_falling_back_from_an_unrecognised_motion_type_says_so(capsys):
                                     "motion_type": "claymation"}])
     out = capsys.readouterr().out
     assert "claymation" in out and "s001" in out and "parallax" in out, out
+
+
+def test_an_unrecognised_motion_type_never_lands_in_the_paid_tier():
+    """The tier, not the sentence.
+
+    The log line the test above asserts on contains the word "parallax" as a
+    LITERAL in the f-string, one statement before the assignment that actually
+    chooses the tier. So a fallback rewritten to AI_VIDEO goes on printing
+    "falling back to parallax" while putting the beat in Tier C, and every test
+    that reads the message passes. Found by mutation; this is the assertion that
+    catches it.
+
+    Tier B costs nothing and Tier C costs money, which is the whole reason the
+    fallback direction is not arbitrary."""
+    back = Storyboard.from_dict("p", {}, [{"scene_id": "s001",
+                                           "motion_type": "claymation"}])
+    assert back.shots[0].needs_paid_video() is False
+    assert back.shots[0].motion_type is MotionType.PARALLAX
+    assert back.paid_shots() == []
+
+
+def test_a_bare_shot_is_not_a_paid_shot():
+    """The dataclass default, asked directly.
+
+    from_dict always sets a tier, so every test that goes through it is blind to
+    the field default -- and the script stage builds Shots in code, before
+    anyone has chosen anything. If the default were AI_VIDEO, a fresh storyboard
+    would arrive at the budget gate with every beat already in Tier C."""
+    assert Shot(scene_id="s001").needs_paid_video() is False
+    assert Shot(scene_id="s001").motion_type is MotionType.PARALLAX
 
 
 @pytest.mark.parametrize("motion_type", ["static", "parallax", "ai_video"])

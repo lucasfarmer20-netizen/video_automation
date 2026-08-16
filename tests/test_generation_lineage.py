@@ -46,6 +46,31 @@ def _begin(**kw):
     return generation.begin(**kw)
 
 
+def _outcome(fn, *args, **kwargs):
+    """Run a call that is expected to be refused; return its exception, or None.
+
+    Used instead of ``pytest.raises`` wherever a MONEY assertion has to be
+    checked first, and the reason is a failure this suite actually produced.
+
+    ``with pytest.raises(X):`` around a call that wrongly SUCCEEDS fails the test
+    on "DID NOT RAISE", and every assertion after the block is then skipped. So
+    under precisely the regression the test guards, the suite goes red on the
+    shape of the failure while the sentence naming the money -- "the crash window
+    bought the clip a second time", "the reported bill dropped" -- is never
+    evaluated. A reader of the mutation table sees a kill and concludes the guard
+    holds; what was actually demonstrated is that something changed.
+
+    Capturing the outcome instead lets the order be: assert the bill, then assert
+    the refusal. Three tests here were rewritten this way after mutation testing
+    showed they died on the wrapper.
+    """
+    try:
+        fn(*args, **kwargs)
+        return None
+    except BaseException as exc:  # noqa: BLE001 -- classified by the caller
+        return exc
+
+
 # --- §11.1 no double-spend --------------------------------------------------------
 
 def test_a_duplicate_request_does_not_open_a_second_attempt():
@@ -362,12 +387,21 @@ def test_a_crash_after_charging_does_not_buy_the_clip_again(scene):
     assert calls["paid"] == 1
 
     # The replay. Nothing about the shot has changed, and the attempt is stuck.
-    with _pytest.raises(director.PlanError):
-        director.compile_coverage(director.load_plan("s011"), sb, render_dir,
-                                  log=lambda m: None, skip_existing=False)
+    #
+    # Captured rather than wrapped in pytest.raises, and the money asserted
+    # FIRST. Wrapped, a replay that wrongly succeeds fails on "DID NOT RAISE"
+    # and the assertions below never run -- so under exactly the regression this
+    # test exists for, the suite reddens on the shape of the failure and never
+    # once says the clip was bought twice. Removing begin()'s in_flight arm
+    # killed this test that way. See _outcome().
+    refused = _outcome(director.compile_coverage, director.load_plan("s011"), sb,
+                       render_dir, log=lambda m: None, skip_existing=False)
+
+    assert calls["paid"] == 1, "the crash window bought the clip a second time"
+    assert isinstance(refused, director.PlanError), (
+        f"the replay was not refused; it raised {refused!r}")
     # compile_coverage reports an aggregate; the reason lives on the shot.
     assert "still recorded as running" in director.load_plan("s011").coverage[0].error
-    assert calls["paid"] == 1, "the crash window bought the clip a second time"
 
 
 def test_abandoning_a_stuck_attempt_unblocks_the_retry(scene):
@@ -464,12 +498,25 @@ def test_a_succeeded_attempt_cannot_be_rewritten_as_failed():
     path = generation.ledger_path("s001")
     before = path.read_bytes()
 
-    with pytest.raises(generation.TerminalConflict):
-        generation.fail("s001", att.id, "a late error callback")
+    # The bill first, the refusal second. Under a mutation that drops the
+    # terminal guard the rewrite is ACCEPTED, and wrapped in pytest.raises this
+    # test would have died on "DID NOT RAISE" without ever evaluating the
+    # assertion that says the reported spend fell to zero -- which is the whole
+    # of S4-03. See _outcome().
+    refused = _outcome(generation.fail, "s001", att.id, "a late error callback")
 
+    # The stored bytes first. The docstring's original harm -- the reported spend
+    # falling to zero -- is no longer what this mutation produces, and that is a
+    # fact about two fixes overlapping rather than a weaker test: billed() now
+    # counts a recorded output or cost independently of status (§6.1), so an
+    # attempt rewritten to "failed" still carries a.output and a.cost and still
+    # reports $0.60. What the rewrite destroys is the RECORD of what happened,
+    # which is what these bytes are.
     assert path.read_bytes() == before, "the stored record changed"
-    assert generation.spend("s001")["spent"] == 0.60
     assert generation.for_shot("s001", "s001.01")[0].status == "succeeded"
+    assert generation.spend("s001")["spent"] == 0.60, "the reported bill dropped"
+    assert isinstance(refused, generation.TerminalConflict), (
+        f"the rewrite was accepted; got {refused!r}")
 
 
 def test_a_failed_attempt_cannot_be_rewritten_as_succeeded():
@@ -656,9 +703,14 @@ def test_the_same_status_with_a_different_output_is_a_conflict():
 def test_the_same_status_with_a_different_cost_is_a_conflict():
     att, _ = _begin(idempotency_key="k1")
     generation.succeed("s001", att.id, "first.mp4", cost=0.60)
-    with pytest.raises(generation.TerminalConflict):
-        generation.succeed("s001", att.id, "first.mp4", cost=99.00)
-    assert generation.spend("s001")["spent"] == 0.60
+
+    # Same ordering rule as above: the figure, then the refusal. See _outcome().
+    refused = _outcome(generation.succeed, "s001", att.id, "first.mp4", 99.00)
+
+    assert generation.spend("s001")["spent"] == 0.60, (
+        "a second completion rewrote the bill")
+    assert isinstance(refused, generation.TerminalConflict), (
+        f"the conflicting cost was accepted; got {refused!r}")
 
 
 def test_a_failure_with_a_different_reason_is_a_conflict():
