@@ -117,6 +117,18 @@ function classifyCompileRefusal(err: CompileRefusal | undefined): CompileProblem
   return { kind: "failed", message };
 }
 
+/**
+ * What a re-check of the critic actually produced.
+ *
+ * Exactly three states, and the third is the one that did not exist: a failure
+ * used to leave the previous findings on screen and say nothing, which reads as
+ * "the critic ran and found nothing new" — from there the human locks and spends.
+ */
+type CritiqueOutcome =
+  | { kind: "found"; count: number }
+  | { kind: "clear"; count: 0 }
+  | { kind: "failed"; message: string };
+
 /** Refusals the server raises before `start_job`, so nothing was bought. */
 const SPENT_NOTHING: CompileProblemKind[] = [
   "draft",
@@ -339,6 +351,7 @@ export default function DirectorWorkspace({
   };
 
   const [critiquing, setCritiquing] = useState<boolean>(false);
+  const [critiqueOutcome, setCritiqueOutcome] = useState<CritiqueOutcome | null>(null);
   const [shotError, setShotError] = useState<string | null>(null);
   const [redirectLog, setRedirectLog] = useState<string>("");
 
@@ -397,17 +410,65 @@ export default function DirectorWorkspace({
     }
   };
 
+  /**
+   * Re-run the critic over the whole scene, and say which of three things happened.
+   *
+   * The endpoint is synchronous, so unlike planning and compiling there is no job
+   * to wait for. The defect was on the other side: the catch branch read
+   *
+   *     } catch (e: any) { console.log("Critique check complete"); }
+   *
+   * A failure was logged as "complete" and nothing reached the screen. The user
+   * clicks Re-check, the request fails, the spinner stops, the warning list is
+   * unchanged — and that is indistinguishable from "the critic ran and found
+   * nothing new". Which is the most dangerous wrong answer available here,
+   * because the next two things the human does are LOCK and then SPEND.
+   *
+   * The quiet path is the same defect without an exception: a reply whose `ok`
+   * is falsy, or that carries no warning list at all, left the old findings on
+   * screen and said nothing. An absent list has re-checked nothing; treating it
+   * as an empty one clears a scene on the strength of a reply that never said so.
+   *
+   * So the outcome is now always exactly one of three legible states — findings,
+   * genuinely none, or failed and here is why — and the failure says which
+   * findings are on screen, because they are the ones from *before* this run.
+   * "Nothing changed" must never be able to mean "it broke". Contract §11.4.
+   */
   const handleRecheckCritique = async () => {
     if (!coveragePlan || critiquing) return;
+    const beats =
+      coveragePlan.scene_beats && coveragePlan.scene_beats.length > 0
+        ? coveragePlan.scene_beats
+        : [sceneId];
     setCritiquing(true);
+    setCritiqueOutcome(null);
     try {
-      const beats = coveragePlan.scene_beats || [sceneId];
       const res = await critiqueCoverage(beats);
-      if (res.ok && res.warnings) {
-        setCoveragePlan({ ...coveragePlan, warnings: res.warnings });
+      if (!res.ok || !Array.isArray(res.warnings)) {
+        setCritiqueOutcome({
+          kind: "failed",
+          message:
+            `The critic replied about ${beats.join(", ")} without a warning list. ` +
+            `Nothing on screen has been re-checked — any findings shown are the ` +
+            `ones from before this run.`,
+        });
+        return;
       }
-    } catch (e: any) {
-      console.log("Critique check complete");
+      const fresh = res.warnings;
+      setCoveragePlan((prev) => (prev ? { ...prev, warnings: fresh } : prev));
+      setCritiqueOutcome(
+        fresh.length > 0
+          ? { kind: "found", count: fresh.length }
+          : { kind: "clear", count: 0 }
+      );
+    } catch (e) {
+      setCritiqueOutcome({
+        kind: "failed",
+        message:
+          `${(e as Error)?.message || `Re-checking ${beats.join(", ")} failed.`} ` +
+          `Nothing on screen has been re-checked — any findings shown are the ` +
+          `ones from before this run.`,
+      });
     } finally {
       setCritiquing(false);
     }
@@ -959,7 +1020,7 @@ export default function DirectorWorkspace({
         <div className="glass-panel p-3.5 rounded-xl border border-amber-500/40 bg-amber-500/10 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
-            <span className="text-xs font-bold text-amber-300 font-mono">
+            <span data-testid="unresolved-count" className="text-xs font-bold text-amber-300 font-mono">
               ⚠️ {unresolvedWarnings.length} coverage issue{unresolvedWarnings.length === 1 ? "" : "s"} awaiting a decision in this scene
               {unresolvedWarnings.some((w) => w.stale) && (
                 <span className="ml-2 text-[10px] text-amber-400 font-normal bg-amber-500/20 px-1.5 py-0.5 rounded">
@@ -970,6 +1031,7 @@ export default function DirectorWorkspace({
           </div>
           <div className="flex items-center gap-2">
             <button
+              data-testid="recheck-warnings"
               onClick={handleRecheckCritique}
               disabled={critiquing}
               className="px-3 py-1 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-amber-300 text-xs font-mono font-bold rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50"
@@ -990,6 +1052,73 @@ export default function DirectorWorkspace({
               <ChevronRight className="w-3.5 h-3.5" />
             </button>
           </div>
+        </div>
+      )}
+
+      {/* SECTION 3B: What the last re-check actually produced.
+          Deliberately OUTSIDE the banner above, which unmounts the moment the
+          findings are all decided — which is exactly when the human asks the
+          critic to look again. Rendered there, "the critic ran and raised
+          nothing" and "the re-check failed" would both have nowhere to appear. */}
+      {(critiqueOutcome || unresolvedWarnings.length === 0) && (
+        <div
+          data-testid="critique-outcome"
+          data-kind={critiqueOutcome?.kind || "idle"}
+          className={`glass-panel p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3 ${
+            critiqueOutcome?.kind === "failed"
+              ? "border-red-500/50 bg-red-950/40"
+              : critiqueOutcome?.kind === "clear"
+                ? "border-emerald-500/40 bg-emerald-500/10"
+                : "border-zinc-800 bg-zinc-950/60"
+          }`}
+        >
+          <div className="flex items-start gap-2.5">
+            {critiqueOutcome?.kind === "failed" ? (
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+            ) : critiqueOutcome?.kind === "clear" ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            ) : (
+              <RotateCcw className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
+            )}
+            <span
+              className={`text-xs font-mono leading-relaxed ${
+                critiqueOutcome?.kind === "failed"
+                  ? "text-red-200"
+                  : critiqueOutcome?.kind === "clear"
+                    ? "text-emerald-200"
+                    : "text-zinc-300"
+              }`}
+            >
+              {critiqueOutcome?.kind === "failed"
+                ? critiqueOutcome.message
+                : critiqueOutcome?.kind === "clear"
+                  ? "The critic re-checked this scene and raised nothing. That is a " +
+                    "result, not a silence — it ran, and the scene came back clean."
+                  : critiqueOutcome?.kind === "found"
+                    ? `The critic re-checked this scene and raised ${critiqueOutcome.count} ` +
+                      `finding${critiqueOutcome.count === 1 ? "" : "s"}, listed above.`
+                    : "No finding in this scene is awaiting a decision. Re-check to ask " +
+                      "the critic to look again before locking."}
+            </span>
+          </div>
+          {/* The same re-check, reachable once every finding has been decided —
+              which is precisely when the human wants to run it again. */}
+          {unresolvedWarnings.length === 0 && (
+            <button
+              data-testid="recheck-warnings-idle"
+              onClick={handleRecheckCritique}
+              disabled={critiquing}
+              className="px-3 py-1 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-amber-300 text-xs font-mono font-bold rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50 shrink-0"
+              title="Re-run the LLM critic over this scene without re-planning"
+            >
+              {critiquing ? (
+                <Sparkles className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <RotateCcw className="w-3.5 h-3.5" />
+              )}
+              <span>Re-check Warnings</span>
+            </button>
+          )}
         </div>
       )}
 

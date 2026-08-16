@@ -489,19 +489,56 @@ export async function compileCoverage(beatId: string): Promise<CompileReply> {
   return data;
 }
 
+/** What POST /api/director/critique can answer with, either way. */
+type CritiqueReply = {
+  ok?: boolean;
+  /** Absent is NOT the same as empty: see `critiqueCoverage`. */
+  warnings?: DirectorWarning[];
+  summary?: { shots?: number; paid_shots?: number; estimated_cost?: number };
+  error?: string;
+  /** `beats[] is required` is an HTTPException, so it arrives under `detail`. */
+  detail?: string;
+};
+
 /**
- * POST /api/director/critique
- * Requires X-Studio-Key auth header
+ * POST /api/director/critique — re-run the critic over a scene's saved plans.
+ *
+ * Synchronous, unlike planning and compiling: the reply IS the result, so there
+ * is no job to wait for. What there IS to get right is the failure, because the
+ * caller's screen does not change on a failure and an unchanged warning list
+ * reads exactly like "the critic ran and found nothing new". That is the most
+ * dangerous wrong answer this endpoint can produce: the human's next actions are
+ * to lock the scene and then spend on it.
+ *
+ * So three things travel with a failure that previously did not:
+ *
+ *   - `detail`, because `beats[] is required` is raised as an HTTPException and
+ *     FastAPI serialises those under `detail`, leaving no `error` key to read;
+ *   - the status, so a caller can tell refusals apart;
+ *   - a guarded `res.json()`, because a gateway HTML error page used to throw a
+ *     SyntaxError out of the parse and reach the caller as "Unexpected token <".
+ *
+ * `warnings` is optional in the return type on purpose. A 200 that carries no
+ * warning list has re-checked nothing, and a caller that treats the absent case
+ * as "clean" would clear the scene on the strength of a reply that never said so.
+ *
+ * Requires X-Studio-Key auth header.
  */
-export async function critiqueCoverage(beats: string[]): Promise<{ ok: boolean; warnings: DirectorWarning[] }> {
+export async function critiqueCoverage(beats: string[]): Promise<CritiqueReply> {
   const res = await fetch(`${API_BASE}/api/director/critique`, {
     method: "POST",
     headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ beats }),
   });
-  const data = await res.json();
+  const data: CritiqueReply = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) {
-    throw new Error(data.error || `Critique endpoint failed with status ${res.status}`);
+    const err = new Error(
+      data.error ||
+        data.detail ||
+        `Re-checking ${beats.join(", ")} failed with status ${res.status}`
+    ) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
   return data;
 }
