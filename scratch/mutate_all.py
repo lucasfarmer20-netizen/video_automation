@@ -31,6 +31,13 @@ Four things it is careful about, each of which has burned this project before:
     ``--list`` for the derived contention report. Two running at once would
     interleave edits and restores on one file, and the survivors and the tree
     hash would both be fiction. There is deliberately no --jobs flag.
+  * **The tree is checked against git BEFORE anything runs.** The hashes below
+    are taken from what is on disk, so they cannot see a mutation a *previous*
+    killed run left behind -- that leftover simply becomes this run's baseline,
+    and every result is computed against it while the drift check reports
+    nothing. A harness restores in a ``finally`` and a kill does not reach it, so
+    this is the ordinary failure, not an exotic one. Refusing beats warning: a
+    warning at the top of a fifteen-minute run is a warning nobody reads.
   * **The tree is verified BETWEEN harnesses, not only at the end.** Each
     harness returns non-zero if it could not restore what it edited, but a
     summary line is read after the fact, and by then the next harness has
@@ -170,6 +177,43 @@ def shared_targets(loaded: dict) -> dict:
     return {p: sorted(keys) for p, keys in owners.items() if len(keys) > 1}
 
 
+def dirty_targets(paths) -> list[str]:
+    """Which of ``paths`` differ from what git has. Repo-relative, sorted.
+
+    ``git status --porcelain`` over the exact paths rather than the whole tree:
+    an untracked scratch file or an in-progress doc edit is not a reason to
+    refuse a mutation run, and refusing on those would train people to reach
+    straight for --allow-dirty.
+
+    A git that cannot answer -- not a checkout, not installed -- returns nothing
+    rather than raising. This is a precondition on top of the hash check, not a
+    replacement for it, and a harness run is more useful than a refusal to run
+    somewhere git is absent.
+    """
+    if not paths:
+        return []
+    rel = sorted(str(Path(p).relative_to(ROOT)).replace("\\", "/")
+                 for p in paths if str(p).startswith(str(ROOT)))
+    if not rel:
+        return []
+    try:
+        proc = subprocess.run(["git", "status", "--porcelain", "--", *rel],
+                              cwd=ROOT, capture_output=True, text=True)
+    except (OSError, ValueError):  # pragma: no cover - no git on this machine
+        return []
+    if proc.returncode != 0:
+        return []
+    out = []
+    for line in (proc.stdout or "").splitlines():
+        name = line[3:].strip().strip('"')
+        # A rename prints "old -> new"; the one that matters is where it is now.
+        if " -> " in name:
+            name = name.split(" -> ", 1)[1]
+        if name:
+            out.append(name)
+    return sorted(set(out))
+
+
 def hash_targets(paths) -> dict:
     """sha256 of every target file that exists. Missing files map to None."""
     out = {}
@@ -214,6 +258,9 @@ def main() -> int:
                     help="print the harnesses and their mutation counts, run nothing")
     ap.add_argument("--only", default="",
                     help="comma-separated harness keys to run")
+    ap.add_argument("--allow-dirty", action="store_true",
+                    help="run even though a target file differs from git; the "
+                         "run then says so rather than implying a clean tree")
     args = ap.parse_args()
 
     wanted = [k.strip() for k in args.only.split(",") if k.strip()]
@@ -264,6 +311,46 @@ def main() -> int:
     # everything downstream is wrong with full confidence.
     watched = set().union(*(info.targets for info in loaded.values())) \
         if loaded else set()
+
+    # ...and the half the hashes CANNOT cover, which is where they are taken.
+    #
+    # `before` is whatever is on disk right now. A run killed mid-mutation -- a
+    # Ctrl-C, a reaped container, a worker torn down -- leaves an edit behind,
+    # because the harness restores in a `finally` and a kill does not reach it.
+    # The next invocation then hashes that leftover AS the baseline, every drift
+    # check compares against it, and this runner reports a clean tree while every
+    # harness measures mutated production code.
+    #
+    # The only thing between that and a wrong answer is each harness's own
+    # "baseline suite: PASS" -- and a leftover is by construction a mutation that
+    # was mid-run, so it may be a SURVIVOR, in which case the baseline passes and
+    # the numbers are wrong with full confidence. This is not hypothetical: five
+    # harness kills in one day across this project's workers, each one restored
+    # by hand from a habit rather than by anything the tool required.
+    #
+    # So git is asked first. Refusing beats warning, because a warning at the top
+    # of a fifteen-minute run is a warning nobody reads; and git is the reference
+    # rather than this runner, for the same reason the drift check does not
+    # repair what it finds -- the correct content is whatever was committed, and
+    # a guess here would be a third opinion about the file.
+    dirty = dirty_targets(watched)
+    if dirty and not args.allow_dirty:
+        print(f"\n{'!' * 78}")
+        print(f"REFUSING TO START: {len(dirty)} target file(s) already differ from git.")
+        for shown in dirty:
+            print(f"  - {shown}")
+        print("A mutation left behind by a killed run would be hashed as this "
+              "run's baseline, and every result computed against it.")
+        print(f"  git checkout -- {' '.join(dirty)}")
+        print("Or --allow-dirty if these are edits you meant to measure against.")
+        print(f"{'!' * 78}")
+        return 2
+    if dirty:
+        print(f"\n--allow-dirty: measuring against {len(dirty)} uncommitted "
+              f"target file(s), so these results are NOT about the committed tree:")
+        for shown in dirty:
+            print(f"  - {shown}")
+
     before = hash_targets(watched)
     print(f"\nwatching {len(watched)} target file(s) for drift between harnesses")
 

@@ -223,10 +223,27 @@ fail silently.
 |---|---|---|---|---|---|---|
 | D2-1 | `plan_signature()` builds a **canonical JSON preimage** keyed by field name, carrying `SIGNATURE_VERSION` | One plan's approval covering a materially different plan | S2-01: the old preimage joined stringified fields with `\|`, so `purpose="alpha\|beta"` / `subject="gamma"` and `purpose="alpha"` / `subject="beta\|gamma"` hashed identically. Those are user-controlled strings — reachable **by typing** — and the consequence is paid generation of a plan nobody approved | Yes | `tests/test_plan_approval.py` | **High** |
 | D2-2 | `load_plan` detects drift in **one place**, drops the stale approval, records it, and **persists** the transition once | The file going on asserting an approval that no longer exists | S2-02: the invalidation happened in memory only, so anything not reading through `load_plan` saw a false approval, and the history was rebuilt on every read | Yes | `tests/test_plan_approval.py` | **High** |
+| D2-7 | Only a plan already in `locked` / `compiling` / `compiled` may be given a **derived** approval signature during migration (`director.py:618`) | A draft being handed manufactured approval provenance | Drop the status qualification and an ordinary draft gets `approved_signature = plan_signature(plan)` and `approved_by = "migrated:pre-signature-lock"` — a record that a human approved it, invented by a migration. It is **persisted**, not in-memory: the same `changed` flag drives `save_plan`, so every draft on disk acquires the false provenance on its first read after deploy. No paid dispatch follows, because the compile route refuses on `status == "draft"` — a *different* guard | Yes, on every draft load; the first read after deploy is when it would happen | `tests/test_plan_approval.py` migration cases | Medium |
 | D2-3 | `_NON_MATERIAL_*_FIELDS` completeness: a test asserts the material and non-material sets account for the whole dataclass | A field added to `DirectorShot`/`CoveragePlan` silently falling outside the signature | Approval drift again, arriving through a future change rather than a present bug. This is a meta-guard and the most durable of the three | Yes | `tests/test_plan_approval.py` | Medium |
 | D2-4 | `save_plan` is atomic | A torn plan file | A lost plan, not a stale one — irreversible, but the atomic primitive underneath it *is* exercised by `tests/test_atomic_reads.py` and by every ledger write the covered harnesses drive | Yes | `tests/test_atomic_reads.py` | Medium |
 | D2-5 | `atomic.py`: unique temp name per writer, per-destination lock, bounded replace retry | Two writers to one beat colliding on a shared temp name | The unique temp name matters on Linux. The **replace retry** is workstation-only: it exists for a Windows `os.replace` denial that cannot occur on Cloud Run | Partly — the temp name yes, the retry no | `tests/test_atomic_reads.py` | Medium / Low (retry) |
 | D2-6 | `read_json` takes the same per-destination lock as the writer (`99a883b`) | A reader denied by a concurrent replace, reporting a present record as unreadable | **Workstation-only.** The commit says so and fixed it anyway, because a permanently red suite trains people to ignore red. Recorded as Low by policy; do not spend a round on it | No | `tests/test_atomic_reads.py` | Low |
+
+**D2-7 is deferred, and the reason it is only Medium is also the reason to keep
+an eye on it.** What stops a fabricated signature becoming spend is not this
+guard — it is the draft-status check on the compile route. So the two are doing
+different jobs and only one of them is load-bearing today: the harm here is a
+durable false answer to "who approved this, and when", not a clip nobody
+authorised. That keeps it out of the round's money-or-unapproved-work bar.
+
+It is one refactor from moving, though, and the shape is familiar from this very
+document: any consumer that starts keying on `approved_signature` being present
+rather than on `status` would believe the manufactured one. Recording it as
+Medium is a statement about today's call sites, not about the guard.
+
+Found by the second reviewer pass, after the first reported no further slice 0–4
+omissions — see the completeness note at the end of this document, which is now
+carrying two worked examples rather than one.
 
 **D2-1 and D2-2 meet the round's own in-scope criterion** — their failure admits
 unapproved work and costs money — and are not in the enumerated five. They were
@@ -361,3 +378,28 @@ So the check that matters is not "is each rating right". It is:
 Note the trap in step 1, because it is what hid Pass A: `b1e466e` carries slices
 0 *and* 1 *and* two audit passes. Reading it as "the slice 0/1 commit" is how
 four closed defects in the same diff go uncounted.
+
+### What this document's completeness actually rests on
+
+One hand walk, done once, by the author, after the omission above was found.
+That is worth saying plainly rather than leaving a reader to assume more:
+
+> The Pass A omission is evidence the first pass missed something. It is not
+> evidence the second pass did not.
+
+That has now been demonstrated twice, in both directions. This document's author
+missed Audit Pass A entirely and found it only by re-walking the commits. An
+adversarial review pass then read the corrected document and reported that no
+further slice 0–4 omission existed — and when told plainly that it had missed
+Pass A and asked to sample again treating that as information rather than as
+something to defend, it found **D2-7** on the next pass. Two independent readers,
+two misses, two finds; neither pass subsumed the other and neither was complete
+on its first attempt.
+
+Nothing here has been independently re-walked. The durable part of this section
+is the *procedure*, not its result — a second reader following the three steps
+above, against the commit list rather than against this document, is the only
+thing that would raise the confidence. Until then, treat "every other safeguard"
+as "every one this walk found", and if you are that second reader, add your name
+and what you found — including nothing — so the next one knows whether the claim
+has been tested or merely repeated.
