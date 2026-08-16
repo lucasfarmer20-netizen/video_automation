@@ -61,6 +61,13 @@ class Harness:
 HARNESSES = [
     Harness("gate1", "mutate_gate1", "python",
             "Gate 1: gate_cleared() and the four doors that consult it"),
+    Harness("paid_path", "mutate_paid_path", "python",
+            "the paid path: begin()'s dispositions, the dispatch boundary, "
+            "terminal facts, which tier a beat lands in"),
+    Harness("isolation", "mutate_isolation", "python",
+            "the three irreversible outcomes: a manifest overwritten by another "
+            "film, an unknown project served the active one, a project deleted "
+            "after a short copy"),
     Harness("slice7", "mutate_slice7", "python",
             "§11.7 export equivalence, §9.1 no-overwrite, §9.2 append-only history"),
     Harness("slice8_spend", "mutate_slice8_spend", "python",

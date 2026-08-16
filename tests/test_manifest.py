@@ -599,6 +599,36 @@ def test_falling_back_from_an_unrecognised_motion_type_says_so(capsys):
     assert "claymation" in out and "s001" in out and "parallax" in out, out
 
 
+def test_an_unrecognised_motion_type_never_lands_in_the_paid_tier():
+    """The tier, not the sentence.
+
+    The log line the test above asserts on contains the word "parallax" as a
+    LITERAL in the f-string, one statement before the assignment that actually
+    chooses the tier. So a fallback rewritten to AI_VIDEO goes on printing
+    "falling back to parallax" while putting the beat in Tier C, and every test
+    that reads the message passes. Found by mutation; this is the assertion that
+    catches it.
+
+    Tier B costs nothing and Tier C costs money, which is the whole reason the
+    fallback direction is not arbitrary."""
+    back = Storyboard.from_dict("p", {}, [{"scene_id": "s001",
+                                           "motion_type": "claymation"}])
+    assert back.shots[0].needs_paid_video() is False
+    assert back.shots[0].motion_type is MotionType.PARALLAX
+    assert back.paid_shots() == []
+
+
+def test_a_bare_shot_is_not_a_paid_shot():
+    """The dataclass default, asked directly.
+
+    from_dict always sets a tier, so every test that goes through it is blind to
+    the field default -- and the script stage builds Shots in code, before
+    anyone has chosen anything. If the default were AI_VIDEO, a fresh storyboard
+    would arrive at the budget gate with every beat already in Tier C."""
+    assert Shot(scene_id="s001").needs_paid_video() is False
+    assert Shot(scene_id="s001").motion_type is MotionType.PARALLAX
+
+
 @pytest.mark.parametrize("motion_type", ["static", "parallax", "ai_video"])
 def test_a_recognised_motion_type_is_still_read_as_itself(motion_type):
     """The fallback must not eat the values it exists to protect. A guard that

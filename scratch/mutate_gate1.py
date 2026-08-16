@@ -206,6 +206,20 @@ M.save_current_project = lambda _sb: None
 M.get_active_manifest_path = lambda: str(MF)
 M.config.require_for = lambda *a, **k: None
 
+# Everything downstream of the gate is redirected into tmp and stubbed. Not
+# tidiness: without this the route stops at "Missing starting still image
+# draft" BEFORE it reaches fal, so a mutation that removed the gate would show
+# the still being bought and nothing else -- half the spend, reported as though
+# that were the whole of it.
+still = root / "assets" / "s001" / "var_a.png"
+still.write_bytes(b"\\x89PNG")
+render_dir = root / "render"
+M.config.episode_paths = lambda title: {"render": render_dir, "root": root,
+                                        "narration": root, "sfx": root}
+M.config.assets_dir = lambda: root / "assets"
+M._resolve_local_image_file = lambda rel, scene_id=None: still
+M.assets._download = lambda url, dest: Path(dest).write_bytes(b"CLIP")
+
 drafts = []
 def fake_drafts(shot_, n=3, backend="", render=None, **kw):
     # $0.15 an image. Recorded, never called out.
@@ -221,10 +235,26 @@ r = client.post("/api/shot/s001/generate_video", json={})
 print("PROBE_ROUTE_STATUS=%d" % r.status_code)
 print("PROBE_ROUTE_SAYS_APPROVE_FIRST="
       + ("true" if "Approve the storyboard first" in r.text else "false"))
-# The two spends this route makes, in the order it makes them.
+# The two spends this route makes, in the order it makes them. The still is
+# bought on the way down to the video call, which is why the gate has to sit
+# above both rather than merely above fal.
 print("PROBE_ROUTE_BOUGHT_A_STILL=" + ("true" if drafts else "false"))
 print("PROBE_ROUTE_CALLED_FAL=" + ("true" if FAL.calls else "false"))
 print("PROBE_ROUTE_FAL_CALLS=" + json.dumps(FAL.calls))
+
+# The other direction, measured on the same route: an APPROVED storyboard must
+# get through. Without this leg PROBE_ROUTE_STATUS=400 is the pristine reading
+# too, so it cannot be the signature for a gate that refuses everything -- the
+# first version of this harness declared exactly that and the run caught it.
+sb.storyboard_approved = True
+drafts.clear()
+del FAL.calls[:]
+approved = client.post("/api/shot/s001/generate_video", json={})
+print("PROBE_ROUTE_APPROVED_STATUS=%d" % approved.status_code)
+print("PROBE_ROUTE_APPROVED_REFUSED="
+      + ("true" if "Approve the storyboard first" in approved.text else "false"))
+print("PROBE_ROUTE_APPROVED_REACHED_FAL="
+      + ("true" if FAL.calls else "false"))
 '''
 
 # Director coverage: the second route to Tier C, gated separately in
@@ -294,6 +324,29 @@ print("PROBE_DIRECTOR_SAYS_NOT_APPROVED="
 print("PROBE_DIRECTOR_PAID_CALLS=%d" % len(bought))
 print("PROBE_DIRECTOR_BOUGHT_UNAPPROVED="
       + ("true" if bought else "false"))
+
+# The free-tier leg. Static and parallax cost nothing and drafts are explicitly
+# a pre-gate activity, so an unapproved beat must still assemble locally -- that
+# review is what produces the approval. Without this leg
+# PROBE_DIRECTOR_SAYS_NOT_APPROVED=true is the pristine reading too, and so
+# cannot be the signature for a gate that has stopped distinguishing tiers.
+plan2 = director.load_plan("s901")
+plan2.coverage[0].motion_type = "parallax"
+plan2.status = "locked"
+director.approve(plan2)
+director.save_plan(plan2)
+free_refusal = ""
+try:
+    director.compile_coverage(director.load_plan("s901"), sb, render_dir,
+                              log=lambda m: None, skip_existing=False)
+    free_outcome = "compiled"
+except Exception as exc:
+    free_outcome = "raised:" + type(exc).__name__
+    free_refusal = str(exc)
+
+print("PROBE_DIRECTOR_FREE_OUTCOME=" + free_outcome)
+print("PROBE_DIRECTOR_FREE_SAYS_NOT_APPROVED="
+      + ("true" if "not approved" in free_refusal else "false"))
 
 for stray in STRAY:
     if stray.is_file():
@@ -458,7 +511,12 @@ MUTATIONS = [
         expect=["test_gate_shut_when_any_paid_shot_is_unapproved",
                 "test_gate_shut_when_any_one_of_several_paid_shots_has_no_video_model"],
         proves=["assert sb.gate_cleared() is False"],
-        not_proves=["assert _siblings_are_ready(paid, broken_at)"],
+        # No not_proves here, unlike every prefix mutation below, and the reason
+        # is worth recording because the first run of this harness reported it as
+        # a fault. `_siblings_are_ready` DOES also fail under `any`, legitimately:
+        # for the single-paid-beat cases the sibling list is empty, and `any([])`
+        # is False where `all([])` is True. That is a real second consequence of
+        # swapping the quantifier, not a cheaper assertion masking the first.
     ),
 
     # ---- the predicate: a prefix of the list -----------------------------------
@@ -570,7 +628,8 @@ MUTATIONS = [
           '            detail=f"Approve the storyboard first — that is where the {what} "\n'
           '                   f"budget is allocated.",\n'
           "        )")],
-        probes=[("route", "PROBE_ROUTE_STATUS=400")],
+        probes=[("route", "PROBE_ROUTE_APPROVED_REFUSED=true"),
+                ("route", "PROBE_ROUTE_APPROVED_REACHED_FAL=false")],
         expect=["test_paid_video_route_refuses_an_unapproved_storyboard"],
     ),
 
@@ -604,7 +663,7 @@ MUTATIONS = [
         "impossible to assemble for the review that produces the approval",
         [(DIRECTOR, DIRECTOR_SELECTS_PAID,
           "    paid = [s.id for s in plan.coverage]  # MUTANT")],
-        probes=[("director", "PROBE_DIRECTOR_SAYS_NOT_APPROVED=true")],
+        probes=[("director", "PROBE_DIRECTOR_FREE_SAYS_NOT_APPROVED=true")],
         expect=["test_free_coverage_compiles_before_approval"],
     ),
 
@@ -714,9 +773,31 @@ def _read(path: Path) -> str:
         return fh.read()
 
 
+def _purge_pycache(path: Path) -> None:
+    """Drop any cached bytecode for ``path``.
+
+    CPython invalidates a ``.pyc`` on (mtime, size) of the source, at one-second
+    mtime resolution. Two mutations of one file whose replacements happen to be
+    the same length, applied within the same second, let the second run import
+    the first one's bytecode — a result reported with total confidence about
+    code that never executed. Found in ``mutate_paid_path.py --discover``; see
+    the longer note there. The five prefix mutations below are exactly that
+    shape: ``self.shots[:1]`` through ``self.shots[:5]`` differ by one digit and
+    nothing else.
+    """
+    cache = path.parent / "__pycache__"
+    if cache.is_dir():
+        for pyc in cache.glob(f"{path.stem}.*.pyc"):
+            try:
+                pyc.unlink()
+            except OSError:
+                pass
+
+
 def _write(path: Path, text: str) -> None:
     with open(path, "w", encoding="utf-8", newline="") as fh:
         fh.write(text)
+    _purge_pycache(path)
 
 
 def apply(path: Path, find: str, replace: str) -> None:
