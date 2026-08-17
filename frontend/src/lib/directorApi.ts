@@ -71,6 +71,66 @@ export async function fetchDirectorProfiles(): Promise<DirectorProfilesResponse>
 }
 
 /**
+ * Every key a plan arrives with, and what this mapper does with it.
+ *
+ * `GET /api/director/scene` serialises `director.CoveragePlan` with `asdict`, so
+ * the keys below ARE that dataclass. The mapper does not spread them: it builds
+ * a flat `DirectorCoveragePlan` field by field, because the wire shape is a
+ * `{beats: [{plan, beat_duration, coverage_total}]}` envelope and several fields
+ * are answered by the scene summary rather than by the plan (see `estimated_cost`
+ * below, where the difference is a price the human is asked to agree to).
+ *
+ * That normalisation is legitimate. A hand-written copy that must be edited
+ * every time the server grows a field is not — it loses fields silently, and it
+ * already did: `warning_dispositions` was written, persisted and returned by the
+ * backend, and dropped here, so six findings a human had resolved came back on
+ * every scene switch. The write had been fixed; the read still threw it away.
+ *
+ * So the two records below are the mapper's account of the whole dataclass, in
+ * the same discipline as `_MATERIAL_SHOT_FIELDS` / `_NON_MATERIAL_SHOT_FIELDS`
+ * in `backend/director.py`: dropping a field is a decision on the record, never
+ * an omission. `tests/test_director_scene_mapping.py` compares both records
+ * against `CoveragePlan`'s real fields and fails when the server grows a key
+ * that appears in neither — which is the only place that can see both sides.
+ * `directorApi.dispositions.test.ts` then checks that everything CARRIED
+ * actually arrives, so a name here cannot stand in for a line of code.
+ */
+export const PLAN_FIELDS_CARRIED: Record<string, string> = {
+  beat_duration: "beat_duration",
+  version: "version",
+  plan_id: "plan_id",
+  scene_beats: "scene_beats",
+  status: "status",
+  profile: "profile",
+  created_by: "created_by",
+  coverage: "coverage",
+  warnings: "warnings",
+  warning_dispositions: "warning_dispositions",
+  approved_signature: "approved_signature",
+  visual_strategy: "visual_strategy",
+  blocking: "blocking",
+};
+
+/** Plan keys deliberately not carried, each with the reason it is not needed. */
+export const PLAN_FIELDS_DROPPED: Record<string, string> = {
+  beat_id:
+    "names ONE beat; `scene_id` here is the whole set that was asked for, and a " +
+    "scene of s001,s002 must not be labelled s001",
+  beat_signature:
+    "the baseline the SERVER compares a beat against; it answers staleness itself " +
+    "on the compile refusal (`stale`), and a client comparison would be a second " +
+    "opinion about a decision that is not the client's",
+  approved_at: "approval metadata; nothing on screen states when, only what",
+  approved_by: "approval metadata; single-tenant studio, nothing renders a name",
+  approval_history: "audit record of superseded signatures; no screen reads it",
+  compiled:
+    "produced state {beat_clip, runtime, shots, sub_clips}. The compile flow " +
+    "asserts on `status` (§11.4: the saved plan is the claim, not the job), and " +
+    "the review panels play `shot.clip` per shot — nothing today reads the beat " +
+    "clip. Carrying it would put state on screen that no consumer reads",
+};
+
+/**
  * GET /api/director/scene?beats=s004,s005,s006
  * Read model for a scene or set of beats (unauthenticated reads)
  */
@@ -117,6 +177,24 @@ export async function fetchCoveragePlan(
         version: plan.version,
         coverage: plan.coverage || [],
         warnings: plan.warnings || [],
+        // The human's decisions about those findings, which is what makes the
+        // list above readable. Without this the plan came back carrying six
+        // findings and no record that any of them had been decided, so every
+        // refetch — and a scene switch is always a refetch — re-raised findings
+        // the human had already resolved and locked the scene on.
+        //
+        // `decideDirectorWarning`'s comment describes exactly this defect one
+        // layer up: "resolve" used to filter the warning out of React state and
+        // nothing else, so a refresh brought it back. The write was made durable
+        // and the READ still discarded it, which is the same defect surviving
+        // its own fix. The direction of the error is the safe one — more
+        // findings than exist, never fewer — but a screen that forgets a review
+        // is not one a human can be asked to trust when it says a plan is clean.
+        //
+        // Defaulted to {} rather than left undefined: every reader treats "no
+        // entry" as undecided (contract §5.4), and an absent map and an empty
+        // one must mean the same thing to them.
+        warning_dispositions: plan.warning_dispositions || {},
         // The identity of the plan the human approved, carried through so a
         // later compile can name WHICH plan it was quoted for. §11.5 keeps this
         // honest: a plan that mutates after approval loses the approval in
