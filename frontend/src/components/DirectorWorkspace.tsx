@@ -89,6 +89,7 @@ const QUICK_SHORTCUTS = [
  * and the kind only decides the framing around it.
  */
 type CompileProblemKind =
+  | "unsigned"
   | "quote_changed"
   | "draft"
   | "approval_drifted"
@@ -114,6 +115,10 @@ type CompileProblem = { kind: CompileProblemKind; message: string };
  */
 function classifyCompileRefusal(err: CompileRefusal | undefined): CompileProblem {
   const message = err?.message || "The compile request failed before it started.";
+  // Kept apart from `quote_changed` on purpose: "you did not say what you agreed
+  // to" is different advice from "what you agreed to has changed", and the
+  // second sends someone off to re-approve a plan that is fine.
+  if (err?.signatureMissing) return { kind: "unsigned", message };
   if (err?.signatureMismatch) return { kind: "quote_changed", message };
   if (err?.approvalDrifted === true) return { kind: "approval_drifted", message };
   if (err?.approvalDrifted === false) return { kind: "draft", message };
@@ -138,6 +143,7 @@ type CritiqueOutcome =
 
 /** Refusals the server raises before `start_job`, so nothing was bought. */
 const SPENT_NOTHING: CompileProblemKind[] = [
+  "unsigned",
   "quote_changed",
   "draft",
   "approval_drifted",

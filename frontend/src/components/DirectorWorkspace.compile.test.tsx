@@ -453,6 +453,32 @@ describe("the refusals reach the screen as themselves", () => {
     expect(problem.getAttribute("data-kind")).toBe("missing");
   });
 
+  test("the request named no plan — told apart from a quote that went stale", async () => {
+    mockCompile.mockRejectedValue(
+      refusal(
+        400,
+        "this compile did not say which plan it was approving, so nothing was compiled and nothing was charged. s001 is locked; re-open it, confirm the cost, and send that plan's signature with the request.",
+        { signatureMissing: true }
+      )
+    );
+
+    await compileIt();
+
+    const problem = screen.getByTestId("compile-problem");
+    expect(problem.textContent).toContain(
+      "this compile did not say which plan it was approving, so nothing was compiled and nothing was charged. s001 is locked; re-open it, confirm the cost, and send that plan's signature with the request."
+    );
+    expect(problem.getAttribute("data-kind")).toBe("unsigned");
+    // NOT quote_changed: nothing has changed, and telling them it has would
+    // send them off to re-approve a plan that is fine. Also not the generic
+    // `failed` its 400 status would otherwise earn it.
+    expect(problem.textContent).not.toContain("changed after you were quoted");
+    expect(problem.textContent).toContain("nothing was charged");
+    // A refusal, so nothing was retried and no new quote was fetched.
+    expect(mockCompile).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("compile-done")).toBeNull();
+  });
+
   test("the plan changed after the quote — consent, checked before anything else", async () => {
     mockCompile.mockRejectedValue(
       refusal(

@@ -447,6 +447,8 @@ export type CompileRefusal = Error & {
   warnings?: DirectorWarning[];
   /** Present when the plan changed after the human was quoted a price. */
   signatureMismatch?: boolean;
+  /** Present when the request never said which plan it was approving. */
+  signatureMissing?: boolean;
   /** The plan that is there NOW, so the caller can re-quote from it. */
   planSignature?: string;
 };
@@ -466,6 +468,7 @@ type CompileReply = {
   stale?: Record<string, unknown>;
   warnings?: DirectorWarning[];
   signature_mismatch?: boolean;
+  signature_missing?: boolean;
   quoted_signature?: string;
   plan_signature?: string;
 };
@@ -489,8 +492,13 @@ type CompileReply = {
  * whatever `load_plan(beat_id)` returned at the moment it ran — so a plan
  * replaced and re-locked in another tab between the gate opening and the human
  * confirming compiled at the newer price on consent given for the older one.
- * Sending it is not a courtesy: the route cannot honour a quote it was never
- * told about, and refetching before posting would only narrow the window.
+ * It is REQUIRED, and the route refuses without it. It was optional for one
+ * round and optional meant unenforced: `if plan_signature and ...` skipped the
+ * comparison for an omitted or empty value, so an unsigned request dispatched
+ * whatever plan was on disk. A caller that does not say what it agreed to has
+ * not agreed to anything. The parameter is still omitted from the URL when
+ * there is nothing to send, because "sent nothing" and "sent an empty string"
+ * are the same refusal and a request log should show which one happened.
  */
 export async function compileCoverage(
   beatId: string,
@@ -518,6 +526,7 @@ export async function compileCoverage(
     if (data.stale) err.stale = data.stale;
     if (data.warnings) err.warnings = data.warnings;
     if (data.signature_mismatch) err.signatureMismatch = true;
+    if (data.signature_missing) err.signatureMissing = true;
     if (data.plan_signature) err.planSignature = data.plan_signature;
     throw err;
   }

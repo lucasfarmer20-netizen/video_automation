@@ -25,6 +25,7 @@ for _m in ("anthropic", "fal_client", "elevenlabs"):
     sys.modules.setdefault(_m, types.ModuleType(_m))
 
 pytest.importorskip("fastapi.testclient")
+from signed_compile import compile_beat  # noqa: E402
 
 from backend import director  # noqa: E402
 from backend.manifest import Camera, Shot, Storyboard  # noqa: E402
@@ -116,7 +117,7 @@ def test_a_locked_plan_does_compile(studio):
     """The gate has to still let approved work through, or it proves nothing."""
     client, dispatched = studio
     _plan("locked")
-    r = client.post("/api/director/compile/s001")
+    r = compile_beat(client, "s001")
     assert r.status_code == 200
     assert r.json()["started"] is True
     assert dispatched == ["director:s001"]

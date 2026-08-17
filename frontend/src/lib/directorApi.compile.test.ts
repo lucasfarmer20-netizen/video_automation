@@ -180,6 +180,31 @@ describe("the refusals arrive distinguishable, in the server's own words", () =>
     expect(err.planSignature).toBe("ffff0000ffff0000");
   });
 
+  test("a request that named no plan is refused as unsigned, not as a mismatch", async () => {
+    // The route requires plan_signature. It was optional for one round, and
+    // optional meant unenforced: `if plan_signature and ...` skipped the
+    // comparison for an omitted or empty value, so an unsigned request
+    // dispatched whatever was on disk.
+    vi.stubGlobal("fetch", reply(400, {
+      ok: false,
+      error:
+        "this compile did not say which plan it was approving, so nothing was " +
+        "compiled and nothing was charged. s001 is locked; re-open it, confirm " +
+        "the cost, and send that plan's signature with the request.",
+      signature_missing: true,
+    }));
+
+    const err = await caught(() => compileCoverage("s001"));
+
+    expect(err.message).toContain("did not say which plan it was approving");
+    // Its own discriminator. Folded into `signature_mismatch` it would send the
+    // user off to re-approve a plan that has not changed.
+    expect(err.signatureMissing).toBe(true);
+    expect(err.signatureMismatch).toBeUndefined();
+    // And no signature is handed back — there is no quote here to correct.
+    expect(err.planSignature).toBeUndefined();
+  });
+
   test("the catch-all 400 still reports what the backend said broke", async () => {
     vi.stubGlobal("fetch", reply(400, {
       ok: false,

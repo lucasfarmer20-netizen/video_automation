@@ -24,6 +24,7 @@ for _m in ("anthropic", "fal_client", "elevenlabs"):
     sys.modules.setdefault(_m, types.ModuleType(_m))
 
 pytest.importorskip("fastapi.testclient")
+from signed_compile import compile_beat  # noqa: E402
 
 from backend import director  # noqa: E402
 from backend.manifest import Camera, Shot, Storyboard  # noqa: E402
@@ -201,7 +202,7 @@ def test_an_approved_and_unchanged_plan_still_compiles(studio):
     client, dispatched = studio
     _plan("draft")
     assert client.post("/api/director/lock/s001").status_code == 200
-    assert client.post("/api/director/compile/s001").status_code == 200
+    assert compile_beat(client, "s001").status_code == 200
     assert dispatched == ["director:s001"]
 
 
@@ -213,7 +214,7 @@ def test_selecting_a_take_after_approval_does_not_block_the_compile(studio):
     p.coverage[0].chosen_variation = 1
     p.coverage[0].draft_variations = ["a.png", "b.png"]
     director.save_plan(p)
-    assert client.post("/api/director/compile/s001").status_code == 200
+    assert compile_beat(client, "s001").status_code == 200
     assert dispatched == ["director:s001"]
 
 

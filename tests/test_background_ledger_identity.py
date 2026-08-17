@@ -35,6 +35,7 @@ for _m in ("anthropic", "fal_client", "elevenlabs"):
     sys.modules.setdefault(_m, types.ModuleType(_m))
 
 pytest.importorskip("fastapi.testclient")
+from signed_compile import compile_beat  # noqa: E402
 
 from backend import config, director, generation, projects  # noqa: E402
 from backend.manifest import Camera, Shot, Storyboard  # noqa: E402
@@ -145,8 +146,7 @@ def two_projects(tmp_path, monkeypatch):
 
 def _compile_on_a_then_switch_to_b(client, a, b, at_the_gate, proceed):
     """Enqueue against A, move the whole process to B, then let the job run."""
-    r = client.post(f"/api/director/compile/{BEAT}",
-                    headers={"X-Project-Id": a.project_id})
+    r = compile_beat(client, BEAT, headers={"X-Project-Id": a.project_id})
     assert r.status_code == 200, r.text
     assert at_the_gate.wait(timeout=10), "the compile job never started"
 

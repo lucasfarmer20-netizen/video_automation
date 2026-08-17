@@ -34,6 +34,7 @@ Two consequences of that choice are load-bearing:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import threading
@@ -286,6 +287,11 @@ _NON_MATERIAL_PLAN_FIELDS = {
 # signature can never be silently compared against one computed a different way.
 SIGNATURE_VERSION = 2
 
+# The shape plan_signature produces: sha256 hex, truncated to 16. Defined beside
+# the version it belongs to, so a change to the hash has one place to update and
+# signature_is_explicit cannot drift away from what plan_signature emits.
+_SIGNATURE_RE = re.compile(r"[0-9a-f]{16}")
+
 
 def material_plan(plan: "CoveragePlan") -> dict:
     """The plan reduced to what determines its output. The signature preimage.
@@ -329,6 +335,36 @@ def plan_signature(plan: "CoveragePlan") -> str:
     blob = _json.dumps(material_plan(plan), sort_keys=True,
                        separators=(",", ":"), ensure_ascii=False, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def signature_is_explicit(value: object) -> bool:
+    """Is ``value`` a plan signature a caller actually sent? Contract §5.4.
+
+    Sixteen lowercase hex characters, and nothing else -- the exact shape
+    :func:`plan_signature` produces. Not truthiness. Truthiness is the defect
+    this replaces, and it is the same defect
+    :func:`backend.manifest.approval_is_explicit` was written for one merge
+    earlier: the compile route read ``if plan_signature and plan_signature !=
+    current``, so an omitted or empty value skipped the comparison entirely and
+    an unsigned request dispatched whatever plan happened to be on disk. There,
+    a truthy string cleared a gate; here, a falsy one did. Both made enforcement
+    conditional on the shape of the input, and both let a caller opt out by
+    supplying nothing.
+
+    A missing signature is not agreement. It is an unanswered question, and the
+    answer to an unanswered question about spending money is no.
+
+    Malformed fails for the same reason ``"true"`` fails over there: a caller
+    that sends something which is not a signature does not know what a signature
+    is, and nothing here can tell what else it got wrong. There is no partial
+    credit -- a value is the identity of a plan a human approved, or it is not.
+
+    The direction of error is not symmetric and that is the whole design. A
+    legitimate caller refused for want of a signature loses one request and is
+    told exactly what to send. An unsigned request accepted buys paid video on
+    a plan nobody agreed to.
+    """
+    return isinstance(value, str) and _SIGNATURE_RE.fullmatch(value) is not None
 
 
 def beat_signature(beat) -> str:

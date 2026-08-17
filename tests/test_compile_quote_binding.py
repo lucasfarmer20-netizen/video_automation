@@ -234,13 +234,20 @@ def test_the_quoted_plan_compiles(studio):
     assert r.json()["started"] is True
 
 
-def test_a_caller_that_quoted_no_price_is_unaffected(studio):
-    """Back-compatibility, stated as a decision rather than left implicit.
+def test_an_unsigned_compile_is_refused(studio):
+    """INVERTED. This test used to assert the opposite, and that was the defect.
 
-    The CLI and the existing suite post without a signature. They quoted no
-    price, so there is no consent to honour and nothing to compare against;
-    inventing a binding for them would refuse work that was never at risk. The
-    lock and staleness gates still apply to them exactly as before.
+    It read `test_a_caller_that_quoted_no_price_is_unaffected`, and it asserted
+    `dispatched_shot_counts == [2]` and a 200 -- a test positively expecting an
+    unsigned request to buy paid video. That is worse than an untested path: it
+    is the suite asserting that the boundary is optional, so closing it would
+    have looked like a regression and been reverted.
+
+    The reasoning it was written on was that a caller which quoted no price has
+    no consent to honour, so there is nothing to compare and nothing at risk.
+    The first half is true and the conclusion is backwards. A caller that never
+    said what it agreed to has not agreed to anything, and `if plan_signature
+    and ...` turned that into an opt-out: omit the parameter, skip the check.
     """
     client, compiles = studio
 
@@ -249,12 +256,31 @@ def test_a_caller_that_quoted_no_price_is_unaffected(studio):
     r = client.post(f"/api/director/compile/{BEAT}")
     _settle()
 
-    assert compiles.dispatched_shot_counts == [2]
-    assert r.status_code == 200, r.text
+    # Dispatch first. Under the old behaviour this is [2] -- and with a plan
+    # swapped underneath, whatever the swap put there.
+    assert compiles.plans == [], (
+        f"{compiles.calls} unsigned compile(s) dispatched with shot counts "
+        f"{compiles.dispatched_shot_counts}; nobody said what they were paying for")
+
+    assert r.status_code == 400, r.text
+    body = r.json()
+    assert body["signature_missing"] is True
+    # Its own message. "you did not say what you agreed to" is different advice
+    # from "what you agreed to has changed", so it must not be folded into the
+    # mismatch refusal.
+    assert "did not say which plan it was approving" in body["error"]
+    assert "nothing was charged" in body["error"]
+    assert "signature_mismatch" not in body
 
 
-def test_an_empty_signature_is_not_treated_as_a_mismatch(studio):
-    """`?plan_signature=` is the same as not sending one, not a wrong answer."""
+def test_an_empty_signature_is_refused_exactly_like_a_missing_one(studio):
+    """INVERTED, and it was the more dangerous of the two.
+
+    `?plan_signature=` looks like a caller that tried. The old test asserted it
+    dispatched, on the reasoning that empty is the same as absent -- which is
+    true, and is precisely why both must be refused rather than both waved
+    through.
+    """
     client, compiles = studio
 
     _plan(2)
@@ -262,8 +288,81 @@ def test_an_empty_signature_is_not_treated_as_a_mismatch(studio):
     r = client.post(f"/api/director/compile/{BEAT}", params={"plan_signature": ""})
     _settle()
 
-    assert compiles.dispatched_shot_counts == [2]
-    assert r.status_code == 200, r.text
+    assert compiles.plans == []
+    assert r.status_code == 400, r.text
+    assert r.json()["signature_missing"] is True
+
+
+def test_a_malformed_signature_is_refused_and_not_reported_as_a_mismatch(studio):
+    """Not a signature at all, so there is nothing to have changed.
+
+    Sixteen lowercase hex or it is not one. A caller sending "yes", or a
+    truncated hash, or a plan_id does not know what a signature is -- the same
+    reasoning `approval_is_explicit` refuses "true" on. Reported as unsigned
+    rather than as a mismatch, because telling this caller their plan changed
+    would send them to re-approve a plan that is fine.
+    """
+    client, compiles = studio
+
+    _plan(2)
+
+    for bogus in ("yes", "ABCDEF0123456789", "ab12cd34", "ab12cd34ef5678901"):
+        compiles.plans.clear()
+        r = client.post(f"/api/director/compile/{BEAT}",
+                        params={"plan_signature": bogus})
+        _settle()
+
+        assert compiles.plans == [], f"{bogus!r} dispatched a compile"
+        assert r.status_code == 400, f"{bogus!r}: {r.text}"
+        body = r.json()
+        assert body["signature_missing"] is True, f"{bogus!r}: {body}"
+        assert "not a plan signature" in body["error"], f"{bogus!r}: {body}"
+
+
+def test_the_unsigned_refusal_does_not_hand_back_the_signature(studio):
+    """Nothing to re-quote here, so nothing is offered.
+
+    The mismatch refusal returns `plan_signature`, because a human at the screen
+    has to be shown what the plan is now. This one has no quote to correct, and
+    echoing the value back to a caller that never asked a human anything reads
+    as an invitation to send it straight back. It is not a secret -- the scene
+    endpoint carries `approved_signature` -- but it is not this route's job to
+    hand out the answer to the question it just refused.
+    """
+    client, compiles = studio
+
+    _plan(2)
+
+    body = client.post(f"/api/director/compile/{BEAT}").json()
+
+    assert compiles.plans == []
+    assert "plan_signature" not in body
+
+
+def test_the_draft_gate_still_answers_first_for_an_unsigned_caller(studio):
+    """Order, and it is the reason the signature check sits last.
+
+    "lock it first" is better advice than "sign your request" for a plan that
+    was never approved -- and a plan that was never approved has no signature to
+    send, so demanding one first would be advice nobody could act on. Nothing
+    dispatches either way, which is what makes the ordering a matter of what the
+    human is told rather than of whether the boundary holds.
+    """
+    client, compiles = studio
+
+    plan = _plan(2)
+    plan.status = "draft"
+    plan.approved_signature = ""
+    director.save_plan(plan)
+
+    r = client.post(f"/api/director/compile/{BEAT}")
+    _settle()
+
+    assert compiles.plans == []
+    body = r.json()
+    assert body.get("approval_drifted") is False, body
+    assert "lock it first" in body["error"]
+    assert "signature_missing" not in body
 
 
 def test_consent_is_checked_before_the_plan_s_own_state(studio):
