@@ -167,6 +167,48 @@ function paidShotsOf(plan: DirectorCoveragePlan): number {
   );
 }
 
+/**
+ * What the server recorded about this beat's compile, in one sentence.
+ *
+ * The compile control's own success message (`compileDone`) reports an EVENT —
+ * "the job you just started finished" — and is correctly gone on the next visit.
+ * The state it left behind is a different claim, and it lived nowhere: the
+ * Director had no account of a finished compile after a refetch, while the
+ * timeline proxy, which reads the project directly, kept showing one. The
+ * missing piece was `CoveragePlan.compiled`, dropped by the read model.
+ *
+ * §11.4 governs the wording. Every number here is one the server wrote; nothing
+ * is derived, and the absent case is stated rather than filled in — a plan that
+ * reads "compiled" with no record says exactly that, because "compiled, 1 shot"
+ * assembled out of the plan's own coverage would be a claim about produced media
+ * made by the thing that did not produce it.
+ *
+ * It is attributed to `beat_id`, never to `scene_id`: a scene read spans several
+ * beats and returns one beat's plan, so this record belongs to that beat alone.
+ */
+function compiledRecordLine(plan: DirectorCoveragePlan): string {
+  const beat = plan.beat_id || plan.scene_id;
+  const record = plan.compiled;
+  if (!record || !record.beat_clip) {
+    return (
+      `${beat} reads "compiled", but the saved plan carries no record of a beat ` +
+      `clip — so there is nothing here that can say what was produced. Check the ` +
+      `job log before compiling again.`
+    );
+  }
+  const facts: string[] = [];
+  if (typeof record.shots === "number") {
+    facts.push(`${record.shots} shot${record.shots === 1 ? "" : "s"}`);
+  }
+  if (typeof record.runtime === "number") {
+    facts.push(`${record.runtime.toFixed(1)}s`);
+  }
+  return (
+    `${beat} is compiled${facts.length > 0 ? `: ${facts.join(", ")}` : ""} — ` +
+    `${record.beat_clip}`
+  );
+}
+
 /** `CoveragePlan.status` in `SceneSummary`'s vocabulary. Nothing is invented:
  *  every plan status has one reading, and there is no default branch to fall
  *  through into. */
@@ -257,6 +299,24 @@ export default function DirectorWorkspace({
     let isMounted = true;
     setLoading(true);
     setError(null);
+    // Everything below reports something that HAPPENED while the human was on
+    // the previous scene: a compile that finished, a refusal, a critic run, the
+    // job's log. None of it is a fact about the scene now being opened, and all
+    // of it used to follow them there — "s001 compiled — open Cinema Scrubber"
+    // sat on top of s002, and was still sitting there on the way back, reading
+    // as though the compile had just finished again.
+    //
+    // What replaces it is `compiled`, read from the plan, which is the durable
+    // half and is per-scene by construction. An event does not persist; the
+    // state it produced does. Confusing the two is what left the Director with
+    // no account of a compile at all once the message was gone.
+    //
+    // `compilingBeat` is deliberately NOT cleared: a compile in flight is a real
+    // job that is still spending, and clearing it would re-enable the button.
+    setCompileDone(null);
+    setCompileProblem(null);
+    setCompileLog("");
+    setCritiqueOutcome(null);
     fetchCoveragePlan(sceneId)
       .then((plan) => {
         if (isMounted) {
@@ -970,7 +1030,22 @@ export default function DirectorWorkspace({
         </div>
       )}
 
-      {/* SECTION 1B: Visual Strategy & Blocking (if present) */}
+      {/* SECTION 1B: the compile the server is holding, which outlives this
+          visit. Read from the plan, so a scene switch re-reads it rather than
+          losing it — see compiledRecordLine. */}
+      {coveragePlan.status === "compiled" && (
+        <div
+          data-testid="compiled-record"
+          className="glass-panel p-3.5 rounded-xl border border-purple-500/40 bg-purple-500/10 flex items-center gap-2.5"
+        >
+          <Film className="w-4 h-4 text-purple-300 shrink-0" />
+          <span className="text-xs font-mono text-purple-100 leading-relaxed break-all">
+            {compiledRecordLine(coveragePlan)}
+          </span>
+        </div>
+      )}
+
+      {/* SECTION 1C: Visual Strategy & Blocking (if present) */}
       {coveragePlan.visual_strategy && (
         <div className="glass-panel p-4 rounded-xl border border-amber-500/30 bg-amber-500/5 flex flex-col gap-1.5">
           <div className="flex items-center gap-2 text-xs font-bold font-mono text-amber-400">

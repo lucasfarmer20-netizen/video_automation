@@ -98,6 +98,30 @@ describe("the human's decisions survive the mapping", () => {
   });
 });
 
+describe("the compile record, and the beat it belongs to", () => {
+  test("a plan that never compiled maps to an empty record, never undefined", async () => {
+    vi.stubGlobal("fetch", sceneReply({ ...WIRE_PLAN, compiled: undefined }));
+
+    const plan = await fetchCoveragePlan("s001");
+
+    // Same rule as the dispositions above: absent and empty must read alike to
+    // the screen, which asks `compiled.beat_clip` before it says anything.
+    expect(plan.compiled).toEqual({});
+  });
+
+  test("beat_id falls back to the envelope's own, never to the requested beats", async () => {
+    // `scene_id` is the set that was asked for; `beat_id` is the one beat this
+    // plan covers. Conflating them attributes one beat's compile record to a
+    // whole scene — see DirectorWorkspace.compiled.test.tsx.
+    vi.stubGlobal("fetch", sceneReply({ ...WIRE_PLAN, beat_id: undefined }));
+
+    const plan = await fetchCoveragePlan("s001,s002");
+
+    expect(plan.beat_id).toBe("s001");
+    expect(plan.scene_id).toBe("s001,s002");
+  });
+});
+
 describe("the mapper's account of the server's plan keys", () => {
   test("every field declared carried actually arrives", async () => {
     vi.stubGlobal("fetch", sceneReply());

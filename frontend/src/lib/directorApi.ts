@@ -96,6 +96,7 @@ export async function fetchDirectorProfiles(): Promise<DirectorProfilesResponse>
  * actually arrives, so a name here cannot stand in for a line of code.
  */
 export const PLAN_FIELDS_CARRIED: Record<string, string> = {
+  beat_id: "beat_id",
   beat_duration: "beat_duration",
   version: "version",
   plan_id: "plan_id",
@@ -106,6 +107,7 @@ export const PLAN_FIELDS_CARRIED: Record<string, string> = {
   coverage: "coverage",
   warnings: "warnings",
   warning_dispositions: "warning_dispositions",
+  compiled: "compiled",
   approved_signature: "approved_signature",
   visual_strategy: "visual_strategy",
   blocking: "blocking",
@@ -113,21 +115,25 @@ export const PLAN_FIELDS_CARRIED: Record<string, string> = {
 
 /** Plan keys deliberately not carried, each with the reason it is not needed. */
 export const PLAN_FIELDS_DROPPED: Record<string, string> = {
-  beat_id:
-    "names ONE beat; `scene_id` here is the whole set that was asked for, and a " +
-    "scene of s001,s002 must not be labelled s001",
   beat_signature:
     "the baseline the SERVER compares a beat against; it answers staleness itself " +
     "on the compile refusal (`stale`), and a client comparison would be a second " +
     "opinion about a decision that is not the client's",
-  approved_at: "approval metadata; nothing on screen states when, only what",
-  approved_by: "approval metadata; single-tenant studio, nothing renders a name",
-  approval_history: "audit record of superseded signatures; no screen reads it",
-  compiled:
-    "produced state {beat_clip, runtime, shots, sub_clips}. The compile flow " +
-    "asserts on `status` (§11.4: the saved plan is the claim, not the job), and " +
-    "the review panels play `shot.clip` per shot — nothing today reads the beat " +
-    "clip. Carrying it would put state on screen that no consumer reads",
+  approved_at:
+    "the approval TIMESTAMP, and it is cleared the moment it would be worth " +
+    "showing: `invalidate_approval` blanks it when a plan drifts, so a drifted " +
+    "plan carries an empty string. The old value survives in approval_history, " +
+    "server-side, which is where an explanation of drift would have to come from",
+  approved_by:
+    "every call site is `approve(plan, beat=beat)`, so this is the constant " +
+    "\"human\" on every plan in a single-tenant studio. Rendering it would be " +
+    "theatre — it names nobody",
+  approval_history:
+    "audit record of superseded signatures. The compile route already reads it " +
+    "SERVER-side and answers `approval_drifted`, which is what tells 'never " +
+    "locked' apart from 'locked, then edited' — the client does not need the " +
+    "record to classify the refusal. Showing the human WHICH approval they lost " +
+    "and when is a real feature, and a feature is not a fix-round change",
 };
 
 /**
@@ -161,6 +167,11 @@ export async function fetchCoveragePlan(
       const plan = firstBeatWithPlan.plan;
       return {
         plan_id: plan.plan_id || `plan_${beatsParam}`,
+        // The beat this plan is FOR, which `scene_id` below is not: that is the
+        // set of beats the read asked for. A two-beat scene returns one beat's
+        // plan, so anything belonging to that beat alone — its compile record
+        // most of all — has to be attributed to it and not to the whole scene.
+        beat_id: plan.beat_id || firstBeatWithPlan.beat_id || "",
         scene_id: beatsParam,
         scene_title: `Scene ${beatsParam}`,
         scene_beats: plan.scene_beats || (Array.isArray(beatIds) ? beatIds : [beatIds]),
@@ -195,6 +206,18 @@ export async function fetchCoveragePlan(
         // entry" as undecided (contract §5.4), and an absent map and an empty
         // one must mean the same thing to them.
         warning_dispositions: plan.warning_dispositions || {},
+        // What the last compile actually produced, as the server recorded it:
+        // the beat clip, its runtime, its shot count. `status` says a compile
+        // happened; this says what came out of it, and it is the only durable
+        // account of that anywhere in the client.
+        //
+        // Dropping it is the second half of the same defect. The Director's
+        // statement that a scene had compiled lived entirely in `compileDone`,
+        // one-shot React state set when the job returned, so leaving the scene
+        // erased the only copy — while the timeline proxy, which reads the
+        // project directly and never comes through here, went on showing it.
+        // The screen was not out of date; it had never been told.
+        compiled: plan.compiled || {},
         // The identity of the plan the human approved, carried through so a
         // later compile can name WHICH plan it was quoted for. §11.5 keeps this
         // honest: a plan that mutates after approval loses the approval in

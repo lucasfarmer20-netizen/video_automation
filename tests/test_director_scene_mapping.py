@@ -107,3 +107,27 @@ def test_the_decisions_a_human_records_are_carried_not_dropped():
         f.name == "warning_dispositions"
         for f in dataclasses.fields(director.CoveragePlan)
     )
+
+
+def test_what_a_compile_produced_is_carried_not_dropped():
+    """The second field the same mapper lost, and the second symptom.
+
+    `compiled` is what `director.compile` writes when a beat clip exists:
+    {beat_clip, runtime, shots, sub_clips}. `status` says a compile happened;
+    only this says what came out of it. Dropped, the Director's account of a
+    finished compile lived entirely in one-shot React state and vanished with
+    the visit — while the assembly view, which reads the project directly,
+    carried on showing it. Classifying it as "dropped with a reason" was true
+    while nothing rendered it, and stopped being true the moment a human noticed
+    the screen had forgotten.
+    """
+    carried = _declared("PLAN_FIELDS_CARRIED")
+
+    assert "compiled" in carried, (
+        "compiled must reach the studio. Without it the Director cannot say what "
+        "a compile produced once the job's own message is gone, and a scene "
+        "switch is enough to lose it."
+    )
+    assert any(
+        f.name == "compiled" for f in dataclasses.fields(director.CoveragePlan)
+    )
