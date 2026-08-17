@@ -42,11 +42,15 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 WS = ROOT / "frontend/src/components/DirectorWorkspace.tsx"
 API = ROOT / "frontend/src/lib/directorApi.ts"
 MATRIX = ROOT / "frontend/src/components/CompactMontageMatrix.tsx"
-GUARD = ROOT / "frontend/src/lib/nofixtures.test.ts"
+# -21's scanner, on main since ceaaab6. This branch had a near-duplicate;
+# keeping two tree scanners that disagree is worse than one that is right, and
+# theirs is right on the point they differed: it strips comments, so the record
+# of what went wrong can stay in the code beside the fix.
+GUARD = ROOT / "frontend/src/lib/noMockData.test.ts"
 
 TARGETS = [
     "src/components/DirectorWorkspace.nomock.test.tsx",
-    "src/lib/nofixtures.test.ts",
+    "src/lib/noMockData.test.ts",
     "src/lib/directorApi.scene.test.ts",
 ]
 
@@ -64,8 +68,8 @@ MUTATIONS = [
        'import { MOCK_SCENES } from "../lib/directorApi";')],
      ["no part of MOCK_SCENES reaches the screen",
       "the row is the loaded plan",
-      "no production module references a fixture",
-      "DirectorWorkspace is not among the breaches"],
+      "no production file imports a fixture except the known, tracked ones",
+      "the montage matrix is not one of them"],
      FIXTURE_TITLE),
     ("F2  quote a cost that is not the server's summary",
      [(WS, "estimated_cost: plan.estimated_cost,", "estimated_cost: 3.82,")],
@@ -90,14 +94,14 @@ MUTATIONS = [
     # outlives its defect silently widens the rule for ever. Both are how this
     # kind of test rots into decoration.
     ("F6  break the source walk, so the scan finds nothing to object to",
-     [(GUARD, "if (!/\\.(ts|tsx)$/.test(entry)) continue;", "if (true) continue;")],
+     [(GUARD, "if (!/\\.tsx?$/.test(entry.name)) continue;", "if (true) continue;")],
      ["the scan is real"], ""),
-    ("F7  exempt a file that is not in breach, and never notice",
-     [(GUARD,
-       '  "app/page.tsx": "worker -21 owns page.tsx — remove this line once it is fixed",',
-       '  "app/page.tsx": "worker -21 owns page.tsx — remove this line once it is fixed",\n'
-       '  "components/DirectorWorkspace.tsx": "stale exemption nobody removed",')],
-     ["every exemption is still in breach"], ""),
+    ("F7  re-exempt a file that is no longer in breach, and never notice",
+     [(GUARD, "const KNOWN_OFFENDERS: Record<string, string> = {};",
+       "const KNOWN_OFFENDERS: Record<string, string> = {\n"
+       '  "components/DirectorWorkspace.tsx": "stale exemption nobody removed",\n'
+       "};")],
+     ["every known offender is real"], ""),
 ]
 
 

@@ -175,8 +175,8 @@ const SUMMARY_STATUS: Record<DirectorCoveragePlan["status"], SceneSummary["statu
 /**
  * This scene, summarised from the server's own numbers.
  *
- * The montage matrix used to be handed the mock-scenes fixture from
- * `directorApi.ts`, whose own comment says it is "for unit testing / UI preview".
+ * The montage matrix used to be handed `MOCK_SCENES` — a fixture in
+ * `directorApi.ts` whose own comment says it is "for unit testing / UI preview".
  * It is a whole invented film: "s004 — The Mountain Takes Its Toll", 11 shots,
  * `estimated_cost: 3.82`. In production the human opened the Director and was
  * shown that fabricated scene, and a fabricated $3.82, while their real locked
@@ -184,10 +184,10 @@ const SUMMARY_STATUS: Record<DirectorCoveragePlan["status"], SceneSummary["statu
  * the REAL shot list (`allShots.slice(0, scene.shots_count)`), so the genuine
  * coverage was truncated to the shape of the mock.
  *
- * The fixture is not named here on purpose: `src/lib/nofixtures.test.ts` scans
- * production sources for the literal name and does not exempt comments, so the
- * rule cannot be talked around in prose. A dumber scanner is a harder one to
- * defeat.
+ * `src/lib/noMockData.test.ts` scans production sources so this cannot return
+ * anywhere. It strips comments first, which is why the fixture can be named
+ * here: the record of what went wrong is worth more than a scanner that is
+ * marginally harder to talk around, and a comment cannot render anything.
  *
  * This is the same rule as the compile gate two sections up, and it would be an
  * odd thing to enforce for one number and not the next one along: a figure the

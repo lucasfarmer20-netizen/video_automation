@@ -32,15 +32,15 @@ const FIXTURE_EXPORTS = ["MOCK_SCENES"];
 /**
  * Production files still importing a fixture, each with its owner.
  *
- * `DirectorWorkspace.tsx` is being fixed in a separate session (-22) and is not
- * this PR's to touch; it is recorded here rather than excluded silently, so the
- * debt is visible and counted. When that lands, this map must go empty — and
- * the test below fails until it does, which is the point.
+ * Empty, and it got here the way it was supposed to. `DirectorWorkspace.tsx`
+ * was listed while session -22 fixed `CompactMontageMatrix` separately; the
+ * moment that landed, "every known offender is real" went red and named the
+ * line to delete. The exception could not quietly become permanent, which is
+ * the whole design.
+ *
+ * Anything added here needs an owner and an expectation of when it leaves.
  */
-const KNOWN_OFFENDERS: Record<string, string> = {
-  "components/DirectorWorkspace.tsx":
-    "routed to session -22; renders MOCK_SCENES into CompactMontageMatrix",
-};
+const KNOWN_OFFENDERS: Record<string, string> = {};
 
 /** Every .ts/.tsx under src/ that ships to users (tests and fixtures excluded). */
 function productionFiles(dir: string, acc: string[] = []): string[] {
@@ -93,6 +93,38 @@ describe("fixtures never reach a production screen", () => {
     // fails this; so does a known offender being fixed without tightening the
     // list, which is what keeps the exception from becoming permanent.
     expect(offenders()).toEqual(Object.keys(KNOWN_OFFENDERS).sort());
+  });
+
+  test("the scan is real — it walks the tree and can see a fixture where one is", () => {
+    // Added when KNOWN_OFFENDERS went empty, because that is when this scan
+    // acquired a way to pass while doing nothing: `offenders()` equals `[]` just
+    // as convincingly when the walker is broken — a bad root, an over-eager
+    // filter, a rename — as when the tree is genuinely clean. While the list had
+    // an entry in it, a dead walker could not have produced a match; now it can.
+    const files = productionFiles(SRC).map(rel);
+    expect(files).toContain("components/DirectorWorkspace.tsx");
+    expect(files).toContain("app/page.tsx");
+    expect(files).toContain("lib/directorApi.ts");
+    expect(files.length).toBeGreaterThan(10);
+
+    // And the matcher itself still recognises a fixture: the defining module is
+    // excluded from `offenders()` by path, not because nothing matches in it.
+    const defining = codeOnly(fs.readFileSync(path.join(SRC, "lib/directorApi.ts"), "utf8"));
+    FIXTURE_EXPORTS.forEach((name) =>
+      expect(defining).toMatch(new RegExp(`\\b${name}\\b`))
+    );
+  });
+
+  test("the montage matrix is not one of them", () => {
+    // The Director's own render site, and the second of the two. Named
+    // separately from the scan for the same reason `page.tsx` is: a regression
+    // here should read as itself rather than as a list mismatch.
+    const workspace = codeOnly(
+      fs.readFileSync(path.join(SRC, "components/DirectorWorkspace.tsx"), "utf8")
+    );
+    FIXTURE_EXPORTS.forEach((name) =>
+      expect(workspace).not.toMatch(new RegExp(`\\b${name}\\b`))
+    );
   });
 
   test("the film coverage overview is not one of them", () => {
