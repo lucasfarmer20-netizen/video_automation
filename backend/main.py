@@ -467,7 +467,12 @@ def save_current_project(sb: Storyboard):
     manifest.save(sb)
 
 
-DRAFT_IMAGE_COST = 0.15   # nano2 / Gemini 3 Pro Image, ~$0.15 per 2K image
+# nano2 / Gemini 3 Pro Image, ~$0.15 per 2K image. An alias, not a second copy:
+# this is what the ledger is CHARGED and capabilities.COST_PER_IMAGE is what the
+# Director QUOTES, and a duplicated literal is precisely how the paid video tier
+# came to quote $0.40 for a clip it recorded at $0.60. COST_PER_IMAGE is
+# env-overridable, so the two also had to be able to drift apart by config.
+DRAFT_IMAGE_COST = capabilities.COST_PER_IMAGE
 
 
 def record_paid_drafts(shot: Shot, backend: str, generate) -> None:
@@ -2540,11 +2545,15 @@ async def patch_director_shot(shot_id: str, request: Request):
 
             Price and model both depend on length, so a duration edit invalidates
             them exactly as a tier edit does. Only the tier branch re-ran this, so
-            dragging a shot from 4s to 10s left it priced and routed for 4s -- an
-            ai_video shot stayed on wan_2_7 at $0.39 when the router's real answer
-            was kling_2_1_standard at $0.65. That is a 66% under-report on the
-            screen where the human allocates the Gate-1 budget. The rebalance
-            spreads the same staleness onto siblings nobody touched.
+            dragging a shot from 4s to 10s left it priced and routed for 4s -- the
+            shot stayed on the model and the price its old length had chosen,
+            under-reporting on the very screen where the human allocates the
+            Gate-1 budget. The rebalance spreads the same staleness onto siblings
+            nobody touched.
+
+            Prices through director.quote_shot rather than assembling the figure
+            here. A third hand-rolled sum of "an image plus the router's number"
+            is how the quote and the ledger drifted apart in the first place.
 
             strict=False for siblings: a sibling that becomes unproducible is a
             note, not a 400, because the user did not ask to change it and
@@ -2552,7 +2561,7 @@ async def patch_director_shot(shot_id: str, request: Request):
             """
             if target_ds.motion_type != "ai_video":
                 target_ds.backend = ""
-                target_ds.estimated_cost = capabilities.COST_PER_IMAGE
+                target_ds.estimated_cost = director.quote_shot(target_ds)
                 return None
             routed = capabilities.resolve({"duration": target_ds.duration,
                                            "gestural": target_ds.gestural})
@@ -2566,7 +2575,7 @@ async def patch_director_shot(shot_id: str, request: Request):
                 # and director.validate does not check routability, so the plan
                 # locked clean and only failed at compile, after approval.
                 target_ds.backend = ""
-                target_ds.estimated_cost = capabilities.COST_PER_IMAGE
+                target_ds.estimated_cost = director.quote_shot(target_ds)
                 if "no_legal_backend" not in target_ds.constrained_by:
                     target_ds.constrained_by.append("no_legal_backend")
                 notes.append(f"{target_ds.id}: now {target_ds.duration:.2f}s, which "
@@ -2574,8 +2583,7 @@ async def patch_director_shot(shot_id: str, request: Request):
                              f"to a free tier before locking")
                 return None
             target_ds.backend = routed["backend"]
-            target_ds.estimated_cost = round(capabilities.COST_PER_IMAGE
-                                             + float(routed.get("estimated_cost") or 0), 3)
+            target_ds.estimated_cost = director.quote_shot(target_ds)
             for c in routed.get("constraints") or []:
                 if c not in target_ds.constrained_by:
                     target_ds.constrained_by.append(c)

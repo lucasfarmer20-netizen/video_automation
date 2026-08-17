@@ -569,7 +569,6 @@ def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = No
             }
             constraints: list[str] = []
             backend = ""
-            est = capabilities.COST_PER_IMAGE
             if mt == "ai_video":
                 r = capabilities.resolve(intent)
                 backend = r.get("backend") or ""
@@ -579,9 +578,7 @@ def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = No
                     # tier rather than emitting a plan that cannot be produced.
                     constraints.append("downgraded_no_legal_model")
                     mt = "parallax"
-                else:
-                    est += float(r.get("estimated_cost") or 0)
-            coverage.append(DirectorShot(
+            shot = DirectorShot(
                 id=f"{bid}.{i:02d}", beat_id=bid,
                 purpose=s.get("purpose", ""), subject=s.get("subject", ""),
                 shot_size=s.get("shot_size", ""), angle=s.get("angle", ""),
@@ -596,8 +593,13 @@ def plan_scene(sb: Storyboard, beat_ids: list[str], profile_key: str | None = No
                 prompt=s.get("prompt", ""), motion_prompt=s.get("motion_prompt", ""),
                 reason=s.get("reason", ""),
                 constrained_by=constraints,
-                estimated_cost=round(est, 3),
-            ))
+            )
+            # Priced only once the shot exists, and by the same function the
+            # compile pays through. Computing it inline here meant the quote knew
+            # nothing about identity_critical, which buys four stills rather than
+            # one -- so those shots were quoted a quarter of their still cost.
+            shot.estimated_cost = director.quote_shot(shot)
+            coverage.append(shot)
 
         plan = CoveragePlan(
             beat_id=bid, beat_duration=seconds, plan_id=raw_plan_id(beat_ids),
@@ -812,10 +814,30 @@ def critique(sb: Storyboard, beat_ids: list[str], log=print) -> list[dict]:
 
 
 def scene_summary(beat_ids: list[str]) -> dict:
-    """Cost and shape of a planned scene, computed from the saved drafts."""
+    """Cost and shape of a planned scene, computed from the saved drafts.
+
+    Two different facts, reported side by side and never summed into each other:
+
+    * ``estimated_cost`` — FORWARD. What producing this coverage is expected to
+      cost, derived from the plan by ``director.quote_shot``.
+    * ``spend`` — BACKWARD. What the generation ledger records as already gone,
+      with the at-risk figure beside it, straight from ``generation.spend``.
+
+    They used to be one number. ``compile_coverage`` added its spend into
+    ``estimated_cost``, so a scene quoted at $1.99 reported $4.69 the moment it
+    finished — on the same ten shots, with nothing about the plan changed, and
+    that was the figure a re-compile would have quoted next. §6.1 asks for "spent
+    so far" and "estimated remaining" as separate rows for exactly this reason.
+
+    Spend is read from the ledger rather than mirrored onto the plan. A second
+    copy of a money figure is how the quote and the charge drifted apart in the
+    first place, and the plan cannot answer the question the ledger can: what may
+    have been billed and nobody recorded.
+    """
     shots = paid = 0
     cost = 0.0
     per_beat = []
+    spends = []
     for bid in beat_ids:
         p = director.load_plan(bid)
         if not p:
@@ -823,8 +845,59 @@ def scene_summary(beat_ids: list[str]) -> dict:
         b_paid = sum(1 for s in p.coverage if s.motion_type == "ai_video")
         b_cost = sum(s.estimated_cost for s in p.coverage)
         shots += len(p.coverage); paid += b_paid; cost += b_cost
+        b_spend = _beat_spend(bid)
+        spends.append(b_spend)
         per_beat.append({"beat_id": bid, "shots": len(p.coverage),
                          "paid_shots": b_paid, "estimated_cost": round(b_cost, 2),
+                         "spend": b_spend,
                          "status": p.status})
     return {"shots": shots, "paid_shots": paid,
-            "estimated_cost": round(cost, 2), "beats": per_beat}
+            "estimated_cost": round(cost, 2), "spend": _total_spend(spends),
+            "beats": per_beat}
+
+
+def _beat_spend(beat_id: str) -> dict:
+    """What one beat's ledger says, or why it cannot say.
+
+    ``generation.spend`` raises rather than guessing when a ledger is present and
+    unreadable, and a scene summary must not turn that into a $0.00 by catching
+    it into a default.
+    """
+    from . import generation
+    try:
+        return generation.spend(beat_id)
+    except Exception as exc:  # noqa: BLE001 — LedgerUnreadable and anything below it
+        return generation.unknown_spend(f"{beat_id}: {exc}")
+
+
+def _total_spend(spends: list[dict]) -> dict:
+    """The scene's spend, in the same shape as one beat's.
+
+    One unreadable beat makes the SCENE total unknown. Summing the readable ones
+    and presenting the result as the total would be a confident number that is
+    short by an unknown amount, which is the shape of every defect in this file's
+    history.
+    """
+    from . import generation
+    blocked = [s for s in spends if s.get("spent") is None]
+    if blocked:
+        return generation.unknown_spend(
+            "; ".join(s.get("summary", "") for s in blocked))
+    spent = round(float(sum(s["spent"] for s in spends)), 4)
+    risk = round(float(sum(s["at_risk"] for s in spends)), 4)
+    at_risk_attempts = sum(s["at_risk_attempts"] for s in spends)
+    summary = f"${spent:.2f} billed"
+    if at_risk_attempts:
+        summary += (f" • ${risk:.2f} at risk on {at_risk_attempts} attempt"
+                    f"{'s' if at_risk_attempts != 1 else ''} whose provider "
+                    f"outcome was never recorded")
+    return {
+        "attempts": sum(s["attempts"] for s in spends),
+        "failed": sum(s["failed"] for s in spends),
+        "paid_attempts": sum(s["paid_attempts"] for s in spends),
+        "spent": spent,
+        "at_risk": risk,
+        "at_risk_attempts": at_risk_attempts,
+        "spend_is_certain": not at_risk_attempts,
+        "summary": summary,
+    }

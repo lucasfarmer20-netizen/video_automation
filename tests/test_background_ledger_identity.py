@@ -202,6 +202,10 @@ def test_the_project_that_paid_is_the_project_that_reports_the_spend(two_project
     with projects.use(a):
         rows_a = generation.for_shot(BEAT, SHOT)
         spend_a = generation.spend(BEAT)
+        # The price the shot was QUOTED at, from the plan in A. Same function the
+        # charge goes through, so "billed what it was quoted" is what this
+        # compares -- not one hardcoded figure against another.
+        billed_for = director.paid_clip_price(director.load_plan(BEAT).coverage[0])
     with projects.use(b):
         rows_b = generation.load_attempts(BEAT)
         spend_b = generation.spend(BEAT)
@@ -210,7 +214,7 @@ def test_the_project_that_paid_is_the_project_that_reports_the_spend(two_project
     # sentence this whole test exists to be able to say.
     assert spend_b["spent"] == 0.0, \
         f"a film was billed ${spend_b['spent']:.2f} for another film's clip"
-    assert spend_a["spent"] == director.PAID_CLIP_COST, \
+    assert spend_a["spent"] == billed_for, \
         f"the paying project reports {spend_a['spent']}, not what it was billed"
     assert spend_b["paid_attempts"] == 0
     assert spend_a["paid_attempts"] == 1

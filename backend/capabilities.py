@@ -151,6 +151,39 @@ VIDEO_CAPS: dict[str, dict] = {
 LOCAL_COST_PER_SECOND = 0.0
 COST_PER_IMAGE = float(os.environ.get("COST_PER_IMAGE", "0.15"))
 
+# --- what one Tier-C generation costs, for the quote AND for the ledger ---------
+#
+# Two numbers used to answer this question and they disagreed. The quote came
+# from ``cost_per_second`` above; the figure written to the generation ledger came
+# from a flat ``PAID_CLIP_COST = 0.60`` living in director.py. On the first real
+# end-to-end compile the human approved "COMPILE & SPEND $1.99" and the ledger
+# then recorded $0.60 for each of the two paid shots, quoted at $0.40 and $0.39 --
+# a ~50% understatement on the paid tier.
+#
+# An overstated quote costs a human an unnecessary hesitation. An understated one
+# takes consent for one amount and spends another, which is the single thing Gate
+# 1 exists to prevent. So the two figures are collapsed into this one function,
+# and every caller on both sides of consent goes through it.
+#
+# It does not pretend to a precision it does not have. fal is the only authority
+# on the real price and it is not known before the call, so this returns the
+# UPPER of the two figures the system holds: the per-second table, and the flat
+# per-clip floor that was observed in practice. A quote may now come out above the
+# bill. It can no longer come out below it.
+PAID_CLIP_FLOOR = float(os.environ.get("PAID_CLIP_FLOOR", "0.60"))
+
+
+def clip_price(key: str, generate_seconds: float) -> float:
+    """Upper bound on one Tier-C generation of ``generate_seconds`` on ``key``.
+
+    ``generate_seconds`` is the length actually requested of the model, not the
+    editorial length of the shot -- a 3.34s shot billed as kling's 5s minimum is
+    billed for five seconds. Callers get that number from
+    :func:`legal_durations` / :func:`resolve`, never from ``Shot.duration``.
+    """
+    table = float(generate_seconds) * float(spec(key)["cost_per_second"])
+    return round(max(table, PAID_CLIP_FLOOR), 3)
+
 
 def spec(key: str) -> dict:
     """Capabilities for a video backend, with permissive defaults.
@@ -316,7 +349,13 @@ def resolve(intent: dict, prefer: list[str] | None = None) -> dict:
     gestural = bool(intent.get("gestural"))
     needs_charref = bool(intent.get("needs_character_reference"))
 
-    candidates = []
+    # Ranking is kept on the raw per-second table figure, while the cost REPORTED
+    # is clip_price's bound. Ranking on the bound would collapse every model whose
+    # table price sits under the floor into one tie and silently change which
+    # model gets chosen -- a pricing fix has no business re-routing shots. The
+    # rank is a parallel value rather than a key on the candidate so that only one
+    # money number ever reaches a caller.
+    candidates: list[tuple[float, dict]] = []
     for key in (prefer or list(VIDEO_CAPS)):
         caps = spec(key)
         if needs_charref and not caps["supports_character_reference"]:
@@ -329,11 +368,11 @@ def resolve(intent: dict, prefer: list[str] | None = None) -> dict:
         # head mid-turn. See director.fit_clip, which refuses that trim.
         if gestural and picked > want + 0.05:
             continue
-        candidates.append({
+        candidates.append((round(picked * caps["cost_per_second"], 3), {
             "backend": key, "label": caps["label"], "generate_seconds": picked,
-            "estimated_cost": round(picked * caps["cost_per_second"], 3),
+            "estimated_cost": clip_price(key, picked),
             "note": note,
-        })
+        }))
 
     if not candidates:
         return {
@@ -343,7 +382,9 @@ def resolve(intent: dict, prefer: list[str] | None = None) -> dict:
                        + (" without trimming a gesture" if gestural else "")),
         }
 
-    best = min(candidates, key=lambda c: (c["estimated_cost"], c["generate_seconds"]))
+    ranked = [c for _, c in sorted(candidates,
+                                   key=lambda t: (t[0], t[1]["generate_seconds"]))]
+    best = ranked[0]
     constraints = []
     if best["note"]:
         constraints.append("duration_quantized")
@@ -355,7 +396,7 @@ def resolve(intent: dict, prefer: list[str] | None = None) -> dict:
         "estimated_cost": best["estimated_cost"],
         "constraints": constraints,
         "reason": best["note"] or f"{best['label']} at {best['generate_seconds']}s",
-        "alternatives": sorted(candidates, key=lambda c: c["estimated_cost"])[1:4],
+        "alternatives": ranked[1:4],
     }
 
 

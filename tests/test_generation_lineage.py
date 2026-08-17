@@ -869,11 +869,19 @@ def test_at_risk_money_is_never_folded_into_the_billed_total(scene):
 
 def test_the_price_is_recorded_before_the_provider_is_called(scene):
     """Without it the at-risk figure is $0.00, which is the original defect
-    wearing a new key. After a crash there is no later moment to record it."""
+    wearing a new key. After a crash there is no later moment to record it.
+
+    Compared against ``paid_clip_price`` -- the function that also produces the
+    quote -- and not against a constant of this module's own. A constant here
+    would agree with a constant there and prove only that two literals match,
+    which is exactly how the quote came to say $0.40 for a clip recorded at
+    $0.60.
+    """
     director, _, sb, render_dir, calls = scene
     _strand(director, sb, render_dir, calls)
     rows = generation.for_shot("s011", "s011.01")
-    assert rows[0].estimated_cost == director.PAID_CLIP_COST
+    ds = director.load_plan("s011").coverage[0]
+    assert rows[0].estimated_cost == director.paid_clip_price(ds)
 
 
 def test_a_running_attempt_is_money_at_risk():
