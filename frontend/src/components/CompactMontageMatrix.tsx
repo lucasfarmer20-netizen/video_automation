@@ -2,6 +2,7 @@
 
 import React from "react";
 import { SceneSummary, DirectorShot } from "../types/director";
+import { isCompiled, shotStill } from "../lib/shotMedia";
 import { Video, Layers, Image as ImageIcon, UserCheck, AlertTriangle } from "lucide-react";
 
 interface CompactMontageMatrixProps {
@@ -97,6 +98,8 @@ export default function CompactMontageMatrix({
                   .map((shot) => {
                     const isAiVideo = shot.motion_type === "ai_video";
                     const isIdentity = shot.identity_critical;
+                    const compiled = isCompiled(shot);
+                    const stillSrc = shotStill(shot);
                     const borderClass = isIdentity
                       ? "border-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]"
                       : isAiVideo
@@ -110,16 +113,46 @@ export default function CompactMontageMatrix({
                           onSelectScene(scene.scene_id);
                           onSelectShot(shot);
                         }}
-                        title={`Shot ${shot.shot_number || shot.id} (${shot.shot_size} · ${shot.camera.duration}s) - ${shot.purpose}`}
+                        data-testid={`matrix-tile-${shot.id}`}
+                        data-compiled={compiled ? "true" : "false"}
+                        title={
+                          `Shot ${shot.shot_number || shot.id} (${shot.shot_size} · ${shot.camera.duration}s) - ${shot.purpose}` +
+                          (compiled ? " — compiled clip" : " — not compiled, draft still")
+                        }
                         className={`group relative w-12 h-8 rounded border overflow-hidden cursor-pointer transition-transform hover:scale-125 hover:z-20 bg-zinc-900 ${borderClass}`}
                       >
-                        {shot.thumbnail_url || shot.clip ? (
+                        {/* `shot.thumbnail_url || shot.clip` into an <img> put an
+                            .mp4 in an image tag whenever a shot had a clip and no
+                            still. An <img> cannot decode it, the onError below hid
+                            the element, and the tile went blank reporting nothing —
+                            which looks like a shot that was never drawn.
+
+                            This is an INDEX, not a player, so the cheap still is
+                            still preferred when one exists: 158 autoloading videos
+                            in a bird's-eye grid is a different kind of broken. But
+                            the still is never the only thing said about the tile —
+                            `data-compiled` and the corner marker below say whether
+                            this shot is the render or the draft, so a still here
+                            never stands in silently for a clip (§11.4). */}
+                        {stillSrc ? (
                           <img
-                            src={mediaUrl(shot.thumbnail_url || shot.clip || "")}
+                            src={mediaUrl(stillSrc)}
                             alt={shot.subject}
                             className="w-full h-full object-cover"
                             onError={(e) => {
                               (e.target as HTMLElement).style.display = "none";
+                            }}
+                          />
+                        ) : compiled ? (
+                          <video
+                            data-testid={`matrix-clip-${shot.id}`}
+                            src={`${mediaUrl(shot.clip || "")}#t=0.1`}
+                            muted
+                            playsInline
+                            preload="metadata"
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.visibility = "hidden";
                             }}
                           />
                         ) : null}
@@ -127,6 +160,14 @@ export default function CompactMontageMatrix({
                         <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/40 text-[9px] font-mono font-bold text-white group-hover:bg-zinc-950/80">
                           {shot.shot_number ? shot.shot_number.split(".")[1] : shot.id.split(".")[1] || "01"}
                         </div>
+
+                        {compiled && (
+                          <span
+                            data-testid={`matrix-compiled-${shot.id}`}
+                            title="compiled clip"
+                            className="absolute bottom-0 right-0 w-0 h-0 border-l-[7px] border-l-transparent border-b-[7px] border-b-emerald-400"
+                          />
+                        )}
                       </div>
                     );
                   })}
