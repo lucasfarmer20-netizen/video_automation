@@ -108,8 +108,22 @@ export interface DirectorTriage {
   needs_review: string[];
 }
 
+/** What `director.compile` recorded when it finished. Produced state, written by
+ *  the server and never by the client — the plan's own account of what a compile
+ *  bought, as opposed to `status`, which only says that one happened. */
+export interface CompiledRecord {
+  beat_clip?: string;
+  runtime?: number;
+  shots?: number;
+  sub_clips?: (string | null)[];
+}
+
 export interface DirectorCoveragePlan {
   plan_id: string;
+  /** The ONE beat this plan covers. `scene_id` is the set of beats the read
+   *  asked for, which is a different fact: a two-beat scene returns one beat's
+   *  plan, and its produced state belongs to that beat alone. */
+  beat_id?: string;
   scene_id: string;
   scene_title: string;
   scene_beats: string[];
@@ -133,6 +147,8 @@ export interface DirectorCoveragePlan {
   /** Durable human decision per warning id. A warning with no entry
    *  here is unresolved and blocks locking (contract 5.4). */
   warning_dispositions?: Record<string, WarningDisposition>;
+  /** The server's record of the last compile. Empty until one finishes. */
+  compiled?: CompiledRecord;
   estimated_cost: number;
   /** Shots that will be bought from a paid video model when this compiles.
    *  Server-counted (`summary.paid_shots`); the compile gate quotes it. */
