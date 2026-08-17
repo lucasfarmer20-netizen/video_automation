@@ -123,7 +123,14 @@ export async function fetchCoveragePlan(
         // `load_plan` and comes back `draft`, so a plan that reads `locked`
         // always carries the signature of the coverage actually on screen.
         approved_signature: plan.approved_signature || "",
-        estimated_cost: data.summary?.estimated_cost || plan.estimated_cost || 0,
+        // `??`, not `||`. A scene of nothing but parallax and static shots costs
+        // 0.00, which is falsy — so `||` skipped the server's own answer and fell
+        // through to the plan's stored `estimated_cost`, a value computed when
+        // the plan was written rather than for the beats being asked about. A
+        // free scene could therefore be quoted at a stale non-zero price in the
+        // compile gate. The summary is the authority when it is present; the
+        // fallbacks apply only when it is absent.
+        estimated_cost: data.summary?.estimated_cost ?? plan.estimated_cost ?? 0,
         // What compiling this scene will BUY, as the server counts it. The
         // summary spans every beat in `beats`, which is exactly the set the
         // compile control sends. Falling back to counting this beat's own

@@ -22,13 +22,23 @@ export default function CompactMontageMatrix({
   mediaUrl,
 }: CompactMontageMatrixProps) {
   return (
-    <div className="w-full glass-panel p-5 rounded-2xl flex flex-col gap-4 border border-zinc-800">
+    <div
+      data-testid="montage-matrix"
+      className="w-full glass-panel p-5 rounded-2xl flex flex-col gap-4 border border-zinc-800"
+    >
       <div className="flex items-center justify-between">
         <div>
           <h3 className="font-bold text-sm text-zinc-100 flex items-center gap-2">
             <span>COMPACT MONTAGE MATRIX</span>
-            <span className="text-xs font-mono font-normal text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
-              158-Shot Bird's-Eye View
+            {/* Counted, not asserted. This read "158-Shot Bird's-Eye View" as a
+                hardcoded string, next to scene rows that were themselves a
+                fixture — so the panel stated a shot count belonging to no film
+                anyone had planned. It says what it is showing now. */}
+            <span
+              data-testid="matrix-shot-count"
+              className="text-xs font-mono font-normal text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30"
+            >
+              {allShots.length}-Shot Bird&apos;s-Eye View
             </span>
           </h3>
           <p className="text-xs text-zinc-400 mt-0.5">

@@ -6,6 +6,7 @@ import {
   DirectorShot,
   DirectorWarning,
   CreativePreferences,
+  SceneSummary,
 } from "../types/director";
 import {
   fetchCoveragePlan,
@@ -27,7 +28,6 @@ import TakeSelectorModal from "./TakeSelectorModal";
 import CinemaScrubberPlayer from "./CinemaScrubberPlayer";
 import CompactMontageMatrix from "./CompactMontageMatrix";
 import CoverageRhythmBeatSheet from "./CoverageRhythmBeatSheet";
-import { MOCK_SCENES } from "../lib/directorApi";
 
 import {
   Clapperboard,
@@ -159,6 +159,57 @@ function paidShotsOf(plan: DirectorCoveragePlan): number {
     plan.paid_shots ??
     plan.coverage.filter((s) => s.motion_type === "ai_video").length
   );
+}
+
+/** `CoveragePlan.status` in `SceneSummary`'s vocabulary. Nothing is invented:
+ *  every plan status has one reading, and there is no default branch to fall
+ *  through into. */
+const SUMMARY_STATUS: Record<DirectorCoveragePlan["status"], SceneSummary["status"]> = {
+  draft: "draft",
+  locked: "locked",
+  compiling: "generating",
+  compiled: "compiled",
+  orphaned: "uncovered",
+};
+
+/**
+ * This scene, summarised from the server's own numbers.
+ *
+ * The montage matrix used to be handed the mock-scenes fixture from
+ * `directorApi.ts`, whose own comment says it is "for unit testing / UI preview".
+ * It is a whole invented film: "s004 — The Mountain Takes Its Toll", 11 shots,
+ * `estimated_cost: 3.82`. In production the human opened the Director and was
+ * shown that fabricated scene, and a fabricated $3.82, while their real locked
+ * plan was not on screen at all. Worse, the fixture's `shots_count` then sliced
+ * the REAL shot list (`allShots.slice(0, scene.shots_count)`), so the genuine
+ * coverage was truncated to the shape of the mock.
+ *
+ * The fixture is not named here on purpose: `src/lib/nofixtures.test.ts` scans
+ * production sources for the literal name and does not exempt comments, so the
+ * rule cannot be talked around in prose. A dumber scanner is a harder one to
+ * defeat.
+ *
+ * This is the same rule as the compile gate two sections up, and it would be an
+ * odd thing to enforce for one number and not the next one along: a figure the
+ * human might act on comes from the server's summary for the project actually
+ * loaded, or it is not rendered. There is deliberately no fallback to the
+ * fixture for missing data — a plan is always present by the time this renders,
+ * and a mock offered as a fallback is exactly how this one survived.
+ *
+ * `estimated_cost` here is `summary.estimated_cost` from `/api/director/scene`,
+ * computed by `planner.scene_summary` over the beats actually requested.
+ */
+function sceneSummaryOf(plan: DirectorCoveragePlan, sceneId: string): SceneSummary {
+  return {
+    scene_id: plan.scene_id || sceneId,
+    title: plan.scene_title || `Scene ${plan.scene_id || sceneId}`,
+    duration: plan.beat_duration ?? plan.total_duration,
+    beats_count: plan.scene_beats?.length || 1,
+    shots_count: plan.coverage.length,
+    estimated_cost: plan.estimated_cost,
+    status: SUMMARY_STATUS[plan.status],
+    warnings_count: plan.warnings.length,
+  };
 }
 
 export default function DirectorWorkspace({
@@ -1246,7 +1297,7 @@ export default function DirectorWorkspace({
           />
         ) : reviewMode === "matrix" ? (
           <CompactMontageMatrix
-            scenes={MOCK_SCENES}
+            scenes={[sceneSummaryOf(coveragePlan, sceneId)]}
             activeSceneId={sceneId}
             allShots={coveragePlan.coverage}
             onSelectScene={() => {}}
