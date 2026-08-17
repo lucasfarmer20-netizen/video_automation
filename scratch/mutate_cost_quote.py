@@ -16,21 +16,67 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TESTS = "tests/test_cost_quote_matches_ledger.py"
+# Both files, deliberately. test_cost_quote_matches_ledger proves the quote and
+# the ledger agree; test_fal_tariff proves the number they agree ON is fal's.
+# Round 3 ran only the first, and a reviewer's mutation -- billing one second
+# regardless of duration -- survived all twelve of its tests, because two figures
+# agreeing is not evidence when nothing anchors either to the authority.
+TESTS = ["tests/test_cost_quote_matches_ledger.py", "tests/test_fal_tariff.py"]
 
 # (label, file, find, replace, what breaking it would mean)
 MUTATIONS = [
+    # --- the price is fal's, not ours (round 4) ---------------------------------
     (
-        "quote drops back to the per-second table (no minimum charge)",
+        "clip_price bills one second regardless of duration",
         "backend/capabilities.py",
-        "    return round(max(table, PAID_CLIP_FLOOR), 3)",
-        "    return round(table, 3)",
-        "the original defect exactly: quoted $0.40, recorded $0.60",
+        "    return round(float(generate_seconds) * float(spec(key)[\"cost_per_second\"]), 4)",
+        "    return round(float(spec(key)[\"cost_per_second\"]), 4)",
+        "THE REVIEWER'S MUTATION. Survived all 12 tests in round 3: quote and "
+        "ledger still agreed, on a number neither had checked against fal",
     ),
+    (
+        "seedance reverts to the 0.10/s that was 3x under fal",
+        "backend/capabilities.py",
+        '        "cost_per_second": 0.3024,\n        "price_basis": "standard tier, 720p',
+        '        "cost_per_second": 0.10,\n        "price_basis": "standard tier, 720p',
+        "the DEFAULT backend quotes a third of what fal bills",
+    ),
+    (
+        "veo reverts to the with-audio rate on a path that sends no audio",
+        "backend/capabilities.py",
+        '        "cost_per_second": 0.20,\n        "price_basis": "720p/1080p WITHOUT audio',
+        '        "cost_per_second": 0.40,\n        "price_basis": "720p/1080p WITHOUT audio',
+        "a quote at double the published silent rate",
+    ),
+    (
+        "kling's base-plus-increment is flattened to the wrong per-second",
+        "backend/capabilities.py",
+        '        "cost_per_second": 0.056,',
+        '        "cost_per_second": 0.05,',
+        "$0.25 for a 5s clip fal prices at $0.28",
+    ),
+    (
+        "an unpriced model falls back to a cheap guess",
+        "backend/capabilities.py",
+        '    "cost_per_second": 0.3024,\n    "price_basis": "unknown model',
+        '    "cost_per_second": 0.12,\n    "price_basis": "unknown model',
+        "the model nobody has priced becomes the one the router prefers",
+    ),
+    (
+        "our own estimate is booked as the provider's bill again",
+        "backend/director.py",
+        "                            generation.succeed(plan.beat_id, att.id, ds.clip)",
+        "                            generation.succeed(plan.beat_id, att.id, ds.clip,\n"
+        "                                               cost=clip_price)",
+        "every attempt reads as a confirmed invoice; cost and estimated_cost "
+        "stop meaning different things",
+    ),
+    # --- the quote and the ledger are one function (round 3) --------------------
     (
         "the charge is a constant again, independent of the quote",
         "backend/director.py",
-        "                                               cost=clip_price)",
+        "                            generation.succeed(plan.beat_id, att.id, ds.clip)",
+        "                            generation.succeed(plan.beat_id, att.id, ds.clip,\n"
         "                                               cost=0.60)",
         "two prices again; they agree today only by coincidence",
     ),
@@ -110,7 +156,7 @@ MUTATIONS = [
 
 def run(work: Path) -> tuple[int, str]:
     p = subprocess.run(
-        [sys.executable, "-m", "pytest", TESTS, "-x", "-q", "-p", "no:cacheprovider"],
+        [sys.executable, "-m", "pytest", *TESTS, "-x", "-q", "-p", "no:cacheprovider"],
         cwd=work, capture_output=True, text=True)
     return p.returncode, (p.stdout + p.stderr)[-1500:]
 

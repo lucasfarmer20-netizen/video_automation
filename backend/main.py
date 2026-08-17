@@ -554,8 +554,13 @@ def record_paid_drafts(shot: Shot, backend: str, generate) -> None:
 
     try:
         chosen = (shot.draft_variations or [""])[0]
-        generation.succeed(shot.scene_id, att.id, output=chosen,
-                           cost=DRAFT_IMAGE_COST * max(1, len(shot.draft_variations)))
+        # Revised as an ESTIMATE, not booked as a cost. How many variations came
+        # back is only known now, so the figure opened at one image has to grow --
+        # but fal reported no bill, and writing our own number into `cost` is what
+        # made every attempt in this ledger look like a confirmed invoice.
+        generation.succeed(
+            shot.scene_id, att.id, output=chosen,
+            estimated_cost=DRAFT_IMAGE_COST * max(1, len(shot.draft_variations)))
     except Exception as exc:  # noqa: BLE001
         print(f"Warning: could not settle draft attempt for {shot.scene_id}: {exc}")
 

@@ -133,13 +133,19 @@ def _compile(sb, render_dir):
 
 # --- the defect, in the units it was found in -----------------------------------
 #
-# 5.0s routes to kling_2_1_standard and 3.0s to wan_2_7 -- the two backends the
+# 5.0s routes to kling_2_1_standard and 2.0s to wan_2_7 -- the two backends the
 # deployed run actually billed. Both are parametrised rather than asserted once,
 # because a per-model price table drifts per model.
+#
+# 2.0s, not the 3.0s this first used: at fal's published rates kling costs
+# $0.056/s against wan's $0.10/s, so kling wins any length it can serve. wan is
+# only the cheapest below kling's 5s floor (2s of wan is $0.20 against kling's
+# $0.28 minimum) or above its 10s ceiling. The router's assertion at the end of
+# the test is what catches this case silently ceasing to cover wan at all.
 
 @pytest.mark.parametrize("seconds,expect_backend", [
     (5.0, "kling_2_1_standard"),
-    (3.0, "wan_2_7"),
+    (2.0, "wan_2_7"),
 ])
 def test_a_paid_shot_is_never_quoted_below_what_the_ledger_records(
         tmp_path, monkeypatch, seconds, expect_backend):
@@ -301,13 +307,17 @@ def test_the_quote_and_the_charge_come_from_one_function(tmp_path, monkeypatch):
     """Not a style point. Two hardcoded prices is the defect, and a test that
     only checks today's numbers would pass again the moment a third appears.
 
-    Moving the shared source moves BOTH sides. If the quote were still computed
-    independently, only one of them would follow.
+    Moving the ONE price source — fal's published rate for the chosen model —
+    must move both sides together. If either still assembled its own figure,
+    only one of them would follow. The rate is driven to $2.50/s, far outside
+    anything in the table, so a stale constant anywhere cannot coincidentally
+    agree with it.
     """
     client, sb, render_dir, _ = _scene(tmp_path, monkeypatch, seconds=5.0)
     _price_as_paid_video(client)
 
-    monkeypatch.setattr(capabilities, "PAID_CLIP_FLOOR", 2.50)
+    routed = director.load_plan(BEAT).coverage[0].backend
+    monkeypatch.setitem(capabilities.VIDEO_CAPS[routed], "cost_per_second", 2.50)
     plan = director.load_plan(BEAT)
     plan.coverage[0].estimated_cost = director.quote_shot(plan.coverage[0])
     director.save_plan(plan)
@@ -317,11 +327,47 @@ def test_the_quote_and_the_charge_come_from_one_function(tmp_path, monkeypatch):
     spend = generation.spend(BEAT)
 
     assert quoted >= spend["spent"], (
-        f"the price source moved to $2.50/clip; the quote went to ${quoted:.2f} "
+        f"the price source moved to $2.50/s; the quote went to ${quoted:.2f} "
         f"and the ledger to ${spend['spent']:.2f} — they are not the same source")
     assert spend["spent"] >= 2.50, (
         "the charge ignored the price source entirely, so the agreement above "
         "proves nothing")
+
+
+def test_no_attempt_books_our_own_estimate_as_the_provider_s_bill(
+        tmp_path, monkeypatch):
+    """`cost` means "the provider told us". Nothing here is ever told.
+
+    GenerationAttempt separates `cost` ("the real one when the provider reported
+    it") from `estimated_cost` ("the price the attempt was opened for"), and
+    `_amount()` prefers the first. The compile wrote its own figure into `cost`,
+    so every settled attempt read as a confirmed invoice and the distinction
+    between the two fields meant nothing — the ledger was storing a guess and
+    presenting it as a bill.
+
+    fal reports no billed amount on this path: ``fal_client.subscribe`` returns
+    the model's output payload and exposes neither a cost field nor the response
+    headers. So the honest record is `cost = 0` with the figure left in
+    `estimated_cost`, where it is labelled as ours. The TOTAL is unchanged —
+    `_amount()` falls back — which is the point: this costs nothing to be honest
+    about.
+    """
+    client, sb, render_dir, _ = _scene(tmp_path, monkeypatch, seconds=5.0)
+    _price_as_paid_video(client)
+    _compile(sb, render_dir)
+
+    paid = [a for a in generation.load_attempts(BEAT) if a.paid]
+    assert paid, "nothing was recorded; there is no invariant to check"
+
+    invented = [f"{a.id} ({a.kind}) books cost=${a.cost:.2f}" for a in paid if a.cost]
+    assert not invented, (
+        "these attempts present an estimate of ours as a figure the provider "
+        f"reported: {invented}")
+    assert all(a.estimated_cost > 0 for a in paid), (
+        "moving the figure out of `cost` dropped it entirely — that is a "
+        "confident $0.00, which is worse than the mislabelling it replaced")
+    assert generation.spend(BEAT)["spent"] > 0, (
+        "the total must be unaffected; only the label changes")
 
 
 def test_money_at_risk_is_reported_at_the_price_it_was_quoted_at(

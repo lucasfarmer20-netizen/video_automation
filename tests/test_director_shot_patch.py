@@ -161,32 +161,27 @@ def test_a_duration_change_re_prices_and_re_routes_a_paid_shot(plan):
     dragging 4s -> 10s left the shot priced and routed for 4s -- under-reporting
     the cost on the very screen where the Gate-1 budget is allocated.
 
-    Two edits, because no single one can prove both halves. Tier-C carries a
-    minimum per-clip charge (capabilities.PAID_CLIP_FLOOR), and 6s on wan_2_7 and
-    10s on kling_2_1_standard both fall under it -- so 6 -> 10 re-routes at an
-    identical, correct price, and its price arm could not fail for ANY
-    implementation. 10 -> 10.8 clears the minimum and passes kling's 10s ceiling,
-    so it moves both.
+    10.8s rather than the 10.0s this first used, and the reason is worth keeping.
+    At fal's published rates kling_2_1_standard is the cheapest model at BOTH 6s
+    and 10s -- it only offers 5s and 10s, so a 6s shot buys 10s of kling at
+    $0.056/s and trims, which still undercuts wan_2_7 at $0.10/s. So 6 -> 10
+    changes neither the model nor the price, correctly, and this test's assertions
+    could not fail for any implementation. 10.8s passes kling's ceiling entirely,
+    which is where a stale route and a stale price are both observable.
     """
     plan.post("/api/director/shot/s011.01", json={"motion_type": "ai_video"})
     at_6s = director.load_plan("s011").coverage[0]
 
-    # Routing: 6s and 10s are served by different models.
-    r = plan.post("/api/director/shot/s011.01", json={"duration": 10.0})
-    assert r.status_code == 200, r.text
-    at_10s = director.load_plan("s011").coverage[0]
-    assert at_10s.camera.duration == 10.0
-    assert at_10s.backend != at_6s.backend, (
-        f"a 6s->10s change left the shot routed to {at_6s.backend}")
-
-    # Price: above the minimum charge a longer clip genuinely costs more.
     r = plan.post("/api/director/shot/s011.01", json={"duration": 10.8})
     assert r.status_code == 200, r.text
-    at_108s = director.load_plan("s011").coverage[0]
-    assert at_108s.camera.duration == 10.8
-    assert at_108s.estimated_cost > at_10s.estimated_cost, (
-        f"a 10s->10.8s change left the cost at ${at_10s.estimated_cost} "
-        f"(backend {at_10s.backend} -> {at_108s.backend})")
+    after = director.load_plan("s011").coverage[0]
+    assert after.camera.duration == 10.8
+
+    assert after.backend != at_6s.backend, (
+        f"the shot stayed on {at_6s.backend} past that model's 10s ceiling")
+    assert after.estimated_cost > at_6s.estimated_cost, (
+        f"a 6s->10.8s change left the cost at ${at_6s.estimated_cost} "
+        f"(backend {at_6s.backend} -> {after.backend})")
 
 
 def test_a_free_shot_is_not_charged_a_video_rate_after_a_resize(plan):

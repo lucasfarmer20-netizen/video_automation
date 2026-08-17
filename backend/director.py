@@ -673,6 +673,26 @@ def load_plan(beat_id: str) -> CoveragePlan | None:
     # file, and estimated_cost is outside the signature (see
     # _NON_MATERIAL_SHOT_FIELDS) so no approval moves. Idempotent: the second
     # read finds the same number and writes nothing.
+    #
+    # IT REPAIRS DOWNWARD TOO, and that is deliberate rather than overlooked.
+    # The objection is real in general -- a stale table could pull a deliberately
+    # conservative figure down -- but it does not apply here, for two reasons and
+    # one caveat:
+    #
+    #   1. There is no sanctioned way for a human to set this field. The shot
+    #      patch route strips estimated_cost from the request body as "a field
+    #      the SERVER owns" (main.py), so a raised figure is not something the
+    #      product can produce. Refusing to lower a value would protect a case
+    #      that cannot arise through the UI.
+    #   2. The value this exists to repair is INFLATED -- $4.69 against $1.99.
+    #      A never-lower rule would decline to fix the exact plan it was written
+    #      for, which is the whole defect left in place under a safety argument.
+    #
+    # The caveat: a hand-edited plan file CAN carry a raised number, and this
+    # will flatten it. That is the accepted cost. If a human override is ever
+    # wanted it needs its own field with its own provenance -- who raised it and
+    # why -- because an override that is indistinguishable from a stale
+    # derivation is not an override, it is a number nobody can explain.
     for ds in plan.coverage:
         fresh = quote_shot(ds)
         if abs(fresh - float(ds.estimated_cost or 0.0)) >= 0.005:
@@ -1418,9 +1438,11 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                         raise
                     ds.draft_variations = list(synth.draft_variations)
                     ds.chosen_variation = synth.chosen_variation
+                    # No cost=, for the reason given at the video settle below:
+                    # fal reports no billed amount, so the figure stays in
+                    # estimated_cost where it is labelled as ours.
                     generation.succeed(plan.beat_id, att_img.id,
-                                       output=(ds.draft_variations or [""])[0],
-                                       cost=still_price)
+                                       output=(ds.draft_variations or [""])[0])
 
                 if ds.motion_type == "ai_video":
                     # generate_paid_clip downloads to `target`. ds.clip was only
@@ -1535,8 +1557,23 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                             ds.paid_clip = ds.clip
                             ds.paid_signature = want
                             ds.selected_attempt = att.id
-                            generation.succeed(plan.beat_id, att.id, ds.clip,
-                                               cost=clip_price)
+                            # cost= is left unset ON PURPOSE. GenerationAttempt
+                            # documents `cost` as "the real one when the provider
+                            # reported it" and `estimated_cost` as ours, and
+                            # _amount() prefers the first -- so writing our own
+                            # figure into `cost` made every attempt look like a
+                            # confirmed invoice and left the distinction between
+                            # the two fields meaning nothing.
+                            #
+                            # fal does not report one. fal_client.subscribe
+                            # returns the model's output payload and nothing
+                            # else; it surfaces no billing amount and no response
+                            # headers, so there is no billed figure to record on
+                            # this path. Saying that plainly is the honest answer
+                            # -- the total is unchanged, because _amount() falls
+                            # back to estimated_cost, but it is now labelled as
+                            # the estimate it has always been.
+                            generation.succeed(plan.beat_id, att.id, ds.clip)
                             save_plan(plan)
                 else:
                     motion.render_shot(synth, out_dir=out_dir, storyboard=sb)
