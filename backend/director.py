@@ -163,6 +163,18 @@ class DirectorShot:
     selected_attempt: str = ""
     paid_clip: str = ""                # set ONLY when fal was billed
     paid_signature: str = ""           # the inputs that clip was bought for
+    # FORWARD-LOOKING, and ONLY that. What producing this shot is expected to
+    # cost — the number a human is quoted and consents to. Derived; see
+    # quote_shot, the only thing that may write it.
+    #
+    # compile_coverage used to ADD its spend into this field, so a beat quoted at
+    # $1.99 read $4.69 the moment it finished: 2.4× the number the human agreed
+    # to, on a plan whose content had not changed by one shot, and the figure a
+    # re-compile would then quote. A forward estimate and a record of spend are
+    # different facts (§6.1 asks for "spent so far" and "estimated remaining"
+    # separately) and one field cannot hold both without lying about both. What
+    # was actually bought lives in the generation ledger, which is the only thing
+    # that can also say what is merely AT RISK — see generation.spend.
     estimated_cost: float = 0.0
     error: str = ""
 
@@ -651,6 +663,42 @@ def load_plan(beat_id: str) -> CoveragePlan | None:
     # a draft has never been approved, and inventing a signature for it would
     # manufacture the approval the signature exists to prove.
     changed = False
+
+    # Migrate-on-read: estimated_cost is DERIVED, so derive it. Plans compiled
+    # before spend had its own field carry a figure the compile added its spend
+    # into -- the beat quoted at $1.99 reads $4.69 on disk right now -- and the
+    # doubling would otherwise survive this fix for the life of every existing
+    # plan. Recomputing invents nothing: quote_shot reads only motion_type,
+    # backend, duration, gestural and identity_critical, all of which are in the
+    # file, and estimated_cost is outside the signature (see
+    # _NON_MATERIAL_SHOT_FIELDS) so no approval moves. Idempotent: the second
+    # read finds the same number and writes nothing.
+    #
+    # IT REPAIRS DOWNWARD TOO, and that is deliberate rather than overlooked.
+    # The objection is real in general -- a stale table could pull a deliberately
+    # conservative figure down -- but it does not apply here, for two reasons and
+    # one caveat:
+    #
+    #   1. There is no sanctioned way for a human to set this field. The shot
+    #      patch route strips estimated_cost from the request body as "a field
+    #      the SERVER owns" (main.py), so a raised figure is not something the
+    #      product can produce. Refusing to lower a value would protect a case
+    #      that cannot arise through the UI.
+    #   2. The value this exists to repair is INFLATED -- $4.69 against $1.99.
+    #      A never-lower rule would decline to fix the exact plan it was written
+    #      for, which is the whole defect left in place under a safety argument.
+    #
+    # The caveat: a hand-edited plan file CAN carry a raised number, and this
+    # will flatten it. That is the accepted cost. If a human override is ever
+    # wanted it needs its own field with its own provenance -- who raised it and
+    # why -- because an override that is indistinguishable from a stale
+    # derivation is not an override, it is a number nobody can explain.
+    for ds in plan.coverage:
+        fresh = quote_shot(ds)
+        if abs(fresh - float(ds.estimated_cost or 0.0)) >= 0.005:
+            ds.estimated_cost = fresh
+            changed = True
+
     if plan.status in ("locked", "compiling", "compiled") and not plan.approved_signature:
         plan.approved_signature = plan_signature(plan)
         plan.approved_by = "migrated:pre-signature-lock"
@@ -978,11 +1026,92 @@ def _media_present(rel: str) -> bool:
         return False
 
 
-# Rough per-clip price for a Tier-C generation; fal has the real figure and it
-# lands on the attempt when the call returns. Named because it is now recorded
-# on the attempt BEFORE dispatch too: after a crash it is the only number left
-# to say how much money may have gone (§6.1).
-PAID_CLIP_COST = 0.60
+# --- price: one source for the quote and for the record -------------------------
+#
+# There used to be a flat ``PAID_CLIP_COST = 0.60`` here, and it was the figure
+# recorded on the attempt. The figure QUOTED to the human came from somewhere
+# else entirely — capabilities' per-second table, via planner.plan_coverage. The
+# two were never reconciled, so the first real end-to-end compile put "COMPILE &
+# SPEND $1.99" on the button and wrote $0.60 per paid shot to a ledger that had
+# quoted $0.40 and $0.39 for them.
+#
+# The functions below are now the only way either side gets a number, so they
+# cannot disagree by construction. The bound itself lives in
+# capabilities.clip_price; what lives here is the shot-shaped question — how many
+# stills does this shot buy, and which model will actually serve it.
+
+
+def still_takes(ds: "DirectorShot") -> int:
+    """How many draft stills this shot buys.
+
+    One place, because compile_coverage SPENDS this many and the quote has to
+    name the same number. It did not: the quote was a flat one image per shot
+    while an ``identity_critical`` shot has always bought four, so every such
+    shot was quoted $0.15 against $0.60 of stills — the same understatement as
+    the video tier, at 4×, on the shots that matter most.
+    """
+    return 4 if ds.identity_critical else 1
+
+
+def routed_clip(ds: "DirectorShot") -> dict:
+    """The model that will actually serve this shot's paid clip.
+
+    Used by the quote and by generate_paid_clip, including the fallback off a
+    stale recorded backend. If the two resolved differently the quote would price
+    one model and the compile would buy another, which is the defect one level up
+    from the one this module just fixed.
+    """
+    from . import capabilities
+
+    intent = {"duration": ds.duration, "gestural": ds.gestural}
+    routed = capabilities.resolve(intent, prefer=[ds.backend] if ds.backend else None)
+    if not routed.get("backend") and ds.backend:
+        # The recorded model cannot serve this shot any more -- usually because a
+        # capability entry was corrected after the plan was written. Re-resolve
+        # across everything rather than failing on a stale choice.
+        routed = capabilities.resolve(intent)
+    return routed
+
+
+def paid_clip_price(ds: "DirectorShot") -> float | None:
+    """What this shot's clip is quoted at, and therefore recorded at.
+
+    ``None`` — not zero — when no configured model can produce the shot at all.
+    A confident $0.00 is the one answer money must never get, and the caller
+    needs the distinction: the quote leaves the clip out because nothing will be
+    bought, while the compile refuses before it opens a paid attempt.
+    """
+    routed = routed_clip(ds)
+    if not routed.get("backend"):
+        return None
+    return float(routed.get("estimated_cost") or 0.0)
+
+
+def unproducible(ds: "DirectorShot") -> str:
+    """Why this paid shot cannot be generated, or "" if it can."""
+    return (f"{ds.id}: no configured model can produce {ds.duration:.2f}s"
+            + (" without trimming a gesture" if ds.gestural else "")
+            + f". {routed_clip(ds).get('reason', '')}")
+
+
+def quote_shot(ds: "DirectorShot") -> float:
+    """What producing this shot is expected to cost. The number consent is given for.
+
+    Every term is a term compile_coverage will actually spend, priced by the same
+    function that will write it to the generation ledger. The only permitted
+    writer of ``DirectorShot.estimated_cost``.
+    """
+    from . import capabilities
+
+    price = capabilities.COST_PER_IMAGE * still_takes(ds)
+    if ds.motion_type == "ai_video":
+        clip = paid_clip_price(ds)
+        # Nothing is bought for a shot no model can serve -- compile_coverage
+        # refuses it before opening an attempt -- so quoting for it would be a
+        # charge that cannot happen.
+        if clip is not None:
+            price += clip
+    return round(price, 3)
 
 
 def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
@@ -1020,19 +1149,9 @@ def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
     # so the capability table was consulted when PLANNING and ignored when
     # GENERATING. That is how a 3.34s gestural shot asked wan_2_7 for 3s, received
     # a fixed 5s clip, and then could not be trimmed.
-    routed = capabilities.resolve(
-        {"duration": want, "gestural": ds.gestural},
-        prefer=[ds.backend] if ds.backend else None)
-    if not routed.get("backend") and ds.backend:
-        # The recorded model cannot serve this shot any more -- usually because a
-        # capability entry was corrected after the plan was written. Re-resolve
-        # across everything rather than failing on a stale choice.
-        routed = capabilities.resolve({"duration": want, "gestural": ds.gestural})
+    routed = routed_clip(ds)
     if not routed.get("backend"):
-        raise PlanError(
-            f"{ds.id}: no configured model can produce {want:.2f}s"
-            + (" without trimming a gesture" if ds.gestural else "")
-            + f". {routed.get('reason', '')}")
+        raise PlanError(unproducible(ds))
 
     key = routed["backend"]
     endpoint = assets.resolve_video_backend(key)["endpoint"]
@@ -1254,7 +1373,8 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                     motion_type=ds.motion_type,
                 )
             else:
-                from . import assets, motion   # lazy: only generated shots need these
+                # lazy: only generated shots need these
+                from . import assets, capabilities, motion
 
                 synth = _synthetic_shot(ds, beat)
 
@@ -1280,13 +1400,49 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                     synth.chosen_variation = ds.chosen_variation
                     synth.draft_image = (ds.draft_variations[ds.chosen_variation or 0])
                 else:
-                    n = 4 if ds.identity_critical else 1
-                    assets.generate_for_shot(
-                        synth, n, backend=img_backend, render=sb.render, log=log,
-                        subject_url=subject_url or None)
+                    # Stills bought during a compile are money, and this path
+                    # recorded none of it: it called assets.generate_for_shot
+                    # directly, so generation.spend() reported the video tier
+                    # alone. The first real compile bought $1.20 of stills and the
+                    # ledger's total for the beat was $1.20 — the clips only. A
+                    # spend the ledger cannot see is a spend nobody can reconcile
+                    # against a bill (§6.1), so it opens an attempt like every
+                    # other charge.
+                    #
+                    # Recording, not gating: signature="" skips begin()'s reuse
+                    # and in_flight arms, for the same reason main.py's draft path
+                    # does — a deliberate re-draft is a legitimate re-buy. Opening
+                    # it still fails closed, because "money spent, no record" is
+                    # the whole defect.
+                    n = still_takes(ds)
+                    still_price = round(capabilities.COST_PER_IMAGE * n, 3)
+                    att_img, how_img = generation.begin(
+                        beat_id=plan.beat_id, shot_id=ds.id, signature="",
+                        kind="image", backend=img_backend, paid=True,
+                        estimated_cost=still_price)
+                    if how_img != "created":
+                        raise PlanError(
+                            f"{ds.id}: the generation ledger answered {how_img!r} "
+                            f"for its stills; refusing to generate. Resolve "
+                            f"attempt {att_img.attempt} before compiling again.")
+                    try:
+                        assets.generate_for_shot(
+                            synth, n, backend=img_backend, render=sb.render, log=log,
+                            subject_url=subject_url or None)
+                    except BaseException as exc:
+                        # in_doubt, not fail: fal may already have been called and
+                        # charged, and nothing here can tell. Same rule the video
+                        # path below uses.
+                        generation.in_doubt(plan.beat_id, att_img.id,
+                                            f"still generation raised: {exc}")
+                        raise
                     ds.draft_variations = list(synth.draft_variations)
                     ds.chosen_variation = synth.chosen_variation
-                    ds.estimated_cost += n * 0.15
+                    # No cost=, for the reason given at the video settle below:
+                    # fal reports no billed amount, so the figure stays in
+                    # estimated_cost where it is labelled as ours.
+                    generation.succeed(plan.beat_id, att_img.id,
+                                       output=(ds.draft_variations or [""])[0])
 
                 if ds.motion_type == "ai_video":
                     # generate_paid_clip downloads to `target`. ds.clip was only
@@ -1327,10 +1483,23 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                         # the API however it arrives here (§11.1). The lineage
                         # is the same record, so a failure below stays attached
                         # to the shot instead of vanishing (§11.6).
+                        #
+                        # Priced through paid_clip_price, which is the same
+                        # function that produced the quote on the button. Before,
+                        # this was a flat PAID_CLIP_COST while the quote came off
+                        # the per-second table, and the two simply disagreed.
+                        clip_price = paid_clip_price(ds)
+                        if clip_price is None:
+                            # generate_paid_clip would refuse below anyway, but
+                            # the attempt is opened FIRST -- so refusing here is
+                            # the difference between no record and a paid attempt
+                            # carrying a confident $0.00 for a call that could
+                            # never be made.
+                            raise PlanError(unproducible(ds))
                         att, how = generation.begin(
                             beat_id=plan.beat_id, shot_id=ds.id, signature=want,
                             kind="video", backend=ds.backend, paid=True,
-                            estimated_cost=PAID_CLIP_COST,
+                            estimated_cost=clip_price,
                             exists=_media_present,
                         )
                         if how == "in_flight":
@@ -1384,13 +1553,27 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                                 # until a human resolves it.
                                 generation.in_doubt(plan.beat_id, att.id, str(exc))
                                 raise
-                            ds.estimated_cost += PAID_CLIP_COST
                             ds.clip = config.rel_media_path(target)
                             ds.paid_clip = ds.clip
                             ds.paid_signature = want
                             ds.selected_attempt = att.id
-                            generation.succeed(plan.beat_id, att.id, ds.clip,
-                                               cost=PAID_CLIP_COST)
+                            # cost= is left unset ON PURPOSE. GenerationAttempt
+                            # documents `cost` as "the real one when the provider
+                            # reported it" and `estimated_cost` as ours, and
+                            # _amount() prefers the first -- so writing our own
+                            # figure into `cost` made every attempt look like a
+                            # confirmed invoice and left the distinction between
+                            # the two fields meaning nothing.
+                            #
+                            # fal does not report one. fal_client.subscribe
+                            # returns the model's output payload and nothing
+                            # else; it surfaces no billing amount and no response
+                            # headers, so there is no billed figure to record on
+                            # this path. Saying that plainly is the honest answer
+                            # -- the total is unchanged, because _amount() falls
+                            # back to estimated_cost, but it is now labelled as
+                            # the estimate it has always been.
+                            generation.succeed(plan.beat_id, att.id, ds.clip)
                             save_plan(plan)
                 else:
                     motion.render_shot(synth, out_dir=out_dir, storyboard=sb)

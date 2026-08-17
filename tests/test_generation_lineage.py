@@ -554,6 +554,23 @@ def api(scene):
     monkey.undo()
 
 
+def _clip_price(director, beat_id="s011", shot_id="s011.01") -> float:
+    """What this shot's clip is priced at, from the one function that prices it.
+
+    These tests are about the BILLED / AT-RISK separation, not about the tariff --
+    the price is scenery. They used to hardcode $0.60, which was director.py's old
+    flat constant, so correcting the table to fal's published rates broke six
+    tests that had no opinion about pricing at all.
+
+    Deliberately NOT an independent check of the price: tests/test_fal_tariff.py
+    is where the number is anchored against fal, and duplicating that here would
+    put a second literal in a file that would then go stale the same way.
+    """
+    ds = director.load_plan(beat_id).coverage[0]
+    assert ds.id == shot_id
+    return director.paid_clip_price(ds)
+
+
 def _strand(director, sb, render_dir, calls):
     """Leave a paid attempt stuck in doubt, the way a provider timeout does."""
     mp = pytest.MonkeyPatch()
@@ -823,7 +840,8 @@ def test_an_unrecorded_outcome_is_money_at_risk_not_money_ignored(scene):
     _strand(director, sb, render_dir, calls)
 
     s = generation.spend("s011")
-    assert s["at_risk"] == 0.60, "money that may have gone reported as nothing"
+    assert s["at_risk"] == _clip_price(director), (
+        "money that may have gone reported as nothing")
     assert s["at_risk_attempts"] == 1
     assert s["spent"] == 0.0, "an unrecorded outcome was reported as billed"
     assert s["spend_is_certain"] is False
@@ -841,7 +859,8 @@ def test_abandoning_the_attempt_does_not_settle_the_bill(scene):
     generation.abandon("s011", stuck.id, "checked the dashboard, no answer")
 
     s = generation.spend("s011")
-    assert s["at_risk"] == 0.60, "closing the attempt made the exposure vanish"
+    assert s["at_risk"] == _clip_price(director), (
+        "closing the attempt made the exposure vanish")
     assert s["at_risk_attempts"] == 1
     assert s["spent"] == 0.0
 
@@ -861,19 +880,28 @@ def test_at_risk_money_is_never_folded_into_the_billed_total(scene):
     assert calls["paid"] == 2
 
     s = generation.spend("s011")
-    assert s["spent"] == 0.60, "the certain total absorbed the uncertain one"
-    assert s["at_risk"] == 0.60
+    assert s["spent"] == _clip_price(director), (
+        "the certain total absorbed the uncertain one")
+    assert s["at_risk"] == _clip_price(director)
     assert s["paid_attempts"] == 1
     assert s["at_risk_attempts"] == 1
 
 
 def test_the_price_is_recorded_before_the_provider_is_called(scene):
     """Without it the at-risk figure is $0.00, which is the original defect
-    wearing a new key. After a crash there is no later moment to record it."""
+    wearing a new key. After a crash there is no later moment to record it.
+
+    Compared against ``paid_clip_price`` -- the function that also produces the
+    quote -- and not against a constant of this module's own. A constant here
+    would agree with a constant there and prove only that two literals match,
+    which is exactly how the quote came to say $0.40 for a clip recorded at
+    $0.60.
+    """
     director, _, sb, render_dir, calls = scene
     _strand(director, sb, render_dir, calls)
     rows = generation.for_shot("s011", "s011.01")
-    assert rows[0].estimated_cost == director.PAID_CLIP_COST
+    ds = director.load_plan("s011").coverage[0]
+    assert rows[0].estimated_cost == director.paid_clip_price(ds)
 
 
 def test_a_running_attempt_is_money_at_risk():
@@ -1246,8 +1274,9 @@ def test_the_lineage_api_reports_what_is_at_risk_beside_the_total(api):
 
     body = client.get("/api/generation/s011").json()
     assert body["spend"]["spent"] == 0.0
-    assert body["spend"]["at_risk"] == 0.60
-    assert body["at_risk"] == 0.60, "a client reading the total alone sees nothing"
+    assert body["spend"]["at_risk"] == _clip_price(director)
+    assert body["at_risk"] == _clip_price(director), (
+        "a client reading the total alone sees nothing")
     assert "at risk" in body["spend"]["summary"]
 
 
@@ -1262,7 +1291,7 @@ def test_abandoning_answers_with_the_money_it_put_at_risk(api):
     body = client.post("/api/generation/s011/" + stuck["id"] + "/abandon",
                        json={"reason": "no answer from the provider"}).json()
     assert body["ok"] is True
-    assert body["at_risk"] == 0.60
+    assert body["at_risk"] == _clip_price(director)
     assert body["spend"]["spent"] == 0.0
 
 
@@ -1272,7 +1301,7 @@ def test_the_plan_payload_reports_the_money_at_risk(api):
     client, director, sb, render_dir, calls = api
     _strand(director, sb, render_dir, calls)
     plan = client.get("/api/director/plan/s011").json()["plan"]
-    assert plan["at_risk"] == 0.60
+    assert plan["at_risk"] == _clip_price(director)
     assert plan["spend"]["spent"] == 0.0
 
 

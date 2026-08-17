@@ -22,10 +22,18 @@ Two things it deliberately is not:
   character moves, how complex the motion is, what references it needs. Which fal
   endpoint serves that is application logic, so models can change without
   re-prompting or re-training anything.
-* **Not authoritative on price.** ``cost_per_second`` is an estimate for planning
-  and ranking. fal is the authority on billing; these numbers exist so a plan can
-  be costed *before* it is run, and are env-overridable because published pricing
-  moves and a stale hardcoded number is worse than one you can correct.
+* **Not authoritative on price.** fal is the authority on billing. ``cost_per_second``
+  is this repo's transcription of fal's PUBLISHED tariff for the tier each call
+  actually requests, so a plan can be costed before it is run. Every row carries
+  ``price_basis``, ``price_source`` and ``price_checked`` — a bare float is not
+  auditable, and an unsourced one is how the table came to sit 3x under fal's real
+  seedance rate while a quote was derived from it and called an upper bound.
+  Published pricing moves; re-check the sources and correct the row.
+
+  (An earlier version of this note said the rates were "env-overridable". They
+  never were — they are literals in the table below. The claim is removed rather
+  than implemented: one sourced number that someone must edit deliberately is
+  safer for money than a number an environment variable can move silently.)
 
 All fields are optional at read time (``spec()`` fills defaults), so existing
 callers of the registries are unaffected.
@@ -52,7 +60,16 @@ CONTINUOUS: dict = {
     "allowed_durations": None,     # None => any integer length in [min, max]
     "min_seconds": 3,
     "max_seconds": 10,
-    "cost_per_second": 0.12,
+    # The price of a model nobody has priced. Set to the DEAREST rate in the
+    # table below rather than to a middling guess: an unregistered key is exactly
+    # the case where nothing is known, and the one direction that must not happen
+    # is quoting a human less than the call turns out to cost. This is the only
+    # figure here that is deliberately conservative rather than published, and it
+    # is conservative only within what this table knows.
+    "cost_per_second": 0.3024,
+    "price_basis": "unknown model — priced at the dearest configured rate",
+    "price_source": "",
+    "price_checked": "",
     "needs_start_image": True,
     "supports_reference_image": False,
     "supports_character_reference": False,
@@ -68,7 +85,16 @@ VIDEO_CAPS: dict[str, dict] = {
         "duration_wire_type": 'string',
         "duration_default": 'auto',
         "supports_generate_audio": True,
-        "cost_per_second": 0.1,
+        # THE DEFAULT BACKEND, and the row that was 3x wrong: 0.10 against a
+        # published 0.3024. A 5s seedance shot was quoted $0.60 after the old
+        # floor against ~$1.51 of real billing.
+        "cost_per_second": 0.3024,
+        "price_basis": "standard tier, 720p (the model's default resolution). "
+                       "The fast tier is 0.2419/s and 1080p is 0.682/s — this "
+                       "path requests neither, and sends no resolution at all, "
+                       "so it gets the 720p default.",
+        "price_source": "https://fal.ai/models/bytedance/seedance-2.0/image-to-video",
+        "price_checked": "2026-08-16",
         "needs_start_image": True,
         "supports_reference_image": False,
         "supports_character_reference": False,
@@ -82,7 +108,16 @@ VIDEO_CAPS: dict[str, dict] = {
         "duration_wire_type": 'string',
         "duration_default": '8s',
         "supports_generate_audio": True,
-        "cost_per_second": 0.4,
+        # 0.40 was the WITH-AUDIO rate. director.generate_paid_clip sends
+        # generate_audio=False unconditionally and says why (the beat's narration,
+        # SFX and music are mixed separately), so this path is billed at half
+        # that. Priced for the request this code actually makes; if audio is ever
+        # turned on here, this doubles.
+        "cost_per_second": 0.20,
+        "price_basis": "720p/1080p WITHOUT audio. With audio it is 0.40/s; 4K is "
+                       "0.40 silent and 0.60 with audio.",
+        "price_source": "https://fal.ai/models/fal-ai/veo3.1/image-to-video",
+        "price_checked": "2026-08-16",
         "needs_start_image": True,
         "supports_reference_image": True,
         "supports_character_reference": False,
@@ -96,7 +131,15 @@ VIDEO_CAPS: dict[str, dict] = {
         "duration_wire_type": 'string',
         "duration_default": '5',
         "supports_generate_audio": False,
-        "cost_per_second": 0.05,
+        # fal states this as a base plus an increment: "$0.28 for 5s, $0.056 for
+        # every additional second". A flat 0.056/s reproduces BOTH published
+        # figures exactly (5s -> 0.28, 10s -> 0.56), and 5 and 10 are the only
+        # lengths this model allows, so nothing is lost by storing it per-second.
+        "cost_per_second": 0.056,
+        "price_basis": "$0.28 for 5s, +$0.056/s thereafter; exact per-second at "
+                       "both allowed lengths",
+        "price_source": "https://fal.ai/models/fal-ai/kling-video/v2.1/standard/image-to-video",
+        "price_checked": "2026-08-16",
         "needs_start_image": True,
         "supports_reference_image": False,
         "supports_character_reference": False,
@@ -110,7 +153,13 @@ VIDEO_CAPS: dict[str, dict] = {
         "duration_wire_type": 'string',
         "duration_default": '5',
         "supports_generate_audio": False,
+        # The one row that was already right. Same base-plus-increment shape:
+        # "$1.40 for 5s, $0.28 per additional second" -> 0.28/s at 5s and 10s.
         "cost_per_second": 0.28,
+        "price_basis": "$1.40 for 5s, +$0.28/s thereafter; exact per-second at "
+                       "both allowed lengths",
+        "price_source": "https://fal.ai/models/fal-ai/kling-video/v2/master/image-to-video",
+        "price_checked": "2026-08-16",
         "needs_start_image": True,
         "supports_reference_image": True,
         "supports_character_reference": True,
@@ -124,7 +173,13 @@ VIDEO_CAPS: dict[str, dict] = {
         "duration_wire_type": 'integer',
         "duration_default": 5,
         "supports_generate_audio": False,
-        "cost_per_second": 0.06,
+        "cost_per_second": 0.10,
+        "price_basis": "720p, the resolution this pipeline renders at "
+                       "(director.CANON_WIDTH/HEIGHT is 1280x720). 1080p is "
+                       "0.15/s; this path sends no resolution, so a change to "
+                       "fal's default would move the real bill and not this row.",
+        "price_source": "https://fal.ai/models/fal-ai/wan/v2.7/image-to-video",
+        "price_checked": "2026-08-16",
         "needs_start_image": True,
         "supports_reference_image": False,
         "supports_character_reference": False,
@@ -138,7 +193,14 @@ VIDEO_CAPS: dict[str, dict] = {
         "duration_wire_type": 'string',
         "duration_default": '5s',
         "supports_generate_audio": False,
-        "cost_per_second": 0.14,
+        # Ray-2 is priced off a 540p base of $0.50 per 5s, doubling per tier:
+        # 720p is $1.00 per 5s = 0.20/s, and the 9s option scales proportionally.
+        "cost_per_second": 0.20,
+        "price_basis": "720p ($1.00 per 5s, 2x the 540p base of $0.50). This path "
+                       "sends no resolution; 540p would bill 0.10/s, so this row "
+                       "is the dearer of the two plausible tiers.",
+        "price_source": "https://fal.ai/models/fal-ai/luma-dream-machine/ray-2/image-to-video",
+        "price_checked": "2026-08-16",
         "needs_start_image": True,
         "supports_reference_image": True,
         "supports_character_reference": False,
@@ -150,6 +212,53 @@ VIDEO_CAPS: dict[str, dict] = {
 # ten-minute episode at all.
 LOCAL_COST_PER_SECOND = 0.0
 COST_PER_IMAGE = float(os.environ.get("COST_PER_IMAGE", "0.15"))
+
+# --- what one Tier-C generation costs, for the quote AND for the ledger ---------
+#
+# Two numbers used to answer this question and they disagreed. The quote came
+# from ``cost_per_second`` above; the figure written to the generation ledger came
+# from a flat ``PAID_CLIP_COST = 0.60`` living in director.py. On the first real
+# end-to-end compile the human approved "COMPILE & SPEND $1.99" and the ledger
+# then recorded $0.60 for each of the two paid shots, quoted at $0.40 and $0.39 --
+# a ~50% understatement on the paid tier.
+#
+# An overstated quote costs a human an unnecessary hesitation. An understated one
+# takes consent for one amount and spends another, which is the single thing Gate
+# 1 exists to prevent. So the two figures are collapsed into this one function,
+# and every caller on both sides of consent goes through it.
+#
+# WHAT THIS IS NOT: an upper bound. The first version of this function claimed to
+# be one -- max(table, a flat $0.60 floor) -- on the reasoning that taking the
+# larger of two figures must be safe. It is not, because max() is only
+# conservative if one of its arguments is, and the table was 3x UNDER fal's real
+# seedance rate at the time. The floor bounded nothing; it merely papered over
+# short requests. The docstring six lines above the table said so already: fal is
+# the authority, these are transcriptions. You cannot derive a bound from a source
+# that declares itself non-authoritative, and calling the result a bound is worse
+# than having no bound at all, because it invites callers to stop checking.
+#
+# WHAT IT IS: the published tariff for the tier this pipeline actually requests,
+# multiplied by the seconds actually requested. It can be wrong in BOTH
+# directions -- if fal moves a price, if a model's default resolution changes
+# under a request that pins none (see the wan and luma rows), or if this table is
+# simply out of date. tests/test_fal_tariff.py transcribes fal's published figures
+# independently and fails when the two disagree; that test, not this comment, is
+# what keeps the number honest.
+#
+# The one thing it does guarantee is the thing it was written for: the quote and
+# the ledger are the same function of the same inputs, so consent cannot be taken
+# for one number while another is recorded.
+
+
+def clip_price(key: str, generate_seconds: float) -> float:
+    """Best-effort price of one Tier-C generation. Not a bound — see above.
+
+    ``generate_seconds`` is the length actually requested of the model, not the
+    editorial length of the shot -- a 3.34s shot billed as kling's 5s minimum is
+    billed for five seconds. Callers get that number from
+    :func:`legal_durations` / :func:`resolve`, never from ``Shot.duration``.
+    """
+    return round(float(generate_seconds) * float(spec(key)["cost_per_second"]), 4)
 
 
 def spec(key: str) -> dict:
@@ -316,7 +425,13 @@ def resolve(intent: dict, prefer: list[str] | None = None) -> dict:
     gestural = bool(intent.get("gestural"))
     needs_charref = bool(intent.get("needs_character_reference"))
 
-    candidates = []
+    # Ranked on the same figure that is reported, which is only correct because
+    # that figure is now the published tariff. It briefly was not: while
+    # clip_price applied a flat floor, ranking on it would have collapsed every
+    # cheap model into one tie and silently re-routed shots, so the rank was
+    # carried separately. With the floor gone there is one number again, and one
+    # number is the point of this whole module.
+    candidates: list[dict] = []
     for key in (prefer or list(VIDEO_CAPS)):
         caps = spec(key)
         if needs_charref and not caps["supports_character_reference"]:
@@ -331,7 +446,7 @@ def resolve(intent: dict, prefer: list[str] | None = None) -> dict:
             continue
         candidates.append({
             "backend": key, "label": caps["label"], "generate_seconds": picked,
-            "estimated_cost": round(picked * caps["cost_per_second"], 3),
+            "estimated_cost": clip_price(key, picked),
             "note": note,
         })
 
@@ -343,7 +458,9 @@ def resolve(intent: dict, prefer: list[str] | None = None) -> dict:
                        + (" without trimming a gesture" if gestural else "")),
         }
 
-    best = min(candidates, key=lambda c: (c["estimated_cost"], c["generate_seconds"]))
+    ranked = sorted(candidates,
+                    key=lambda c: (c["estimated_cost"], c["generate_seconds"]))
+    best = ranked[0]
     constraints = []
     if best["note"]:
         constraints.append("duration_quantized")
@@ -355,7 +472,7 @@ def resolve(intent: dict, prefer: list[str] | None = None) -> dict:
         "estimated_cost": best["estimated_cost"],
         "constraints": constraints,
         "reason": best["note"] or f"{best['label']} at {best['generate_seconds']}s",
-        "alternatives": sorted(candidates, key=lambda c: c["estimated_cost"])[1:4],
+        "alternatives": ranked[1:4],
     }
 
 

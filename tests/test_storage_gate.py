@@ -489,7 +489,14 @@ def test_a_paid_draft_is_recorded_even_when_the_save_is_refused(client, monkeypa
     paid = [a for a in attempts if a.paid]
     assert len(paid) == 1
     assert paid[0].kind == "image"
-    assert paid[0].estimated_cost == M.DRAFT_IMAGE_COST
+    # Two variations came back, so the estimate opened at one image is revised to
+    # two on settle -- our figure, revised, not a bill. fal reports no billed
+    # amount on this path, so `cost` stays 0 and `estimated_cost` is what
+    # spend() counts. Asserting DRAFT_IMAGE_COST flat would assert that the
+    # second image was free.
+    assert paid[0].estimated_cost == pytest.approx(
+        M.DRAFT_IMAGE_COST * 2, abs=0.001)
+    assert paid[0].cost == 0.0, "our own estimate was booked as a provider bill"
     # And the caller was still told the truth about the durable store.
     assert r.status_code == 503, r.text
     assert r.json()["detail"]["storage_gate"] == "unavailable"

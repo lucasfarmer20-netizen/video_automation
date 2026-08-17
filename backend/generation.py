@@ -416,8 +416,27 @@ def _finish(beat_id: str, attempt_id: str, *, status: str,
 
 
 def succeed(beat_id: str, attempt_id: str, output: str,
-            cost: float = 0.0) -> GenerationAttempt | None:
-    return _finish(beat_id, attempt_id, status=SUCCEEDED, output=output, cost=cost)
+            cost: float = 0.0,
+            estimated_cost: float | None = None) -> GenerationAttempt | None:
+    """Close an attempt as succeeded.
+
+    ``cost`` is THE PROVIDER'S figure and nothing else. Leave it at zero when the
+    provider did not report one -- which, for every fal endpoint this pipeline
+    calls, is always: ``fal_client.subscribe`` returns the model's output payload
+    and exposes neither a billing amount nor the response headers. ``_amount()``
+    then falls back to ``estimated_cost``, so the total is unchanged and the
+    number is labelled as the estimate it is. Callers used to pass their own
+    figure here, which made every attempt read as a confirmed invoice and left
+    the distinction between the two fields meaning nothing.
+
+    ``estimated_cost`` revises OUR figure when the true scope is only known once
+    the call returns -- a draft batch whose variation count decides the price.
+    Still an estimate; still not a bill.
+    """
+    changes: dict = {"output": output, "cost": cost}
+    if estimated_cost is not None:
+        changes["estimated_cost"] = float(estimated_cost)
+    return _finish(beat_id, attempt_id, status=SUCCEEDED, **changes)
 
 
 def in_doubt(beat_id: str, attempt_id: str, reason: str) -> GenerationAttempt | None:
