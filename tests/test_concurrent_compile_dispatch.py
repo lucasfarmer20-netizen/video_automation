@@ -54,6 +54,7 @@ for _m in ("anthropic", "fal_client", "elevenlabs"):
     sys.modules.setdefault(_m, types.ModuleType(_m))
 
 pytest.importorskip("fastapi.testclient")
+from signed_compile import compile_beat, signature_for  # noqa: E402
 
 from backend import config, director  # noqa: E402
 from backend.manifest import Camera, Shot, Storyboard  # noqa: E402
@@ -137,6 +138,13 @@ def studio(tmp_path, monkeypatch):
 
 def _race(client, n=2):
     """Fire `n` compiles for the same beat as simultaneously as threads allow."""
+    # Signed once, outside the race, and every caller sends the SAME signature.
+    # That is what two tabs on one plan actually do, and it keeps the thing under
+    # test the dedupe rather than the quote binding: if each thread re-read the
+    # plan, a compile that flipped the status mid-race could make one of them
+    # fail the binding instead of the dedupe, and this test would start passing
+    # for the wrong reason.
+    sig = signature_for(BEAT)
     at_the_line = threading.Barrier(n, timeout=10)
     codes: list[int | None] = [None] * n
     # Per-slot dicts, not `[{}] * n` -- that is n references to ONE dict, and a
@@ -146,7 +154,7 @@ def _race(client, n=2):
 
     def fire(i):
         at_the_line.wait()
-        r = client.post(f"/api/director/compile/{BEAT}")
+        r = compile_beat(client, BEAT, signature=sig)
         codes[i] = r.status_code
         bodies[i] = r.json()
 
@@ -236,7 +244,7 @@ def test_the_guard_is_a_dedupe_and_not_a_permanent_block(studio):
     """
     client, compiles = studio
 
-    first = client.post(f"/api/director/compile/{BEAT}")
+    first = compile_beat(client, BEAT)
     assert compiles.entered.wait(timeout=10)
     compiles.release_and_settle()
     assert compiles.calls == 1
@@ -245,7 +253,7 @@ def test_the_guard_is_a_dedupe_and_not_a_permanent_block(studio):
     compiles.entered.clear()
     compiles.proceed.clear()
 
-    second = client.post(f"/api/director/compile/{BEAT}")
+    second = compile_beat(client, BEAT)
     compiles.entered.wait(timeout=10)
     compiles.release_and_settle()
     assert compiles.calls == 2, "a finished compile still blocked its beat"

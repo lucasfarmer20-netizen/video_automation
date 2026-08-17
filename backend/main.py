@@ -3094,7 +3094,7 @@ async def put_director_plan(beat_id: str, request: Request):
 
 
 @app.post("/api/director/compile/{beat_id}")
-def compile_director_coverage(beat_id: str):
+def compile_director_coverage(beat_id: str, plan_signature: str = ""):
     """Render the coverage and assemble the beat clip. Spike B's whole point.
 
     There is no force flag. There used to be, and ``force=true`` skipped the
@@ -3104,12 +3104,53 @@ def compile_director_coverage(beat_id: str):
     and a query parameter that steps over it is not a gate.
 
     Recovery goes the way a human does: lock the plan, then compile.
+
+    ``plan_signature`` binds a QUOTE to the plan it was quoted for. The studio
+    shows the human ``paid_shots`` and ``estimated_cost`` and asks them to
+    confirm the spend; this route then dispatches ``director.load_plan(beat_id)``
+    -- whatever is current at DISPATCH, not what was quoted. Replace and lock a
+    more expensive plan in another tab between the gate opening and the human
+    confirming, and the newer plan compiled at the newer price on consent given
+    for the older one. The request identified no plan at all, so the route
+    structurally could not honour a quote. Refetching before posting would only
+    have narrowed the window: the identity has to travel WITH the request and be
+    compared here, against the object the job closure actually captures.
+
+    ``plan_signature`` is REQUIRED. It was optional for exactly one round, and
+    optional meant unenforced: ``if plan_signature and ...`` skipped the
+    comparison for an omitted or empty value, so an unsigned request dispatched
+    whatever was on disk -- nine paid shots against consent given for two. A
+    caller that does not say what it agreed to has not agreed to anything, and
+    the route refuses before dispatch. There is no unsigned path to keep
+    compatible: a caller that wants to compile loads the plan and sends its
+    approved signature, which is what the studio does and what the CLI must.
     """
     try:
         sb = get_current_project()
         plan = director.load_plan(beat_id)
         if not plan:
             raise HTTPException(status_code=404, detail=f"no director plan for {beat_id}")
+        # First, because it is about CONSENT rather than about the plan's own
+        # state: if this is not the plan the human agreed to spend on, nothing
+        # else about it is worth reporting to them. They have not seen it.
+        current_signature = director.plan_signature(plan)
+        # `signature_is_explicit`, not truthiness, on this side too. `if
+        # plan_signature and ...` reported "yes" or a truncated hash as a
+        # MISMATCH -- sending a caller off to re-approve a plan that had not
+        # changed, over a value that was never a signature. A thing that is not
+        # a signature cannot have stopped matching; it falls through to the
+        # unsigned refusal below, which tells them what is actually wrong.
+        if (director.signature_is_explicit(plan_signature)
+                and plan_signature != current_signature):
+            return JSONResponse(status_code=409, content={
+                "ok": False,
+                "error": (f"the plan for {beat_id} changed after you were quoted a "
+                          f"price, so nothing was compiled and nothing was charged. "
+                          f"Review the current plan and confirm its cost again."),
+                "signature_mismatch": True,
+                "quoted_signature": plan_signature,
+                "plan_signature": current_signature,
+            })
         # §11.5: an approved plan must not silently mutate after approval.
         # Drift is detected once, in director.load_plan, which drops the stale
         # approval and returns the plan to draft -- so `status` never claims an
@@ -3128,7 +3169,7 @@ def compile_director_coverage(beat_id: str):
                           f"plan for {beat_id} is a draft; lock it first - approval is "
                           f"what allocates the render budget."),
                 "approval_drifted": bool(drifted),
-                "plan_signature": director.plan_signature(plan),
+                "plan_signature": current_signature,
             })
         # §4/§10: a script change must not silently corrupt the plan. Re-timing
         # is already refused by director.validate; a line rewritten to the SAME
@@ -3153,6 +3194,44 @@ def compile_director_coverage(beat_id: str):
                 "error": f"{beat_id} has {len(undecided)} critic warning(s) with no "
                          f"recorded decision; resolve or accept them first.",
                 "warnings": undecided,
+            })
+        # The last thing before anything is created or dispatched: this plan is
+        # compilable, and the only question left is whether the caller said they
+        # agreed to it.
+        #
+        # `if plan_signature and plan_signature != current_signature` used to be
+        # the whole binding, and it made enforcement conditional on the input
+        # being truthy -- so omitting the parameter, or sending it empty, skipped
+        # the comparison and dispatched whatever was on disk. That is Gate 1's
+        # own defect in a new place: there a truthy STRING cleared a gate, here a
+        # falsy one did. See director.signature_is_explicit.
+        #
+        # Deliberately AFTER the draft, staleness and warning gates rather than
+        # beside the mismatch check. Every one of those tells the caller
+        # something true about their plan, and "lock it first" is better advice
+        # than "sign your request" for a plan that was never approved. Order
+        # costs nothing here: none of them can dispatch, so the boundary is held
+        # by this check wherever it sits among them.
+        #
+        # `current_signature` is not returned. On a mismatch it is, because the
+        # human at the screen has to be re-quoted; here there is nothing to
+        # re-quote and echoing it back would read as an invitation to send it
+        # straight back without anyone having agreed to anything. A caller that
+        # needs it refetches the plan, which carries approved_signature.
+        if not director.signature_is_explicit(plan_signature):
+            return JSONResponse(status_code=400, content={
+                "ok": False,
+                "error": (
+                    f"this compile did not say which plan it was approving, so "
+                    f"nothing was compiled and nothing was charged. {beat_id} is "
+                    f"{plan.status}; re-open it, confirm the cost, and send that "
+                    f"plan's signature with the request."
+                    if plan_signature == "" else
+                    f"this compile sent something that is not a plan signature "
+                    f"({plan_signature!r}), so nothing was compiled and nothing was "
+                    f"charged. Re-open {beat_id}, confirm the cost, and send the "
+                    f"signature recorded when the plan was approved."),
+                "signature_missing": True,
             })
         ep = config.episode_paths(sb.title)
         ep["render"].mkdir(parents=True, exist_ok=True)

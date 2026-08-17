@@ -23,6 +23,7 @@ for _m in ("anthropic", "fal_client", "elevenlabs"):
     sys.modules.setdefault(_m, types.ModuleType(_m))
 
 pytest.importorskip("fastapi.testclient")
+from signed_compile import compile_beat  # noqa: E402
 
 from backend import director  # noqa: E402
 from backend.manifest import Camera, Shot, Storyboard  # noqa: E402
@@ -85,7 +86,7 @@ def test_an_unchanged_beat_still_compiles(studio):
     client, dispatched, _ = studio
     _plan()
     client.post("/api/director/lock/s001")
-    assert client.post("/api/director/compile/s001").status_code == 200
+    assert compile_beat(client, "s001").status_code == 200
     assert dispatched == ["director:s001"]
 
 
@@ -96,7 +97,7 @@ def test_whitespace_only_edits_are_not_a_rewrite(studio):
     _plan()
     client.post("/api/director/lock/s001")
     sb.shots[0].narration = "  " + ORIGINAL.replace(" ", "  ") + chr(10)
-    assert client.post("/api/director/compile/s001").status_code == 200
+    assert compile_beat(client, "s001").status_code == 200
 
 
 def test_re_locking_accepts_the_new_line(studio):
@@ -108,7 +109,7 @@ def test_re_locking_accepts_the_new_line(studio):
 
     assert client.post("/api/director/compile/s001").status_code == 409
     assert client.post("/api/director/lock/s001").status_code == 200
-    assert client.post("/api/director/compile/s001").status_code == 200
+    assert compile_beat(client, "s001").status_code == 200
 
 
 # --- what must NOT happen (§4) ----------------------------------------------------
@@ -124,7 +125,7 @@ def test_a_script_change_does_not_touch_unrelated_beats(studio):
     sb.shots[0].narration = SAME_LENGTH
 
     assert client.post("/api/director/compile/s001").status_code == 409
-    assert client.post("/api/director/compile/s002").status_code == 200
+    assert compile_beat(client, "s002").status_code == 200
     assert director.load_plan("s002").status == "locked"
 
 
