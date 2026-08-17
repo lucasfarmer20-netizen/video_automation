@@ -37,8 +37,11 @@ import FilmOverviewPanel from "../components/FilmOverviewPanel";
 import DirectorWorkspace from "../components/DirectorWorkspace";
 import LockedCoverageModal from "../components/LockedCoverageModal";
 import CoverageSurveyPanel from "../components/CoverageSurveyPanel";
-import { MOCK_SCENES , setActiveProjectId } from "../lib/directorApi";
+import { setActiveProjectId, fetchBeatCoverageStates } from "../lib/directorApi";
+import type { BeatCoverageState } from "../lib/directorApi";
+import { filmCoverageView, defaultSelectedBeat } from "../lib/filmCoverage";
 import { NO_SLOT_VIEW, viewForProject } from "../lib/slots";
+import { stageFromHash, hashForStage, hashAlreadyNames } from "../lib/stageRoute";
 import type { SlotTakes, SlotView, TimelineSlot } from "../lib/slots";
 
 // Setup API URL mapping
@@ -120,7 +123,15 @@ export default function WorkspacePage() {
   
   // View states
   const [activeView, setActiveView] = useState<"grid" | "canvas">("grid");
-  const [selectedSceneId, setSelectedSceneId] = useState<string>("s004");
+  // Empty, not "s004". That literal was MOCK_SCENES' scene_id, so the Director
+  // opened by asking for a plan for a beat that does not exist in the user's
+  // film and correctly answered "No coverage plan found" -- the default was
+  // chosen to match the fixture rather than the film. It is filled in from the
+  // loaded project below; "" renders as "no beat selected", never as a guess.
+  const [selectedSceneId, setSelectedSceneId] = useState<string>("");
+  const [sceneCoverage, setSceneCoverage] = useState<Record<string, BeatCoverageState>>({});
+  const [sceneCoverageError, setSceneCoverageError] = useState<string | null>(null);
+
   const [lockedModalBeat, setLockedModalBeat] = useState<string | null>(null);
   // Which FilmCraft stage is showing. The spine is SCRIPT -> DIRECT -> GENERATE
   // -> ROUGH CUT -> REFINE -> EXPORT; panel content still lives where it always
@@ -145,6 +156,16 @@ export default function WorkspacePage() {
   const scriptDraftStatus = useRef<string | undefined>(undefined);
   // Consecutive polls in which a running script_draft went missing.
   const draftMisses = useRef(0);
+  /** The Director workspace, so a finished plan can bring the user to it. */
+  const directorWorkspaceRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * Whether the URL has been read yet.
+   *
+   * The write-back effect must not run before the read effect, or the first
+   * commit would replace `#direct` with `#script` — the initial state value —
+   * and the reload would land on Script anyway, which is the bug.
+   */
+  const stageReadFromUrl = useRef(false);
   const [dismissedErrors, setDismissedErrors] = useState<Record<string, string>>({});
   const [chatHistory, setChatHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -494,6 +515,69 @@ export default function WorkspacePage() {
       console.error("Failed to poll background jobs", e);
     }
   };
+
+  /**
+   * What the server actually holds for THIS film's beats.
+   *
+   * The film coverage overview used to be handed `MOCK_SCENES`, a test fixture,
+   * so it quoted a cost of $3.82 for an 11-shot scene on a film the user was not
+   * working on. Everything it shows now comes from here, and a beat the server
+   * does not report is a beat the panel does not draw.
+   */
+  useEffect(() => {
+    const beats = (activeProject?.project?.shots || []) as Shot[];
+    if (beats.length === 0) {
+      setSceneCoverage({});
+      setSceneCoverageError(null);
+      return;
+    }
+    let live = true;
+    fetchBeatCoverageStates(beats.map((b) => b.scene_id))
+      .then((states) => {
+        if (!live) return;
+        setSceneCoverage(states);
+        setSceneCoverageError(null);
+      })
+      .catch((e) => {
+        if (!live) return;
+        // Say the read failed. An empty overview would claim this film has no
+        // coverage, which is a different and possibly false statement.
+        setSceneCoverage({});
+        setSceneCoverageError(e instanceof Error ? e.message : "coverage could not be read");
+      });
+    return () => { live = false; };
+  }, [activeProject]);
+
+  /**
+   * The stage lives in the URL, so a reload comes back to it.
+   *
+   * Read on mount rather than in the `useState` initialiser: this is a client
+   * component that Next still prerenders, and reading `window` in the
+   * initialiser is a hydration mismatch. One frame on Script is the cost.
+   *
+   * `hashchange` is here because Back and Forward are the two ways a user moves
+   * between stages without touching the nav, and a URL that changed while the
+   * screen did not would be worse than no routing at all.
+   */
+  useEffect(() => {
+    const applyHash = () => {
+      const fromUrl = stageFromHash(window.location.hash);
+      if (fromUrl) setActiveStage(fromUrl);
+      stageReadFromUrl.current = true;
+    };
+    applyHash();
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+  }, []);
+
+  useEffect(() => {
+    if (!stageReadFromUrl.current) return;
+    // replaceState, not pushState: moving between stages is not a page
+    // navigation, and one history entry per stage click would turn Back into
+    // "undo one tab press" rather than "leave the studio".
+    if (hashAlreadyNames(window.location.hash, activeStage)) return;
+    window.history.replaceState(null, "", hashForStage(activeStage));
+  }, [activeStage]);
 
   useEffect(() => {
     fetchProjects();
@@ -1216,6 +1300,13 @@ Moved to: ${res.moved_to}`);
   // draft variations, which the manifest already carries; a coverage slot's come
   // from its DirectorShot's plan, loaded when the slot is selected. Both are the
   // server's answer about which take is chosen — nothing is marked chosen here.
+  // The overview and the default selection, both from the loaded film. Derived
+  // rather than stored, so there is no effect racing the project load and no
+  // moment where a literal stands in for a beat id.
+  const filmCoverage = filmCoverageView(project.shots as Shot[] | undefined, sceneCoverage);
+  const effectiveSceneId =
+    selectedSceneId || defaultSelectedBeat(project.shots as Shot[] | undefined, sceneCoverage);
+
   const takesBySlot: Record<string, SlotTakes> = {};
   (cut.slots || []).forEach((s) => {
     if (s.shot_id) {
@@ -1556,20 +1647,78 @@ Moved to: ${res.moved_to}`);
 
               <CoverageSurveyPanel
                 onSelectBeats={(beatList) => {
-                  if (beatList.length > 0) setSelectedSceneId(beatList[0]);
+                  if (beatList.length === 0) return;
+                  setSelectedSceneId(beatList[0]);
+                  // Setting the scene id is not, on its own, an outcome anyone
+                  // can see: the survey, the overview and the workspace are one
+                  // stacked column, and the workspace sits below the fold. After
+                  // a ninety-second wait the whole visible result was an
+                  // off-screen component quietly changing which beat it showed,
+                  // which is indistinguishable from the button having done
+                  // nothing. Take the user to the thing they waited for.
+                  requestAnimationFrame(() => {
+                    directorWorkspaceRef.current?.scrollIntoView({
+                      behavior: "smooth",
+                      block: "start",
+                    });
+                  });
                 }}
               />
-              <FilmOverviewPanel
-                scenes={MOCK_SCENES}
-                activeSceneId={selectedSceneId}
-                onSelectScene={(scId) => setSelectedSceneId(scId)}
-              />
-              <DirectorWorkspace
-                sceneId={selectedSceneId}
-                activeProjectTitle={project.title || "Active"}
-                mediaUrl={mediaUrl}
-                onBackToStoryboard={() => setActiveStage("script")}
-              />
+              {/* The film that is actually loaded, or a statement that it could
+                  not be read. Never a fixture: this panel quoted $3.82 for an
+                  11-shot scene called "The Mountain Takes Its Toll" to a human
+                  working on a different film entirely, while their own locked
+                  coverage was nowhere on the screen. State the block, never
+                  substitute — and above all never substitute a price. */}
+              {sceneCoverageError ? (
+                <div
+                  data-testid="film-coverage-unread"
+                  className="w-full glass-panel p-4 rounded-2xl border border-amber-500/40 bg-zinc-950/80 font-mono text-xs text-zinc-300 leading-relaxed"
+                >
+                  <strong className="text-amber-400">Coverage could not be read.</strong>{" "}
+                  This panel is not showing you a film rather than showing you the
+                  wrong one. Nothing has been lost — your plans are on the server.
+                  <div className="mt-1 text-[11px] text-amber-300/80">{sceneCoverageError}</div>
+                </div>
+              ) : filmCoverage.rows.length > 0 ? (
+                <FilmOverviewPanel
+                  scenes={filmCoverage.rows}
+                  activeSceneId={effectiveSceneId}
+                  onSelectScene={(scId) => setSelectedSceneId(scId)}
+                />
+              ) : (
+                <div
+                  data-testid="film-coverage-empty"
+                  className="w-full glass-panel p-4 rounded-2xl border border-zinc-800 bg-zinc-950/60 font-mono text-xs text-zinc-300 leading-relaxed"
+                >
+                  <strong className="text-amber-400">No coverage planned yet.</strong>{" "}
+                  {filmCoverage.totalBeats > 0
+                    ? `None of this film's ${filmCoverage.totalBeats} beats has a coverage plan. Plan one above and it will appear here.`
+                    : "This film has no narration beats yet."}
+                </div>
+              )}
+              {filmCoverage.unpriced.length > 0 && (
+                // Coverage the server did not price. Rendering $0.00 would be
+                // the same defect in a smaller font.
+                <div
+                  data-testid="film-coverage-unpriced"
+                  className="w-full px-4 py-2.5 rounded-xl border border-zinc-800 bg-zinc-950/60 font-mono text-[11px] text-zinc-400"
+                >
+                  {filmCoverage.unpriced.length} covered beat
+                  {filmCoverage.unpriced.length === 1 ? "" : "s"} not shown above:{" "}
+                  {filmCoverage.unpriced.map((u) => u.scene_id).join(", ")} — the server
+                  returned no cost for {filmCoverage.unpriced.length === 1 ? "it" : "them"},
+                  so no cost is shown.
+                </div>
+              )}
+              <div ref={directorWorkspaceRef} data-testid="director-workspace-anchor">
+                <DirectorWorkspace
+                  sceneId={effectiveSceneId}
+                  activeProjectTitle={project.title || "Active"}
+                  mediaUrl={mediaUrl}
+                  onBackToStoryboard={() => setActiveStage("script")}
+                />
+              </div>
             </div>
           ) : activeStage === "script" && activeView === "canvas" ? (
             <div className="h-[380px] sm:h-[500px] md:h-[550px] w-full shrink-0">

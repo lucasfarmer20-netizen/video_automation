@@ -139,7 +139,13 @@ export async function redirectSceneCoverage(
   commandText: string,
   quickShortcuts: string[] = [],
   preferences?: CreativePreferences,
-  profile?: string
+  profile?: string,
+  // Plan over coverage the server would otherwise protect. Defaulted to false
+  // and never inferred: the planner refuses locked beats precisely because that
+  // coverage was reviewed and locked on purpose, and a client that quietly
+  // retried with replan=true would turn a guard into a formality. Only a user
+  // who has been told what it discards may set this.
+  replan = false
 ): Promise<{ ok: boolean; job?: string; started?: boolean; error?: string }> {
   const beatList = Array.isArray(beats) ? beats : beats.split(",");
   const combinedNotes = [
@@ -157,6 +163,7 @@ export async function redirectSceneCoverage(
       profile: profile || "historical_docudrama",
       notes: combinedNotes,
       critique: true,
+      replan,
     }),
   });
 
@@ -212,6 +219,128 @@ export async function waitForJob(
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
+}
+
+/** What the survey needs to know about a beat it is offering to plan. */
+export interface BeatCoverageState {
+  /** The plan's own status: "draft", "locked", "compiled", … */
+  status: string;
+  /** How many DirectorShots the plan holds. */
+  shots: number;
+  /** Locked or compiled coverage: finished work the server refuses to overwrite. */
+  locked: boolean;
+  /**
+   * The server's own estimate for this beat, in dollars, or null.
+   *
+   * `null` when `/api/director/scene`'s summary did not price this beat, and
+   * null must render as "not priced" — never as 0, and never as a number
+   * borrowed from anywhere else. A cost is the one number on this screen a
+   * human will act on; a wrong one is worse than an absent one.
+   */
+  estimatedCost: number | null;
+  /** Critic findings recorded against the plan. */
+  warnings: number;
+  /** Narration seconds this beat runs, as the server measured it. */
+  durationSeconds: number | null;
+}
+
+/**
+ * Which of these beats already have coverage, and whether it is locked.
+ *
+ * GET /api/director/survey is pure arithmetic over narration — it never reads a
+ * plan, so it cannot tell a planned beat from an unplanned one. That is why the
+ * survey went on offering PLAN SCENE for a beat whose coverage was locked, and
+ * why clicking it earned a refusal the user had been invited into:
+ *
+ *   ValueError: every requested beat already has locked coverage (s001).
+ *                Pass replan=true to plan over it.
+ *
+ * The server is right to refuse — locked coverage is work that was reviewed,
+ * had its warnings resolved, and was deliberately locked. One read of
+ * /api/director/scene covers every beat at once, so the offer can match what
+ * the server will actually accept.
+ */
+export async function fetchBeatCoverageStates(
+  beatIds: string[]
+): Promise<Record<string, BeatCoverageState>> {
+  if (beatIds.length === 0) return {};
+  const res = await fetch(
+    `${API_BASE}/api/director/scene?beats=${encodeURIComponent(beatIds.join(","))}`,
+    { headers: getAuthHeaders() }
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) {
+    throw new Error(data.error || `Could not read existing coverage (${res.status})`);
+  }
+  /** Only the parts of a `/api/director/scene` entry this reader needs. */
+  interface SceneEntry {
+    beat_id?: string;
+    beat_duration?: number | null;
+    plan?: { status?: string; coverage?: unknown[]; warnings?: unknown[] } | null;
+  }
+  /** One row of `planner.scene_summary` — the ONLY source of a cost figure. */
+  interface SummaryRow {
+    beat_id?: string;
+    estimated_cost?: number;
+  }
+  const priced = new Map<string, number>();
+  ((data.summary?.beats || []) as SummaryRow[]).forEach((row) => {
+    if (row?.beat_id && typeof row.estimated_cost === "number") {
+      priced.set(row.beat_id, row.estimated_cost);
+    }
+  });
+
+  const out: Record<string, BeatCoverageState> = {};
+  (data.beats || []).forEach((entry: SceneEntry) => {
+    if (!entry?.plan || !entry.beat_id) return;
+    const status = String(entry.plan.status || "draft");
+    out[entry.beat_id] = {
+      status,
+      shots: (entry.plan.coverage || []).length,
+      // Both statuses mean the same thing to the planner: it will refuse
+      // without replan. Deciding that here, once, keeps the client from
+      // inventing a second definition of "locked" that can drift from the one
+      // the server enforces.
+      locked: status === "locked" || status === "compiled",
+      // Strictly the server's figure for THIS beat of THIS project. Absent
+      // stays absent: no zero, no total divided up, no default.
+      estimatedCost: priced.has(entry.beat_id) ? (priced.get(entry.beat_id) as number) : null,
+      warnings: (entry.plan.warnings || []).length,
+      durationSeconds: typeof entry.beat_duration === "number" ? entry.beat_duration : null,
+    };
+  });
+  return out;
+}
+
+/** The job key POST /api/director/plan derives for a beat (`backend/main.py`). */
+export const PLAN_JOB_PREFIX = "director_plan:";
+
+/**
+ * Which coverage-plan jobs the server has running right now, beat -> job key.
+ *
+ * The job outlives the browser. `start_job` spawns a server-side thread and the
+ * ~90s plan carries on regardless of what the page does — but the state that
+ * remembers it is React state, so a remount destroys it: `planningBeats` is
+ * wiped, every button re-enables, and the pending `waitForJob` promise is
+ * orphaned with its `setState` calls landing on a dead component. The plan then
+ * lands with nobody watching for it, which reads exactly like the plan never
+ * running.
+ *
+ * Lifting the state to a parent would only survive a child remount. This
+ * survives a page reload and a second tab too, because the server — not the
+ * browser — is what actually knows a plan is running.
+ */
+export async function fetchRunningPlanJobs(): Promise<Record<string, string>> {
+  const res = await fetch(`${API_BASE}/api/assemble/status`, { headers: getAuthHeaders() });
+  const data = await res.json().catch(() => ({}));
+  const jobs = (data && data.jobs) || {};
+  const running: Record<string, string> = {};
+  Object.keys(jobs).forEach((key) => {
+    if (!key.startsWith(PLAN_JOB_PREFIX)) return;
+    if (jobs[key]?.status !== "running") return;
+    running[key.slice(PLAN_JOB_PREFIX.length)] = key;
+  });
+  return running;
 }
 
 /**
