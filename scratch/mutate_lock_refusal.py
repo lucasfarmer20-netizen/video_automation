@@ -37,6 +37,7 @@ API = ROOT / "frontend/src/lib/directorApi.ts"
 TARGETS = [
     "src/lib/directorApi.lock.test.ts",
     "src/components/DirectorWorkspace.lock.test.tsx",
+    "src/components/DirectorWorkspace.replan.test.tsx",
 ]
 
 # The defect-proving assertion's failure message, defined in the component test.
@@ -47,6 +48,12 @@ REFUSAL_NEVER_REACHED_THE_HUMAN = (
 )
 # The same, at the API seam.
 SENTENCE_LOST = "the server's own sentence did not survive setCoverageStatus"
+# And for the re-plan controls, where the defect is that a running job looked
+# exactly like a button that did nothing.
+LOOKED_LIKE_NOTHING_HAPPENED = (
+    "a re-plan job is running and the control says nothing about it: "
+    "indistinguishable from a button that did nothing"
+)
 
 # The handler as it stood at 082f67b. Restored by M1 via a span replacement, so
 # the reproduction is the real one and not a transcription of it: the harness
@@ -207,6 +214,81 @@ MUTATIONS = [
      "  if (Array.isArray(data.warnings) && data.warnings.length > 0) {",
      "  if (false) {",
      ["the undecided findings come back with the finding list"], ""),
+
+    # --- the re-plan controls (second round) --------------------------------
+    # The human's second sentence: "The re-plan button also should provide some
+    # feedback that it is working, like at least greying out." M27 is that
+    # defect restored -- the banner's button exactly as it was, with no state of
+    # any kind.
+    ("M27 the banner's Re-plan button as it was: no disabled, no label, no spinner", WS,
+     ('          <button\n            data-testid="replan-stale"',
+      '                  : "Re-plan Scene"}\n            </span>\n          </button>'),
+     # The testid stays. It is a test hook, not behaviour, and the defect is the
+     # absent state -- with the hook removed the tests fail on a missing element
+     # before they can evaluate anything about what the control says, which is
+     # the trap this harness exists to catch.
+     '          <button\n            data-testid="replan-stale"\n'
+     "            onClick={handleRedirectScene}\n"
+     '            className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 border '
+     'border-amber-500/40 text-amber-200 rounded text-[11px] font-bold transition-colors"\n'
+     "          >\n            Re-plan Scene\n          </button>",
+     # NOT the double click: `handleRedirectScene` already guarded that with
+     # `if (redirecting) return`, and that guard is not what this round changed.
+     # M35 is what stands for it.
+     ["says a job is running", "on a locked plan it says what to do"],
+     LOOKED_LIKE_NOTHING_HAPPENED),
+    ("M28 REDIRECT SCENE keeps its label while the planner runs", WS,
+     "            <span>\n              {redirecting\n"
+     "                ? `RE-PLANNING (${sceneBeatsLabel})…`\n"
+     "                : isLocked\n                  ? \"UNLOCK TO REDIRECT\"\n"
+     "                  : \"REDIRECT SCENE\"}\n            </span>",
+     "            <span>REDIRECT SCENE</span>",
+     ["the label changes", "a multi-beat scene names every beat"],
+     LOOKED_LIKE_NOTHING_HAPPENED),
+    ("M29 the running line waits for a log, as the old panel did", WS,
+     '        {redirecting && (\n          <p\n            data-testid="redirect-running"',
+     '        {redirecting && redirectLog && (\n          <p\n            data-testid="redirect-running"',
+     ["before the server has logged anything"], LOOKED_LIKE_NOTHING_HAPPENED),
+    ("M30 drop the running line entirely", WS,
+     '        {redirecting && (\n          <p\n            data-testid="redirect-running"',
+     '        {false && (\n          <p\n            data-testid="redirect-running"',
+     ["before the server has logged anything", "says a job is running"],
+     LOOKED_LIKE_NOTHING_HAPPENED),
+    ("M31 the locked plan's button goes dead again, with no sentence", WS,
+     '        {isLocked && !redirecting && (\n          <p\n            data-testid="redirect-locked-note"',
+     '        {false && (\n          <p\n            data-testid="redirect-locked-note"',
+     ["the button names the action, and the note names the button",
+      "a compiled plan is locked for this purpose too"], ""),
+    ("M32 the locked button reads REDIRECT SCENE while doing nothing", WS,
+     '                : isLocked\n                  ? "UNLOCK TO REDIRECT"\n'
+     '                  : "REDIRECT SCENE"}',
+     '                : "REDIRECT SCENE"}',
+     ["the button names the action, and the note names the button"], ""),
+    ("M33 the banner's button re-enabled on a locked plan", WS,
+     '            data-testid="replan-stale"\n            onClick={handleRedirectScene}\n'
+     "            disabled={isLocked || redirecting}",
+     '            data-testid="replan-stale"\n            onClick={handleRedirectScene}\n'
+     "            disabled={redirecting}",
+     ["on a locked plan it says what to do"], ""),
+    # Both halves again, for the reason M11 gives: the handler's early return
+    # and the disabled attribute each stop the second request on their own, so a
+    # mutation of one alone is undetectable and would only prove the pair is
+    # redundant.
+    ("M35 no in-flight protection on the re-plan job either", WS,
+     [("    if (redirecting) return;\n    setRedirecting(true);",
+       "    setRedirecting(true);"),
+      ('            data-testid="replan-stale"\n            onClick={handleRedirectScene}\n'
+       "            disabled={isLocked || redirecting}",
+       '            data-testid="replan-stale"\n            onClick={handleRedirectScene}\n'
+       "            disabled={false}")],
+     "",
+     ["a second click cannot start a second planning job"], ""),
+    ("M34 the unplanned-beat button repeats its route while planning", WS,
+     "            {redirecting\n              ? `PLANNING (${sceneId})…`\n"
+     "              : `POST /api/director/plan (${sceneId})`}",
+     "            {`POST /api/director/plan (${sceneId})`}",
+     ["says it is planning rather than repeating the route"],
+     LOOKED_LIKE_NOTHING_HAPPENED),
 ]
 
 

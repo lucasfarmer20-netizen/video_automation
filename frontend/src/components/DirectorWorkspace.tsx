@@ -892,17 +892,25 @@ export default function DirectorWorkspace({
             </div>
           )}
         </div>
+        {/* Same rule as the two re-plan controls below: the label is the
+            feedback. This one had the spinner and the disabled state already and
+            still read the same while a minute-long job ran. */}
         <button
+          data-testid="plan-unplanned-beat"
           onClick={() => handleRedirectScene()}
           disabled={redirecting}
-          className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-mono font-bold rounded-xl transition-all flex items-center gap-2 shadow-lg neon-glow-amber"
+          className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-mono font-bold rounded-xl transition-all flex items-center gap-2 shadow-lg neon-glow-amber disabled:opacity-50"
         >
           {redirecting ? (
             <Sparkles className="w-4 h-4 animate-spin" />
           ) : (
             <Clapperboard className="w-4 h-4" />
           )}
-          <span>POST /api/director/plan ({sceneId})</span>
+          <span>
+            {redirecting
+              ? `PLANNING (${sceneId})…`
+              : `POST /api/director/plan (${sceneId})`}
+          </span>
         </button>
       </div>
     );
@@ -917,6 +925,12 @@ export default function DirectorWorkspace({
     coveragePlan.live_beat_duration &&
       Math.abs(coveragePlan.live_beat_duration - targetDuration) > 0.1
   );
+  /** The beats a scene-level action covers — what a running job is running ON. */
+  const sceneBeatsLabel = (
+    coveragePlan.scene_beats && coveragePlan.scene_beats.length > 0
+      ? coveragePlan.scene_beats
+      : [sceneId]
+  ).join(", ");
 
   return (
     <div className="w-full flex flex-col gap-4 p-4 max-w-[1600px] mx-auto animate-in fade-in duration-300">
@@ -929,11 +943,30 @@ export default function DirectorWorkspace({
               ⚠️ <strong>Stale Plan Snapshot:</strong> Live narration duration ({coveragePlan.live_beat_duration?.toFixed(1)}s) differs from plan snapshot ({targetDuration.toFixed(1)}s). Re-planning recommended.
             </span>
           </div>
+          {/* The button in the banner the human eventually found for themselves.
+              It had no busy state and no disabled state at all: a click started
+              a job of tens of seconds and the control was unchanged throughout,
+              which is the same reading as a dead button — and a second click
+              was a second request. */}
           <button
+            data-testid="replan-stale"
             onClick={handleRedirectScene}
-            className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 rounded text-[11px] font-bold transition-colors"
+            disabled={isLocked || redirecting}
+            title={
+              isLocked
+                ? "This plan is locked. Unlock it above before re-planning."
+                : "Throw away this coverage and plan the scene again"
+            }
+            className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 rounded text-[11px] font-bold transition-colors flex items-center gap-1.5 disabled:opacity-50"
           >
-            Re-plan Scene
+            {redirecting && <Sparkles className="w-3 h-3 animate-spin shrink-0" />}
+            <span>
+              {redirecting
+                ? `RE-PLANNING (${sceneBeatsLabel})…`
+                : isLocked
+                  ? "UNLOCK TO RE-PLAN"
+                  : "Re-plan Scene"}
+            </span>
           </button>
         </div>
       )}
@@ -1336,9 +1369,26 @@ export default function DirectorWorkspace({
             rows={2}
             className="w-full bg-zinc-950/80 border border-zinc-800 rounded-xl p-3.5 text-xs text-zinc-100 placeholder-zinc-600 focus:border-amber-500 outline-none resize-none font-sans leading-relaxed disabled:opacity-50"
           />
+          {/* The label is the feedback, not the spinner. This button already had
+              `disabled` and a spinner while `redirecting`, and it still read
+              "REDIRECT SCENE" throughout a job of tens of seconds — weak
+              feedback on a long job reads as none. `CoverageSurveyPanel` says
+              `PLANNING (s003)…`; this says the same thing about the same
+              endpoint.
+
+              Locked is stated rather than left as a dead control: the planner
+              plans AROUND locked beats (`plan_scene`, replan=false, which is
+              what this sends), so a redirect issued here would return success
+              having changed nothing. */}
           <button
+            data-testid="redirect-scene"
             onClick={handleRedirectScene}
             disabled={isLocked || redirecting}
+            title={
+              isLocked
+                ? "This plan is locked. Unlock it above before re-planning."
+                : "Re-plan this scene's coverage from a note"
+            }
             className="absolute bottom-3 right-3 px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold font-mono rounded-lg transition-all flex items-center gap-1.5 shadow-lg disabled:opacity-50"
           >
             {redirecting ? (
@@ -1346,12 +1396,42 @@ export default function DirectorWorkspace({
             ) : (
               <Send className="w-3.5 h-3.5" />
             )}
-            <span>REDIRECT SCENE</span>
+            <span>
+              {redirecting
+                ? `RE-PLANNING (${sceneBeatsLabel})…`
+                : isLocked
+                  ? "UNLOCK TO REDIRECT"
+                  : "REDIRECT SCENE"}
+            </span>
           </button>
         </div>
 
-        {/* The planner is a background job of tens of seconds. Show its own log
-            rather than a spinner with nothing behind it. */}
+        {/* Why the control above is off, rather than a dead button. The action
+            it names lives in this same header, so it is named back. */}
+        {isLocked && !redirecting && (
+          <p
+            data-testid="redirect-locked-note"
+            className="text-[11px] font-mono text-zinc-400 leading-relaxed"
+          >
+            This plan is locked, so re-planning is turned off here — the planner
+            plans around locked beats and would leave this one exactly as it is.
+            Use UNLOCK TO EDIT above first; that returns the plan to draft without
+            discarding its coverage.
+          </p>
+        )}
+
+        {/* The planner is a background job of tens of seconds. Say it is running
+            even before it has logged anything: the log arrives when the server
+            first writes one, and until then this said nothing at all. */}
+        {redirecting && (
+          <p
+            data-testid="redirect-running"
+            className="text-[11px] font-mono text-amber-300/90 leading-relaxed"
+          >
+            Re-planning {sceneBeatsLabel} — this runs on the server and takes tens
+            of seconds. The plan on screen is replaced when it finishes.
+          </p>
+        )}
         {redirecting && redirectLog && (
           <pre className="max-h-24 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-[11px] font-mono text-zinc-400 whitespace-pre-wrap">
             {redirectLog.slice(-600)}

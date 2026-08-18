@@ -226,17 +226,109 @@ describe("a refused lock reaches the human, in the server's own words", () => {
       .toContain("s001: currently compiling");
   });
 
-  test("validation — the numbers in it are the whole advice", async () => {
+  test("the stale snapshot — THE refusal the human actually hit", async () => {
+    // The one that sent them looking. `director.validate` compares the duration
+    // the plan was written against to the beat's duration now, and the sentence
+    // it raises is an exact diagnosis: 6.0s of coverage against 34.5s of
+    // narration. The UI threw the whole list away, so what they eventually
+    // found instead was the Stale Plan Snapshot banner elsewhere on the screen.
+    // Their words: "it wasn't obvious since there was no warning from the
+    // failed lock."
     mockSetStatus.mockRejectedValue(
       refusal(400, "nothing was locked", {
-        problems: ["s001: coverage totals 31.4s but the beat is 28.2s"],
+        problems: [
+          "s002: plan was made for 6.00s but the beat is now 34.50s — " +
+            "narration changed, replan this beat",
+        ],
       })
     );
 
     await mountAndClickLock();
 
-    expect(document.body.textContent, REFUSAL_NEVER_REACHED_THE_HUMAN)
-      .toContain("s001: coverage totals 31.4s but the beat is 28.2s");
+    expect(document.body.textContent, REFUSAL_NEVER_REACHED_THE_HUMAN).toContain(
+      "s002: plan was made for 6.00s but the beat is now 34.50s — " +
+        "narration changed, replan this beat"
+    );
+    // Not a warning refusal, so nothing sends them to the problem queue: the
+    // instruction is in the sentence, and it is to replan the beat.
+    expect(screen.queryByTestId("lock-open-queue")).toBeNull();
+  });
+
+  test("a whole scene of stale plans — one sentence per beat, all of them", async () => {
+    // s002, s010 and s018 each carry exactly two shots because they were
+    // planned when every beat was pinned at 6 seconds, before the VO existed.
+    // Two ~3s shots IS a complete 6s beat, so nothing about them looks wrong
+    // until the beat's real duration arrives. The refusal is the system
+    // correctly detecting a whole class of stale plans at once, and it can only
+    // report the class if every entry survives.
+    mockFetchPlan.mockResolvedValue(plan({ scene_beats: ["s002", "s010", "s018"] }));
+    mockSetStatus.mockRejectedValue(
+      refusal(400, "nothing was locked", {
+        problems: [
+          "s002: plan was made for 6.00s but the beat is now 34.50s — narration changed, replan this beat",
+          "s010: plan was made for 6.00s but the beat is now 22.10s — narration changed, replan this beat",
+          "s018: plan was made for 6.00s but the beat is now 41.80s — narration changed, replan this beat",
+        ],
+      })
+    );
+
+    await mountAndClickLock();
+
+    const body = document.body.textContent || "";
+    expect(body, REFUSAL_NEVER_REACHED_THE_HUMAN).toContain("s002: plan was made for 6.00s");
+    expect(body, REFUSAL_NEVER_REACHED_THE_HUMAN).toContain("s010: plan was made for 6.00s");
+    expect(body, REFUSAL_NEVER_REACHED_THE_HUMAN).toContain("s018: plan was made for 6.00s");
+    expect(screen.getAllByTestId("lock-problem-detail")).toHaveLength(3);
+  });
+
+  test("coverage that does not fill the beat — validate's other arithmetic", async () => {
+    // The same cause, a different check: the plan's own shots no longer sum to
+    // the beat. Its signed delta is the whole advice.
+    mockSetStatus.mockRejectedValue(
+      refusal(400, "nothing was locked", {
+        problems: [
+          "s001: coverage totals 31.40s but the beat is 28.20s (+3.20s) — " +
+            "coverage must fill the beat exactly",
+        ],
+      })
+    );
+
+    await mountAndClickLock();
+
+    expect(document.body.textContent, REFUSAL_NEVER_REACHED_THE_HUMAN).toContain(
+      "s001: coverage totals 31.40s but the beat is 28.20s (+3.20s) — " +
+        "coverage must fill the beat exactly"
+    );
+  });
+
+  test("beats failing for DIFFERENT reasons at once, each in its own words", async () => {
+    // A scene holds several beats and `lock_scene` accumulates one entry per
+    // beat, so the list can carry all four causes simultaneously. Any collapse
+    // to a single sentence has to pick one and discard three.
+    mockFetchPlan.mockResolvedValue(
+      plan({ scene_beats: ["s001", "s002", "s003", "s004"] })
+    );
+    mockSetStatus.mockRejectedValue(
+      refusal(400, "nothing was locked", {
+        problems: [
+          "s001: no plan",
+          "s002: currently compiling",
+          "s003: plan was made for 6.00s but the beat is now 34.50s — narration changed, replan this beat",
+          "s004: 2 critic warning(s) awaiting a decision (w_3f2a11, w_91bc04)",
+        ],
+      })
+    );
+
+    await mountAndClickLock();
+
+    const body = document.body.textContent || "";
+    expect(body, REFUSAL_NEVER_REACHED_THE_HUMAN).toContain("s001: no plan");
+    expect(body, REFUSAL_NEVER_REACHED_THE_HUMAN).toContain("s002: currently compiling");
+    expect(body, REFUSAL_NEVER_REACHED_THE_HUMAN)
+      .toContain("s003: plan was made for 6.00s but the beat is now 34.50s");
+    expect(body, REFUSAL_NEVER_REACHED_THE_HUMAN)
+      .toContain("s004: 2 critic warning(s) awaiting a decision (w_3f2a11, w_91bc04)");
+    expect(screen.getAllByTestId("lock-problem-detail")).toHaveLength(4);
   });
 
   test("the auth 401 — the refusal with no `problems` list at all", async () => {
