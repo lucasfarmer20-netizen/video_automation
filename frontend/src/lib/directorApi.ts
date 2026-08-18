@@ -467,6 +467,59 @@ export async function fetchRunningPlanJobs(): Promise<Record<string, string>> {
 }
 
 /**
+ * A lock or unlock the server refused, carrying what it refused *for*.
+ *
+ * `POST /api/director/lock_scene` validates every beat before it locks any, and
+ * when one fails it answers `400 {"error": "nothing was locked", "problems":
+ * [...]}`. The headline is deliberately terse; `problems` is where the route
+ * puts the sentence that says what to do — "s001: 6 critic warning(s) awaiting
+ * a decision (w_3f2a, w_91bc, …)", "s002: currently compiling", or whatever
+ * `director.validate` raised. Thrown as `new Error(data.error)` all of that is
+ * dropped and the caller is left with three words that name no beat, no count
+ * and no finding.
+ *
+ * `changed` exists because unlocking is NOT symmetric with locking. There is no
+ * bulk unlock route, so a scene unlocks by fanning out one request per beat, and
+ * those requests succeed and fail independently: a scene can come back part
+ * unlocked. The caller has to be told which beats moved, because the plan on its
+ * screen is no longer a description of any of them.
+ */
+export type LockRefusal = Error & {
+  status?: number;
+  /** The scene route's per-beat sentences, one per beat that failed. */
+  problems?: string[];
+  /** The per-beat route's undecided findings, sent with its 400. */
+  warnings?: DirectorWarning[];
+  /** Beats this call DID change before another refused (unlock fan-out only). */
+  changed?: string[];
+};
+
+/** The reply's own words, or the status if it had none. Never a summary. */
+function lockRefusal(
+  status: number,
+  data: { error?: unknown; detail?: unknown; problems?: unknown; warnings?: unknown },
+  fallback: string
+): LockRefusal {
+  // `detail` as well as `error`: `beats[] is required` is an HTTPException, so
+  // FastAPI serialises it under `detail` and there is no `error` key to read.
+  const said = data.error || data.detail;
+  const err = new Error(said ? String(said) : fallback) as LockRefusal;
+  err.status = status;
+  if (Array.isArray(data.problems) && data.problems.length > 0) {
+    err.problems = data.problems.map((p) => String(p));
+  }
+  if (Array.isArray(data.warnings) && data.warnings.length > 0) {
+    err.warnings = data.warnings as DirectorWarning[];
+  }
+  return err;
+}
+
+/** A reply body, or `{}` when the response was not JSON at all (502 HTML). */
+async function bodyOf(res: Response): Promise<Record<string, unknown>> {
+  return (await res.json().catch(() => ({}))) as Record<string, unknown>;
+}
+
+/**
  * POST /api/director/lock/{beat_id}?locked=true|false OR POST /api/director/lock_scene
  * Requires X-Studio-Key auth header
  */
@@ -485,14 +538,24 @@ export async function setCoverageStatus(
       headers: getAuthHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ beats: beatIdOrBeats }),
     });
-    const data = await res.json();
+    const data = await bodyOf(res);
     if (!res.ok || !data.ok) {
-      throw new Error(data.error || `Locking scene failed with status ${res.status}`);
+      // `problems` travels with it. "nothing was locked" is the route's headline
+      // and it is true; the list under it is the only part that names the beat
+      // and the findings, and it is what the human needs to act.
+      throw lockRefusal(
+        res.status,
+        data,
+        `Locking ${beatIdOrBeats.join(", ")} failed with status ${res.status}.`
+      );
     }
-    return data;
+    return data as { ok: boolean; status?: string };
   }
 
-  // Unlocking a scene: no bulk route exists, so fan out per beat.
+  // Unlocking a scene: no bulk route exists, so fan out per beat. Which means
+  // these succeed and fail INDEPENDENTLY — unlike lock_scene, which validates
+  // every beat before it writes any. A refusal here does not mean nothing
+  // changed, so what did change is reported alongside it.
   if (Array.isArray(beatIdOrBeats)) {
     const results = await Promise.all(
       beatIdOrBeats.map(async (b) => {
@@ -500,11 +563,34 @@ export async function setCoverageStatus(
           `${API_BASE}/api/director/lock/${encodeURIComponent(b)}?locked=false`,
           { method: "POST", headers: getAuthHeaders() }
         );
-        return r.json();
+        const d = await bodyOf(r);
+        // `r.ok` as well as `d.ok`: a 502 from a proxy has no body to read, and
+        // reading only the absent `ok` field would have called it a refusal
+        // with nothing to say. It is still a refusal — it just has to say the
+        // status instead.
+        return { beat: b, ok: r.ok && d.ok === true, status: r.status, data: d };
       })
     );
-    const bad = results.find((r) => !r.ok);
-    if (bad) throw new Error(bad.error || "Unlocking the scene failed");
+    const bad = results.filter((r) => !r.ok);
+    if (bad.length > 0) {
+      const sentences = bad.map(
+        (r) =>
+          `${r.beat}: ${
+            r.data.error || r.data.detail || `unlocking failed with status ${r.status}`
+          }`
+      );
+      const err = lockRefusal(
+        bad[0].status,
+        // One failed beat: its own sentence is the headline, because there is
+        // nothing to summarise. Several: the headline says how many, and every
+        // one of them is listed below it.
+        bad.length === 1 ? bad[0].data : {},
+        `${bad.length} of ${results.length} beats refused to unlock.`
+      );
+      err.problems = sentences;
+      err.changed = results.filter((r) => r.ok).map((r) => r.beat);
+      throw err;
+    }
     return { ok: true, status: "draft" };
   }
 
@@ -516,12 +602,18 @@ export async function setCoverageStatus(
     }
   );
 
-  const data = await res.json();
+  const data = await bodyOf(res);
   if (!res.ok || !data.ok) {
-    throw new Error(data.error || `Locking beat ${beatIdOrBeats} failed with status ${res.status}`);
+    // This route names its own count and its own finding ids in `error`, and
+    // sends the findings themselves under `warnings`.
+    throw lockRefusal(
+      res.status,
+      data,
+      `${locked ? "Locking" : "Unlocking"} beat ${beatIdOrBeats} failed with status ${res.status}.`
+    );
   }
 
-  return data;
+  return data as { ok: boolean; status?: string };
 }
 
 /**
