@@ -130,6 +130,33 @@ function classifyCompileRefusal(err: CompileRefusal | undefined): CompileProblem
 }
 
 /**
+ * What a re-plan did, and it must survive the thing that asked for it.
+ *
+ * The re-plan the human reached for is the action inside the Stale Plan
+ * Snapshot banner, and that banner renders under `isSnapshotStale`. So on
+ * SUCCESS the plan stops being stale, the condition goes false, and the whole
+ * box unmounts — taking any state kept inside it with it. Their only signal
+ * that anything had happened was the box vanishing, forty to ninety seconds
+ * after the click, with nothing in between.
+ *
+ * A running state that lives inside a container which disappears on success is
+ * therefore not a running state at all, and neither is the outcome. Both live
+ * out here, at the top of the workspace, rendered by something no re-plan can
+ * unmount.
+ *
+ * Failure had the opposite problem, and it was not silence — it was a false
+ * claim. `setError` feeds the early return at the top of this component, so a
+ * planning failure replaced the entire Director with the panel headed
+ * "404 / Unplanned Beat Coverage", which says this beat has no plan. It has
+ * one: the old plan, still on the server, still what would be compiled,
+ * unchanged precisely because the re-plan did not finish. `error` means "this
+ * scene could not be loaded"; a re-plan that failed is a different fact.
+ */
+type RedirectOutcome =
+  | { kind: "done"; message: string }
+  | { kind: "failed"; message: string };
+
+/**
  * Why a lock or unlock did not take — as distinct as the server keeps it.
  *
  * `POST /api/director/lock_scene` answers ONE status code, 400, for every
@@ -317,6 +344,9 @@ export default function DirectorWorkspace({
   const [problemDrawerOpen, setProblemDrawerOpen] = useState<boolean>(false);
   const [takeModalShot, setTakeModalShot] = useState<DirectorShot | null>(null);
   const [redirecting, setRedirecting] = useState<boolean>(false);
+  // Rendered above the Stale Plan Snapshot banner, because a successful re-plan
+  // unmounts that banner. See RedirectOutcome.
+  const [redirectOutcome, setRedirectOutcome] = useState<RedirectOutcome | null>(null);
 
   // Compile (the thing a locked plan exists for) — see handleCompileCoverage.
   const [compileGateOpen, setCompileGateOpen] = useState<boolean>(false);
@@ -361,6 +391,7 @@ export default function DirectorWorkspace({
     // deliberately NOT cleared, for the reason `compilingBeat` is not.
     setLockDone(null);
     setLockProblem(null);
+    setRedirectOutcome(null);
     fetchCoveragePlan(sceneId)
       .then((plan) => {
         if (isMounted) {
@@ -386,9 +417,26 @@ export default function DirectorWorkspace({
     );
   };
 
+  /**
+   * Re-plan this scene's coverage — and say so in all three cases.
+   *
+   * The control that matters here is the one inside the Stale Plan Snapshot
+   * banner: that box is what told the human what was wrong, so it is the one
+   * they reached for. This handler was already sound — it waits for the job and
+   * it guards re-entry. What it did not do was leave an account of itself
+   * anywhere that outlives the banner, and the banner cannot hold one: see
+   * `RedirectOutcome`.
+   */
   const handleRedirectScene = async () => {
     if (redirecting) return;
+    // What a failure leaves behind, and it is not the same sentence in both
+    // places: this handler also drives the FIRST plan for an unplanned beat,
+    // where there is no plan below to be unchanged.
+    const planStands = coveragePlan
+      ? "The plan below is unchanged."
+      : `Nothing has been planned for ${sceneId} yet.`;
     setRedirecting(true);
+    setRedirectOutcome(null);
     try {
       const res = await redirectSceneCoverage(
         sceneId,
@@ -402,11 +450,19 @@ export default function DirectorWorkspace({
         if (res.job) {
           const done = await waitForJob(res.job, { onLog: setRedirectLog });
           if (!done.ok) {
-            setError(
-              done.status === "timeout"
-                ? "The planner is still running — reopen this scene shortly."
-                : `Planning failed. ${(done.log || "").slice(-300)}`
-            );
+            // Deliberately not `setError`. That renders "404 / Unplanned Beat
+            // Coverage" in place of the entire workspace, stating this beat has
+            // no plan — while the plan the re-plan failed to replace is still
+            // on the server and is still what a compile would use.
+            setRedirectOutcome({
+              kind: "failed",
+              message:
+                done.status === "timeout"
+                  ? `The planner for ${sceneId} is still running — it has not finished. ` +
+                    `${planStands} Reopen this scene shortly.`
+                  : `Planning ${sceneId} failed. ${planStands} ` +
+                    `${(done.log || "").slice(-300)}`.trim(),
+            });
             return;
           }
         }
@@ -414,9 +470,30 @@ export default function DirectorWorkspace({
         setCoveragePlan(updatedPlan);
         setError(null);
         setRedirectLog("");
+        // §11.4. Written from the plan that came back, never from the fact that
+        // a job ended — and it has to be said out loud, because the visible
+        // consequence of success is a box disappearing.
+        const covered =
+          typeof updatedPlan.coverage_total === "number" ? updatedPlan.coverage_total : null;
+        const beat = updatedPlan.beat_duration ?? updatedPlan.total_duration;
+        setRedirectOutcome({
+          kind: "done",
+          message:
+            `${sceneId} re-planned — the new plan is ${updatedPlan.coverage.length} shot` +
+            `${updatedPlan.coverage.length === 1 ? "" : "s"}` +
+            (covered !== null
+              ? `, ${covered.toFixed(1)}s of coverage against a ${beat.toFixed(1)}s beat`
+              : "") +
+            `. Review it before locking.`,
+        });
       }
     } catch (err: any) {
-      setError(err.message || "Failed to issue POST /api/director/plan request");
+      setRedirectOutcome({
+        kind: "failed",
+        message:
+          `${err?.message || `Re-planning ${sceneId} failed before the planner started.`} ` +
+          planStands,
+      });
     } finally {
       setRedirecting(false);
     }
@@ -892,6 +969,31 @@ export default function DirectorWorkspace({
             </div>
           )}
         </div>
+        {/* A re-plan attempted from THIS view has nowhere else to be reported:
+            there is no plan, so the workspace below never renders. Without it a
+            failed first plan left this panel looking exactly as it did before
+            the click. */}
+        {redirectOutcome && (
+          <p
+            data-testid="redirect-outcome"
+            data-kind={redirectOutcome.kind}
+            className={`text-xs font-mono leading-relaxed max-w-lg ${
+              redirectOutcome.kind === "failed" ? "text-red-300" : "text-emerald-300"
+            }`}
+          >
+            {redirectOutcome.message}
+          </p>
+        )}
+        {redirecting && (
+          <p
+            data-testid="redirect-running"
+            className="text-xs font-mono text-amber-300/90 leading-relaxed max-w-lg"
+          >
+            Planning {sceneId} — this runs on the server and takes tens of seconds.
+            {redirectLog ? ` ${redirectLog.slice(-200)}` : ""}
+          </p>
+        )}
+
         {/* Same rule as the two re-plan controls below: the label is the
             feedback. This one had the spinner and the disabled state already and
             still read the same while a minute-long job ran. */}
@@ -934,6 +1036,68 @@ export default function DirectorWorkspace({
 
   return (
     <div className="w-full flex flex-col gap-4 p-4 max-w-[1600px] mx-auto animate-in fade-in duration-300">
+      {/* What the last re-plan did.
+          ABOVE the stale banner, and outside it, on purpose: a successful
+          re-plan makes the plan un-stale, which unmounts that banner and the
+          control that was clicked. Rendered inside it, "it worked" would be
+          destroyed by the thing it is reporting. */}
+      {redirectOutcome && (
+        <div
+          data-testid="redirect-outcome"
+          data-kind={redirectOutcome.kind}
+          className={`glass-panel p-3.5 rounded-xl border flex items-start justify-between gap-3 ${
+            redirectOutcome.kind === "failed"
+              ? "border-red-500/50 bg-red-950/40"
+              : "border-emerald-500/40 bg-emerald-500/10"
+          }`}
+        >
+          <div className="flex items-start gap-2.5">
+            {redirectOutcome.kind === "failed" ? (
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            )}
+            <span
+              className={`text-xs font-mono leading-relaxed ${
+                redirectOutcome.kind === "failed" ? "text-red-200" : "text-emerald-200"
+              }`}
+            >
+              {redirectOutcome.message}
+            </span>
+          </div>
+          <button
+            onClick={() => setRedirectOutcome(null)}
+            className="shrink-0 text-zinc-400 hover:text-zinc-200 text-xs font-mono font-bold"
+            aria-label="Dismiss"
+          >
+            &#10005;
+          </button>
+        </div>
+      )}
+
+      {/* The job, while it runs — also outside the banner, for the same reason.
+          A re-plan started from the banner would otherwise report its progress
+          into a box that is about to disappear. */}
+      {redirecting && (
+        <div
+          data-testid="redirect-running"
+          className="glass-panel p-3.5 rounded-xl border border-amber-500/40 bg-amber-500/10 flex flex-col gap-2"
+        >
+          <div className="flex items-center gap-2 text-xs font-mono text-amber-200">
+            <Sparkles className="w-4 h-4 animate-spin shrink-0" />
+            <span>
+              Re-planning {sceneBeatsLabel} — this runs on the server and takes tens of
+              seconds. The plan on screen is replaced when it finishes.
+            </span>
+          </div>
+          {redirectLog && (
+            <pre className="max-h-24 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-[11px] font-mono text-zinc-400 whitespace-pre-wrap">
+              {redirectLog.slice(-600)}
+            </pre>
+          )}
+        </div>
+      )}
+
       {/* Stale Plan Snapshot Divergence Alert */}
       {isSnapshotStale && (
         <div className="glass-panel p-3.5 rounded-xl border border-amber-500/50 bg-amber-500/10 flex items-center justify-between text-amber-300 font-mono text-xs">
@@ -1420,23 +1584,10 @@ export default function DirectorWorkspace({
           </p>
         )}
 
-        {/* The planner is a background job of tens of seconds. Say it is running
-            even before it has logged anything: the log arrives when the server
-            first writes one, and until then this said nothing at all. */}
-        {redirecting && (
-          <p
-            data-testid="redirect-running"
-            className="text-[11px] font-mono text-amber-300/90 leading-relaxed"
-          >
-            Re-planning {sceneBeatsLabel} — this runs on the server and takes tens
-            of seconds. The plan on screen is replaced when it finishes.
-          </p>
-        )}
-        {redirecting && redirectLog && (
-          <pre className="max-h-24 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-[11px] font-mono text-zinc-400 whitespace-pre-wrap">
-            {redirectLog.slice(-600)}
-          </pre>
-        )}
+        {/* The running state and the planner's log used to live here, inside
+            this panel. They are now at the top of the workspace, above the
+            Stale Plan Snapshot banner, because a re-plan started FROM that
+            banner unmounts it on success — see RedirectOutcome. */}
 
         {/* Quick Shortcuts Pills */}
         <div className="flex flex-wrap items-center gap-1.5">

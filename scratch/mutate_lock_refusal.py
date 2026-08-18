@@ -22,7 +22,14 @@ M1 is the original defect, restored: the handler exactly as it was before this
 round, with no try/catch, no busy state and no read-back. Everything else is a
 way of half-doing the fix.
 
+DO NOT EDIT THE TARGET FILES WHILE THIS RUNS. It mutates
+`DirectorWorkspace.tsx` and `directorApi.ts` in place and restores them after
+each case, so a concurrent edit is reverted without a word. It now refuses to
+restore a file that changed under it and says so, but the only safe way to run
+it is on a committed tree with nothing else touching those two files.
+
 Run from the repo root:  python scratch/mutate_lock_refusal.py
+Or one at a time:        python scratch/mutate_lock_refusal.py M27 M35
 """
 from __future__ import annotations
 
@@ -245,15 +252,23 @@ MUTATIONS = [
      "            <span>REDIRECT SCENE</span>",
      ["the label changes", "a multi-beat scene names every beat"],
      LOOKED_LIKE_NOTHING_HAPPENED),
-    ("M29 the running line waits for a log, as the old panel did", WS,
-     '        {redirecting && (\n          <p\n            data-testid="redirect-running"',
-     '        {redirecting && redirectLog && (\n          <p\n            data-testid="redirect-running"',
+    # M29/M30 target the workspace panel (a <div>, six-space indent). The
+    # unplanned-beat view has its own running line (a <p>, eight spaces) and it
+    # is a different surface with a different test -- M43. They were one anchor
+    # for a while, which quietly moved M30 onto the other one and let it survive.
+    ("M29 the running panel waits for a log, as the old one did", WS,
+     '      {redirecting && (\n        <div\n          data-testid="redirect-running"',
+     '      {redirecting && redirectLog && (\n        <div\n          data-testid="redirect-running"',
      ["before the server has logged anything"], LOOKED_LIKE_NOTHING_HAPPENED),
-    ("M30 drop the running line entirely", WS,
-     '        {redirecting && (\n          <p\n            data-testid="redirect-running"',
-     '        {false && (\n          <p\n            data-testid="redirect-running"',
+    ("M30 drop the running panel entirely", WS,
+     '      {redirecting && (\n        <div\n          data-testid="redirect-running"',
+     '      {false && (\n        <div\n          data-testid="redirect-running"',
      ["before the server has logged anything", "says a job is running"],
      LOOKED_LIKE_NOTHING_HAPPENED),
+    ("M43 drop the running line from the unplanned-beat view", WS,
+     '        {redirecting && (\n          <p\n            data-testid="redirect-running"',
+     '        {false && (\n          <p\n            data-testid="redirect-running"',
+     ["the first plan says it is running"], LOOKED_LIKE_NOTHING_HAPPENED),
     ("M31 the locked plan's button goes dead again, with no sentence", WS,
      '        {isLocked && !redirecting && (\n          <p\n            data-testid="redirect-locked-note"',
      '        {false && (\n          <p\n            data-testid="redirect-locked-note"',
@@ -283,6 +298,57 @@ MUTATIONS = [
        "            disabled={false}")],
      "",
      ["a second click cannot start a second planning job"], ""),
+    # --- the outcome must outlive the box that asked for it (third round) ----
+    # The banner renders under `isSnapshotStale`, so a successful re-plan
+    # unmounts the control that was clicked. M36 puts the outcome back inside
+    # it, which is the shape a well-meaning edit would actually take.
+    ("M36 render the outcome inside the banner that a success unmounts", WS,
+     [("      {redirectOutcome && (\n        <div\n"
+       '          data-testid="redirect-outcome"',
+       "      {redirectOutcome && isSnapshotStale && (\n        <div\n"
+       '          data-testid="redirect-outcome"')],
+     "",
+     ["success is stated, even though the banner it was clicked in is gone"],
+     LOOKED_LIKE_NOTHING_HAPPENED),
+    ("M37 say nothing at all when the re-plan succeeds", WS,
+     '        setRedirectOutcome({\n          kind: "done",',
+     '        if (false) setRedirectOutcome({\n          kind: "done",',
+     ["success is stated, even though the banner it was clicked in is gone",
+      "the success line is the server's numbers"],
+     LOOKED_LIKE_NOTHING_HAPPENED),
+    ("M38 report the failure through `error`, blanking the workspace again", WS,
+     "            setRedirectOutcome({\n              kind: \"failed\",\n"
+     "              message:\n                done.status === \"timeout\"",
+     "            setError(\n              done.status === \"timeout\"\n"
+     "                ? `x` : `y`);\n            if (false) setRedirectOutcome({\n"
+     "              kind: \"failed\",\n              message:\n"
+     "                done.status === \"timeout\"",
+     ["a failure keeps the plan on screen and does not call the beat unplanned",
+      "a job still running at the timeout is unfinished"], ""),
+    ("M39 the running panel goes back inside the vanishing banner", WS,
+     '      {redirecting && (\n        <div\n          data-testid="redirect-running"',
+     '      {redirecting && isSnapshotStale && (\n        <div\n          data-testid="redirect-running"',
+     # Killed by the NON-stale case, not by the structural check beside it: this
+     # mutation moves nothing in the DOM, it narrows the condition, so
+     # `banner.contains(running)` is false either way. It survived until a test
+     # existed for a re-plan on a plan that is not stale.
+     ["a re-plan on a plan that is NOT stale still reports itself"],
+     LOOKED_LIKE_NOTHING_HAPPENED),
+    ("M42 tie the OUTCOME to the stale flag, so a revision reports nothing", WS,
+     "      {redirectOutcome && (\n        <div\n"
+     '          data-testid="redirect-outcome"\n          data-kind={redirectOutcome.kind}',
+     "      {redirectOutcome && isSnapshotStale && (\n        <div\n"
+     '          data-testid="redirect-outcome"\n          data-kind={redirectOutcome.kind}',
+     ["a re-plan on a plan that is NOT stale still reports itself"],
+     LOOKED_LIKE_NOTHING_HAPPENED),
+    ("M40 claim a plan is standing after a first plan fails", WS,
+     '    const planStands = coveragePlan\n      ? "The plan below is unchanged."',
+     '    const planStands = true\n      ? "The plan below is unchanged."',
+     ["does not claim a plan is standing"], ""),
+    ("M41 the outcome follows the human to the next scene", WS,
+     "    setLockProblem(null);\n    setRedirectOutcome(null);",
+     "    setLockProblem(null);",
+     ["the outcome does not follow the human to the next scene"], ""),
     ("M34 the unplanned-beat button repeats its route while planning", WS,
      "            {redirecting\n              ? `PLANNING (${sceneId})…`\n"
      "              : `POST /api/director/plan (${sceneId})`}",
@@ -351,7 +417,20 @@ def main() -> int:
             path.write_text(mutated, encoding="utf-8")
             code, out = run_suite()
         finally:
-            path.write_text(src, encoding="utf-8")
+            # Restore ONLY what this harness wrote. It edits real source files in
+            # place, so anything that touches them while a run is in flight is
+            # silently reverted by this line -- which is exactly what happened
+            # once: a run left in the background reverted two hand edits made
+            # during it, and left the last mutation applied when it was killed.
+            # Neither loss announced itself.
+            now = path.read_text(encoding="utf-8")
+            if now == mutated:
+                path.write_text(src, encoding="utf-8")
+            else:
+                print(f"REFUSED to restore {path.name}: it changed under the run. "
+                      f"The mutation was NOT reverted -- check `git diff` before "
+                      f"trusting this result.")
+                problems.append(f"{name}: file changed under the run; not restored")
 
         totals = [l.strip() for l in out.splitlines() if l.strip().startswith("Tests ")]
         failed = [l.strip() for l in out.splitlines() if l.strip().startswith(("x ", "×"))]

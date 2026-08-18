@@ -281,8 +281,236 @@ describe("REDIRECT SCENE while the planner runs", () => {
     fireEvent.click(button);
     await act(async () => {});
 
-    expect(document.body.textContent).toContain("Planning failed");
+    expect(document.body.textContent).toContain("Planning s002 failed");
     expect(document.body.textContent).toContain("429 from anthropic");
+  });
+});
+
+// --- the outcome outlives the box that asked for it --------------------------
+//
+// The banner renders under `isSnapshotStale`. A successful re-plan makes the
+// plan un-stale, so the box unmounts and takes the clicked control with it.
+// State kept inside it cannot report the thing that destroys it.
+
+describe("the re-plan outcome survives the banner that started it", () => {
+  /** The same scene after a good re-plan: 11 shots, coverage matching the beat. */
+  function replanned(): DirectorCoveragePlan {
+    return stalePlan({
+      beat_duration: 34.5,
+      total_duration: 34.5,
+      live_beat_duration: 34.5,
+      coverage_total: 34.5,
+      coverage: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map(shot),
+    });
+  }
+
+  test("success is stated, even though the banner it was clicked in is gone", async () => {
+    // THE DEFECT. The only signal that anything happened was the box vanishing,
+    // forty to ninety seconds after the click, with silence in between.
+    mockFetchPlan.mockResolvedValueOnce(stalePlan()).mockResolvedValueOnce(replanned());
+    render(<DirectorWorkspace sceneId="s002" activeProjectTitle="Heney" mediaUrl={(p) => p} />);
+    fireEvent.click(await screen.findByTestId("replan-stale"));
+    await act(async () => {});
+
+    // First: the news is on screen. Under the old code this is the assertion
+    // that fails, and it fails for the right reason — nothing was said.
+    expect(document.body.textContent, LOOKED_LIKE_NOTHING_HAPPENED)
+      .toContain("s002 re-planned");
+    const outcome = screen.getByTestId("redirect-outcome");
+    expect(outcome.getAttribute("data-kind"), LOOKED_LIKE_NOTHING_HAPPENED).toBe("done");
+
+    // Only then: the banner really has gone, which is what made this necessary.
+    expect(document.body.textContent).not.toContain("Stale Plan Snapshot");
+    expect(screen.queryByTestId("replan-stale")).toBeNull();
+  });
+
+  test("the success line is the server's numbers, not the fact that a job ended", async () => {
+    mockFetchPlan.mockResolvedValueOnce(stalePlan()).mockResolvedValueOnce(replanned());
+    render(<DirectorWorkspace sceneId="s002" activeProjectTitle="Heney" mediaUrl={(p) => p} />);
+    fireEvent.click(await screen.findByTestId("replan-stale"));
+    await act(async () => {});
+
+    const outcome = screen.getByTestId("redirect-outcome");
+    expect(outcome.textContent).toContain("11 shots");
+    // `coverage_total` is the server's figure for the new plan, against the
+    // beat it now has to fill — the two numbers the stale banner was comparing.
+    expect(outcome.textContent).toContain("34.5s of coverage against a 34.5s beat");
+  });
+
+  test("a failure keeps the plan on screen and does not call the beat unplanned", async () => {
+    // `setError` fed the early return at the top of the component, so a failed
+    // re-plan replaced the whole Director with "404 / Unplanned Beat Coverage".
+    // The beat is not unplanned: the plan the re-plan failed to replace is
+    // still there, and is still what a compile would use.
+    mockWait.mockResolvedValue({ ok: false, status: "error", log: "planner raised: 429 from anthropic" });
+    await mount();
+
+    fireEvent.click(screen.getByTestId("replan-stale"));
+    await act(async () => {});
+
+    const outcome = screen.getByTestId("redirect-outcome");
+    expect(outcome.getAttribute("data-kind")).toBe("failed");
+    expect(outcome.textContent).toContain("The plan below is unchanged.");
+    expect(document.body.textContent).not.toContain("Unplanned Beat Coverage");
+    // The plan is still on screen, and so is the banner, because it is still stale.
+    expect(screen.getByTestId("replan-stale")).toBeTruthy();
+    expect(document.body.textContent).toContain("COVERAGE REVIEW SURFACE");
+  });
+
+  test("a job still running at the timeout is unfinished, not failed work", async () => {
+    mockWait.mockResolvedValue({ ok: false, status: "timeout", log: "" });
+    await mount();
+
+    fireEvent.click(screen.getByTestId("replan-stale"));
+    await act(async () => {});
+
+    const outcome = screen.getByTestId("redirect-outcome");
+    expect(outcome.textContent).toContain("still running");
+    expect(outcome.textContent).toContain("The plan below is unchanged.");
+    expect(outcome.getAttribute("data-kind")).toBe("failed");
+  });
+
+  test("a request that never started is reported too", async () => {
+    mockRedirect.mockRejectedValue(new Error("a plan for s002 is already running"));
+    await mount();
+
+    fireEvent.click(screen.getByTestId("replan-stale"));
+    await act(async () => {});
+
+    expect(document.body.textContent, LOOKED_LIKE_NOTHING_HAPPENED)
+      .toContain("a plan for s002 is already running");
+    expect(screen.getByTestId("redirect-outcome").getAttribute("data-kind")).toBe("failed");
+  });
+
+  test("the running panel is not inside the banner either", async () => {
+    // A re-plan started FROM the banner would otherwise report its progress
+    // into a box that is about to disappear. Asserted structurally, because
+    // "it rendered somewhere" is exactly what was true before and not enough.
+    const job = deferred<{ ok: boolean; status: string; log: string }>();
+    mockWait.mockReturnValue(job.promise);
+    await mount();
+
+    fireEvent.click(screen.getByTestId("replan-stale"));
+    await act(async () => {});
+
+    const running = screen.getByTestId("redirect-running");
+    const banner = screen.getByTestId("replan-stale").closest("div.glass-panel");
+    expect(banner).toBeTruthy();
+    expect(banner!.contains(running)).toBe(false);
+
+    await act(async () => {
+      job.settle({ ok: true, status: "done", log: "done" });
+    });
+  });
+
+  test("a re-plan on a plan that is NOT stale still reports itself", async () => {
+    // Every other test here starts from a stale plan, which is the case that
+    // produced the bug — and that made a whole family of regressions invisible:
+    // anything that ties the running panel or the outcome to `isSnapshotStale`
+    // passes all of them. A re-plan is available from REDIRECT SCENE at any
+    // time, and a plan that is merely being revised is never stale.
+    const fresh = stalePlan({ live_beat_duration: 6.0 });   // snapshot matches the beat
+    const job = deferred<{ ok: boolean; status: string; log: string }>();
+    mockWait.mockReturnValue(job.promise);
+    await mount(fresh);
+
+    // No banner at all, so nothing here can be borrowing its container.
+    expect(screen.queryByTestId("replan-stale")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("redirect-scene"));
+    await act(async () => {});
+
+    // Against the whole document, and first: under a regression that renders no
+    // running panel, `getByTestId` throws "unable to find an element" and
+    // reports a missing element instead of a job nobody was told about.
+    expect(document.body.textContent, LOOKED_LIKE_NOTHING_HAPPENED)
+      .toContain("Re-planning s002 — this runs on the server");
+    expect(screen.getByTestId("redirect-running")).toBeTruthy();
+
+    mockFetchPlan.mockResolvedValue(fresh);
+    await act(async () => {
+      job.settle({ ok: true, status: "done", log: "done" });
+    });
+
+    expect(document.body.textContent, LOOKED_LIKE_NOTHING_HAPPENED).toContain("s002 re-planned");
+    expect(screen.getByTestId("redirect-outcome")).toBeTruthy();
+  });
+
+  test("the planner's own log appears while it runs", async () => {
+    const job = deferred<{ ok: boolean; status: string; log: string }>();
+    mockWait.mockImplementation((_key, opts) => {
+      opts?.onLog?.("planning s002 (34.5s, 1 beat)...");
+      return job.promise;
+    });
+    await mount();
+
+    fireEvent.click(screen.getByTestId("replan-stale"));
+    await act(async () => {});
+
+    expect(screen.getByTestId("redirect-running").textContent)
+      .toContain("planning s002 (34.5s, 1 beat)");
+
+    await act(async () => {
+      job.settle({ ok: true, status: "done", log: "done" });
+    });
+  });
+
+  test("the outcome does not follow the human to the next scene", async () => {
+    mockWait.mockResolvedValue({ ok: false, status: "error", log: "429" });
+    const { rerender } = render(
+      <DirectorWorkspace sceneId="s002" activeProjectTitle="Heney" mediaUrl={(p) => p} />
+    );
+    mockFetchPlan.mockResolvedValue(stalePlan());
+    await act(async () => {});
+    fireEvent.click(screen.getByTestId("replan-stale"));
+    await act(async () => {});
+    expect(screen.getByTestId("redirect-outcome")).toBeTruthy();
+
+    mockFetchPlan.mockResolvedValue(stalePlan({ scene_id: "s003", scene_beats: ["s003"] }));
+    rerender(<DirectorWorkspace sceneId="s003" activeProjectTitle="Heney" mediaUrl={(p) => p} />);
+    await act(async () => {});
+
+    expect(screen.queryByTestId("redirect-outcome")).toBeNull();
+  });
+});
+
+// --- the first plan for an unplanned beat, where there is no plan below ------
+
+describe("a failure in the unplanned-beat view", () => {
+  test("the first plan says it is running, on the only surface there is", async () => {
+    // This view replaces the whole workspace, so the panels above never render
+    // while it is up. A ninety-second first plan reported nothing here at all.
+    const job = deferred<{ ok: boolean; status: string; log: string }>();
+    mockWait.mockReturnValue(job.promise);
+    mockFetchPlan.mockRejectedValue(new Error("no plan for s002"));
+    render(<DirectorWorkspace sceneId="s002" activeProjectTitle="Heney" mediaUrl={(p) => p} />);
+
+    fireEvent.click(await screen.findByTestId("plan-unplanned-beat"));
+    await act(async () => {});
+
+    expect(document.body.textContent, LOOKED_LIKE_NOTHING_HAPPENED)
+      .toContain("Planning s002 — this runs on the server");
+    expect(screen.getByTestId("redirect-running")).toBeTruthy();
+
+    await act(async () => {
+      job.settle({ ok: true, status: "done", log: "done" });
+    });
+  });
+
+  test("is reported there, and does not claim a plan is standing", async () => {
+    mockFetchPlan.mockRejectedValue(new Error("no plan for s002"));
+    mockWait.mockResolvedValue({ ok: false, status: "error", log: "planner raised: 429" });
+    render(<DirectorWorkspace sceneId="s002" activeProjectTitle="Heney" mediaUrl={(p) => p} />);
+
+    fireEvent.click(await screen.findByTestId("plan-unplanned-beat"));
+    await act(async () => {});
+
+    const outcome = screen.getByTestId("redirect-outcome");
+    expect(outcome.textContent, LOOKED_LIKE_NOTHING_HAPPENED).toContain("Planning s002 failed");
+    // There is no plan below to be unchanged, and saying so would be a claim
+    // about coverage that does not exist.
+    expect(outcome.textContent).toContain("Nothing has been planned for s002 yet.");
+    expect(outcome.textContent).not.toContain("The plan below is unchanged");
   });
 });
 
