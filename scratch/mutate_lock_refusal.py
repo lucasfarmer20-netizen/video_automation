@@ -61,6 +61,12 @@ LOOKED_LIKE_NOTHING_HAPPENED = (
     "a re-plan job is running and the control says nothing about it: "
     "indistinguishable from a button that did nothing"
 )
+# And for the lock -> compile blocker, where the defect is not on screen at all:
+# it is in what the next request carries.
+COMPILED_UNSIGNED = (
+    "COMPILE was dispatched with the wrong plan signature after a lock in the "
+    "same sitting: every newly locked beat is refused as unsigned"
+)
 
 # The handler as it stood at 082f67b. Restored by M1 via a span replacement, so
 # the reproduction is the real one and not a transcription of it: the harness
@@ -78,7 +84,10 @@ MUTATIONS = [
       "    } finally {\n      setLockBusy(null);\n    }\n  };"),
      ORIGINAL_HANDLER_BODY + "  };",
      ["undecided findings", "the auth 401", "the catch-all 400",
-      "the control says so, and a second click sends nothing"],
+      "the control says so, and a second click sends nothing",
+      # The blocker travelled with the rest of it: this handler is also what
+      # left the compile gate holding a draft's signature.
+      "lock then compile with no reload between"],
      REFUSAL_NEVER_REACHED_THE_HUMAN),
 
     # --- the refusal never reaches the DOM ----------------------------------
@@ -117,11 +126,33 @@ MUTATIONS = [
      "        : fresh.status === \"draft\";",
      "      const took = true;",
      ["the saved plan still says draft"], ""),
+    # THE BLOCKER, restored exactly: spread the plan already held and override
+    # `status`. `approved_signature` is minted by the server at lock time, so a
+    # draft carries none and the spread keeps the empty string -- along with
+    # `approved_at`, `approved_by` and `approval_history`. The next click,
+    # COMPILE, then sends "" and is refused as unsigned. Every newly locked beat,
+    # unless the human reloads in between.
     ("M9  write the status locally instead of reading it back", WS,
      "      const fresh = await fetchCoveragePlan(beatsToLock);\n      setCoveragePlan(fresh);",
      "      const fresh = { ...coveragePlan, status: shouldLock ? \"locked\" : \"draft\" };",
-     ["carries the signature the compile gate has to send",
-      "reads the plan back"], ""),
+     ["lock then compile with no reload between",
+      "a lock that took reads the plan back"], COMPILED_UNSIGNED),
+    # The one a unit test cannot catch, and the reason the test above drives
+    # both controls and inspects the REQUEST. Here the refetch DOES happen --
+    # `fetchCoveragePlan` is called, the status badge is the server's, an
+    # assertion that "handleToggleLock refetches" passes -- and the plan held in
+    # state is still the old object, so the compile still goes out unsigned.
+    ("M44 refetch, then keep the old plan and take only its status", WS,
+     "      const fresh = await fetchCoveragePlan(beatsToLock);\n      setCoveragePlan(fresh);",
+     "      const fresh = await fetchCoveragePlan(beatsToLock);\n"
+     "      setCoveragePlan({ ...coveragePlan, status: fresh.status });",
+     ["lock then compile with no reload between",
+      "not one carried over from before the lock"], COMPILED_UNSIGNED),
+    ("M45 compile under whatever signature was there before the lock", WS,
+     "      const fresh = await fetchCoveragePlan(beatsToLock);\n      setCoveragePlan(fresh);",
+     "      const fresh = await fetchCoveragePlan(beatsToLock);\n"
+     "      setCoveragePlan({ ...fresh, approved_signature: coveragePlan.approved_signature });",
+     ["not one carried over from before the lock"], COMPILED_UNSIGNED),
     ("M10 report an accepted lock whose read-back failed as a refusal", WS,
      "      if (accepted) {",
      "      if (false) {",

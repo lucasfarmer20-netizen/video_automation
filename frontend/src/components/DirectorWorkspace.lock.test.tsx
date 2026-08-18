@@ -44,11 +44,18 @@ vi.mock("../lib/directorApi", () => ({
 }));
 
 import DirectorWorkspace from "./DirectorWorkspace";
-import { fetchCoveragePlan, setCoverageStatus } from "../lib/directorApi";
+import {
+  compileCoverage,
+  fetchCoveragePlan,
+  setCoverageStatus,
+  waitForJob,
+} from "../lib/directorApi";
 import type { DirectorCoveragePlan, DirectorShot, DirectorWarning } from "../types/director";
 
 const mockFetchPlan = vi.mocked(fetchCoveragePlan);
 const mockSetStatus = vi.mocked(setCoverageStatus);
+const mockCompile = vi.mocked(compileCoverage);
+const mockWait = vi.mocked(waitForJob);
 
 // --- fixture -----------------------------------------------------------------
 
@@ -128,6 +135,17 @@ function deferred<T>() {
 const REFUSAL_NEVER_REACHED_THE_HUMAN =
   "the lock was refused and the server's sentence never reached the screen: " +
   "the click is indistinguishable from a dead button";
+
+/**
+ * The sentinel for the lock -> compile blocker.
+ *
+ * Named for what actually happens: the compile goes out carrying an identity
+ * the server never issued, and every newly locked beat is refused. It must be
+ * printed by a request assertion, never by a state one.
+ */
+const COMPILED_UNSIGNED =
+  "COMPILE was dispatched with the wrong plan signature after a lock in the " +
+  "same sitting: every newly locked beat is refused as unsigned";
 
 async function mountAndClickLock() {
   render(<DirectorWorkspace sceneId="s001" activeProjectTitle="Heney" mediaUrl={(p) => p} />);
@@ -618,19 +636,112 @@ describe("what is claimed after the click is what the server saved", () => {
     expect(screen.getByText(/Status: locked/)).toBeTruthy();
   });
 
-  test("the refetched plan carries the signature the compile gate has to send", async () => {
-    // Locking is what mints `approved_signature`. Written locally it stayed
-    // empty, so the very next click — COMPILE — was refused as unsigned.
+  /**
+   * LOCK then COMPILE, in one sitting, with nothing in between.
+   *
+   * This is the blocker, and it is asserted AT THE SEAM on purpose. The old
+   * handler spread the plan it already had and overrode `status`:
+   *
+   *     setCoveragePlan({ ...coveragePlan, status: "locked" })
+   *
+   * `approved_signature` is minted by the SERVER at lock time, so a draft
+   * carries none and the spread preserved the empty string — along with
+   * `approved_at`, `approved_by` and `approval_history`, every one of them a
+   * value only the server can compute. The screen then believed the plan was
+   * locked while holding a draft's identity, and `handleCompileCoverage` sent
+   * that empty string. The round-3 gate refused it exactly as designed:
+   *
+   *     "this compile did not say which plan it was approving, so nothing was
+   *      compiled and nothing was charged."
+   *
+   * Correct refusal, real blocker: no beat could be compiled after locking it
+   * unless the human happened to reload the page in between, which refetches
+   * and picks up the real signature. That is why one beat worked and the rest
+   * did not.
+   *
+   * A test that asserted "handleToggleLock refetches" would pass while the
+   * compile still sent an empty string — the refetch could land in the wrong
+   * state and nothing would notice. So this one drives both controls and
+   * inspects the REQUEST.
+   */
+  test("lock then compile with no reload between: the request carries the server's signature", async () => {
     mockFetchPlan
-      .mockResolvedValueOnce(plan({ approved_signature: "" }))
-      .mockResolvedValueOnce(plan({ status: "locked", approved_signature: "ab12cd34ef567890" }));
+      // What the human sees before locking: a draft, and no identity at all.
+      .mockResolvedValueOnce(plan({ status: "draft", approved_signature: "" }))
+      // What the server returns after it locks: s003's real signature.
+      .mockResolvedValueOnce(plan({ status: "locked", approved_signature: "d06cc21f21fb2af6" }))
+      .mockResolvedValueOnce(plan({ status: "compiled", approved_signature: "d06cc21f21fb2af6" }));
+    mockCompile.mockResolvedValue({ ok: true, started: true, job: "director:s001" });
+    mockWait.mockResolvedValue({ ok: true, status: "done", log: "done" });
 
     await mountAndClickLock();
-
     fireEvent.click(screen.getByTestId("compile-open-gate"));
     await act(async () => {});
-    expect(screen.getByTestId("compile-cost-gate")).toBeTruthy();
-    expect(mockFetchPlan).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByTestId("compile-confirm"));
+    await act(async () => {});
+
+    // THE ASSERTION. Not that a refetch happened, not that a field was set —
+    // what the compile request actually carried. Under the old handler this is
+    // ["s001", ""], and the gate refuses it.
+    expect(mockCompile.mock.calls[0], COMPILED_UNSIGNED).toEqual([
+      "s001",
+      "d06cc21f21fb2af6",
+    ]);
+  });
+
+  test("the signature is the server's, not one carried over from before the lock", async () => {
+    // A plan re-locked after an edit gets a NEW signature, because the plan it
+    // is an identity for has changed. Preserving the old one would send a
+    // signature the server will refuse as a mismatch — the same blocker with a
+    // different refusal on the end of it.
+    mockFetchPlan
+      .mockResolvedValueOnce(plan({ status: "draft", approved_signature: "0000stale0000" }))
+      .mockResolvedValueOnce(plan({ status: "locked", approved_signature: "d06cc21f21fb2af6" }))
+      .mockResolvedValueOnce(plan({ status: "compiled", approved_signature: "d06cc21f21fb2af6" }));
+    mockCompile.mockResolvedValue({ ok: true, started: true, job: "director:s001" });
+    mockWait.mockResolvedValue({ ok: true, status: "done", log: "done" });
+
+    await mountAndClickLock();
+    fireEvent.click(screen.getByTestId("compile-open-gate"));
+    await act(async () => {});
+    fireEvent.click(screen.getByTestId("compile-confirm"));
+    await act(async () => {});
+
+    expect(mockCompile.mock.calls[0][1], COMPILED_UNSIGNED).toBe("d06cc21f21fb2af6");
+  });
+
+  test("every beat of a locked scene compiles under the signature that was locked", async () => {
+    mockFetchPlan
+      .mockResolvedValueOnce(
+        plan({ status: "draft", approved_signature: "", scene_beats: ["s001", "s002"] })
+      )
+      .mockResolvedValueOnce(
+        plan({
+          status: "locked",
+          approved_signature: "d06cc21f21fb2af6",
+          scene_beats: ["s001", "s002"],
+        })
+      )
+      .mockResolvedValue(
+        plan({
+          status: "compiled",
+          approved_signature: "d06cc21f21fb2af6",
+          scene_beats: ["s001", "s002"],
+        })
+      );
+    mockCompile.mockResolvedValue({ ok: true, started: true, job: "director:x" });
+    mockWait.mockResolvedValue({ ok: true, status: "done", log: "done" });
+
+    await mountAndClickLock();
+    fireEvent.click(screen.getByTestId("compile-open-gate"));
+    await act(async () => {});
+    fireEvent.click(screen.getByTestId("compile-confirm"));
+    await act(async () => {});
+
+    expect(mockCompile.mock.calls, COMPILED_UNSIGNED).toEqual([
+      ["s001", "d06cc21f21fb2af6"],
+      ["s002", "d06cc21f21fb2af6"],
+    ]);
   });
 
   test("accepted, but the saved plan still says draft — that is not a success", async () => {
