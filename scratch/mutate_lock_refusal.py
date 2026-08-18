@@ -290,8 +290,7 @@ MUTATIONS = [
     # mutation of one alone is undetectable and would only prove the pair is
     # redundant.
     ("M35 no in-flight protection on the re-plan job either", WS,
-     [("    if (redirecting) return;\n    setRedirecting(true);",
-       "    setRedirecting(true);"),
+     [("    if (redirecting) return;\n", ""),
       ('            data-testid="replan-stale"\n            onClick={handleRedirectScene}\n'
        "            disabled={isLocked || redirecting}",
        '            data-testid="replan-stale"\n            onClick={handleRedirectScene}\n'
