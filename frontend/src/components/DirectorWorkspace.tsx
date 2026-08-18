@@ -19,7 +19,7 @@ import {
   decideDirectorWarning,
   compileCoverage,
 } from "../lib/directorApi";
-import type { CompileRefusal } from "../lib/directorApi";
+import type { CompileRefusal, LockRefusal } from "../lib/directorApi";
 
 import DirectorShotCard from "./DirectorShotCard";
 import ShotInspectorDrawer from "./ShotInspectorDrawer";
@@ -128,6 +128,66 @@ function classifyCompileRefusal(err: CompileRefusal | undefined): CompileProblem
   if (err?.status === 409) return { kind: "busy", message };
   return { kind: "failed", message };
 }
+
+/**
+ * What a re-plan did, and it must survive the thing that asked for it.
+ *
+ * The re-plan the human reached for is the action inside the Stale Plan
+ * Snapshot banner, and that banner renders under `isSnapshotStale`. So on
+ * SUCCESS the plan stops being stale, the condition goes false, and the whole
+ * box unmounts — taking any state kept inside it with it. Their only signal
+ * that anything had happened was the box vanishing, forty to ninety seconds
+ * after the click, with nothing in between.
+ *
+ * A running state that lives inside a container which disappears on success is
+ * therefore not a running state at all, and neither is the outcome. Both live
+ * out here, at the top of the workspace, rendered by something no re-plan can
+ * unmount.
+ *
+ * Failure had the opposite problem, and it was not silence — it was a false
+ * claim. `setError` feeds the early return at the top of this component, so a
+ * planning failure replaced the entire Director with the panel headed
+ * "404 / Unplanned Beat Coverage", which says this beat has no plan. It has
+ * one: the old plan, still on the server, still what would be compiled,
+ * unchanged precisely because the re-plan did not finish. `error` means "this
+ * scene could not be loaded"; a re-plan that failed is a different fact.
+ */
+type RedirectOutcome =
+  | { kind: "done"; message: string }
+  | { kind: "failed"; message: string };
+
+/**
+ * Why a lock or unlock did not take — as distinct as the server keeps it.
+ *
+ * `POST /api/director/lock_scene` answers ONE status code, 400, for every
+ * refusal it has, and puts the difference between them in `problems`:
+ *
+ *   {beat}: no plan                            nothing to lock for that beat
+ *   {beat}: currently compiling                a job is running on it
+ *   {a PlanError from director.validate}       the coverage does not fit the beat
+ *   {beat}: N critic warning(s) awaiting a
+ *           decision (ids)                     Contract 5.4 — decide them first
+ *
+ * plus `beats[] is required` as an HTTPException, an auth 401, and a catch-all
+ * 400 carrying whatever actually raised. Unlocking is a different route with a
+ * different, shorter list — no plan (404) and currently compiling (409) — and
+ * it can fail for some beats of a scene and succeed for others.
+ *
+ * So there is no classification here and no kind: the payload is a list of
+ * sentences the server wrote, and every one of them is rendered. `problems` is
+ * the whole reason this type exists — the headline of the refusal the human
+ * actually hits is the three words "nothing was locked".
+ */
+type LockProblem = {
+  /** The reply's headline, verbatim. */
+  message: string;
+  /** The route's own per-beat sentences. Empty when the reply carried none. */
+  problems: string[];
+  /** Beats a part-completed unlock DID change. Empty is the normal case. */
+  changed: string[];
+  /** A lock, not an unlock: the only direction undecided findings can block. */
+  wasLocking: boolean;
+};
 
 /**
  * What a re-check of the critic actually produced.
@@ -284,6 +344,9 @@ export default function DirectorWorkspace({
   const [problemDrawerOpen, setProblemDrawerOpen] = useState<boolean>(false);
   const [takeModalShot, setTakeModalShot] = useState<DirectorShot | null>(null);
   const [redirecting, setRedirecting] = useState<boolean>(false);
+  // Rendered above the Stale Plan Snapshot banner, because a successful re-plan
+  // unmounts that banner. See RedirectOutcome.
+  const [redirectOutcome, setRedirectOutcome] = useState<RedirectOutcome | null>(null);
 
   // Compile (the thing a locked plan exists for) — see handleCompileCoverage.
   const [compileGateOpen, setCompileGateOpen] = useState<boolean>(false);
@@ -291,6 +354,11 @@ export default function DirectorWorkspace({
   const [compileLog, setCompileLog] = useState<string>("");
   const [compileProblem, setCompileProblem] = useState<CompileProblem | null>(null);
   const [compileDone, setCompileDone] = useState<string | null>(null);
+
+  // Lock / unlock — the gate that allocates the render budget. See handleToggleLock.
+  const [lockBusy, setLockBusy] = useState<"locking" | "unlocking" | null>(null);
+  const [lockProblem, setLockProblem] = useState<LockProblem | null>(null);
+  const [lockDone, setLockDone] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -317,6 +385,13 @@ export default function DirectorWorkspace({
     setCompileProblem(null);
     setCompileLog("");
     setCritiqueOutcome(null);
+    // Same rule for the lock: "s001 is locked" and the refusal that named s001's
+    // findings are both accounts of what happened on the previous scene. The
+    // durable half is `status`, which is read from the plan below. `lockBusy` is
+    // deliberately NOT cleared, for the reason `compilingBeat` is not.
+    setLockDone(null);
+    setLockProblem(null);
+    setRedirectOutcome(null);
     fetchCoveragePlan(sceneId)
       .then((plan) => {
         if (isMounted) {
@@ -342,9 +417,26 @@ export default function DirectorWorkspace({
     );
   };
 
+  /**
+   * Re-plan this scene's coverage — and say so in all three cases.
+   *
+   * The control that matters here is the one inside the Stale Plan Snapshot
+   * banner: that box is what told the human what was wrong, so it is the one
+   * they reached for. This handler was already sound — it waits for the job and
+   * it guards re-entry. What it did not do was leave an account of itself
+   * anywhere that outlives the banner, and the banner cannot hold one: see
+   * `RedirectOutcome`.
+   */
   const handleRedirectScene = async () => {
     if (redirecting) return;
+    // What a failure leaves behind, and it is not the same sentence in both
+    // places: this handler also drives the FIRST plan for an unplanned beat,
+    // where there is no plan below to be unchanged.
+    const planStands = coveragePlan
+      ? "The plan below is unchanged."
+      : `Nothing has been planned for ${sceneId} yet.`;
     setRedirecting(true);
+    setRedirectOutcome(null);
     try {
       const res = await redirectSceneCoverage(
         sceneId,
@@ -358,11 +450,19 @@ export default function DirectorWorkspace({
         if (res.job) {
           const done = await waitForJob(res.job, { onLog: setRedirectLog });
           if (!done.ok) {
-            setError(
-              done.status === "timeout"
-                ? "The planner is still running — reopen this scene shortly."
-                : `Planning failed. ${(done.log || "").slice(-300)}`
-            );
+            // Deliberately not `setError`. That renders "404 / Unplanned Beat
+            // Coverage" in place of the entire workspace, stating this beat has
+            // no plan — while the plan the re-plan failed to replace is still
+            // on the server and is still what a compile would use.
+            setRedirectOutcome({
+              kind: "failed",
+              message:
+                done.status === "timeout"
+                  ? `The planner for ${sceneId} is still running — it has not finished. ` +
+                    `${planStands} Reopen this scene shortly.`
+                  : `Planning ${sceneId} failed. ${planStands} ` +
+                    `${(done.log || "").slice(-300)}`.trim(),
+            });
             return;
           }
         }
@@ -370,23 +470,162 @@ export default function DirectorWorkspace({
         setCoveragePlan(updatedPlan);
         setError(null);
         setRedirectLog("");
+        // §11.4. Written from the plan that came back, never from the fact that
+        // a job ended — and it has to be said out loud, because the visible
+        // consequence of success is a box disappearing.
+        const covered =
+          typeof updatedPlan.coverage_total === "number" ? updatedPlan.coverage_total : null;
+        const beat = updatedPlan.beat_duration ?? updatedPlan.total_duration;
+        setRedirectOutcome({
+          kind: "done",
+          message:
+            `${sceneId} re-planned — the new plan is ${updatedPlan.coverage.length} shot` +
+            `${updatedPlan.coverage.length === 1 ? "" : "s"}` +
+            (covered !== null
+              ? `, ${covered.toFixed(1)}s of coverage against a ${beat.toFixed(1)}s beat`
+              : "") +
+            `. Review it before locking.`,
+        });
       }
     } catch (err: any) {
-      setError(err.message || "Failed to issue POST /api/director/plan request");
+      setRedirectOutcome({
+        kind: "failed",
+        message:
+          `${err?.message || `Re-planning ${sceneId} failed before the planner started.`} ` +
+          planStands,
+      });
     } finally {
       setRedirecting(false);
     }
   };
 
+  /**
+   * Lock the plan, or return it to draft — and say which of those happened.
+   *
+   * This handler had no try/catch, no busy state and no error state, so a
+   * refused lock was indistinguishable from a dead button. The human clicked
+   * LOCK & GENERATE COVERAGE, `setCoverageStatus` rejected, the rejection went
+   * unhandled, no state changed, and nothing whatever appeared on screen. Their
+   * words: "lock and generate coverage isn't working on click."
+   *
+   * The server was answering correctly the whole time. `lock_scene` refuses with
+   * `400 {"error": "nothing was locked", "problems": [...]}` when a plan still
+   * carries findings nobody has decided — its own comment reads "Contract 5.4: a
+   * bulk action must not silently approve unresolved warnings" — and `problems`
+   * names the beat, the count and the finding ids. That is the most useful
+   * sentence available to the human at that moment, and none of it was reaching
+   * them.
+   *
+   * Three things, the same three the compile control below was written for:
+   *
+   * 1. **Every refusal is rendered, in the server's words.** There is no
+   *    classification here and no `kind` — unlike a compile refusal, these
+   *    arrive as a list of sentences the route wrote, so they are shown as a
+   *    list. Nothing is summarised, because the summary is the useless part.
+   *
+   * 2. **The control is NOT disabled when findings are outstanding.** A
+   *    client-side guess about whether the server will accept a lock is exactly
+   *    what this project has rejected before: a greyed-out button explains
+   *    nothing, and it would make the refusal — the thing that teaches the human
+   *    what to do next — unreachable. What IS offered is a way to act on it: the
+   *    problem queue, where findings are decided, is one click from the refusal.
+   *
+   * 3. **§11.4 — the status shown is the server's.** The old line wrote
+   *    `status: "locked"` into local state from the fact that a promise
+   *    resolved. The plan is refetched instead, so the badge reads what was
+   *    actually saved — and, because locking is what mints `approved_signature`,
+   *    so does the identity the compile gate has to send. Written locally, that
+   *    stayed empty and the very next click was refused as unsigned.
+   *
+   * Unlocking is not the mirror of locking and is not assumed to be: there is no
+   * bulk unlock route, so a scene unlocks one beat at a time and can come back
+   * part unlocked. `changed` is what that case reports.
+   */
   const handleToggleLock = async () => {
-    if (!coveragePlan) return;
+    if (!coveragePlan || lockBusy) return;
     const isCurrentlyLocked = coveragePlan.status === "locked" || coveragePlan.status === "compiled";
     const shouldLock = !isCurrentlyLocked;
     const beatsToLock = coveragePlan.scene_beats && coveragePlan.scene_beats.length > 0
       ? coveragePlan.scene_beats
       : sceneId;
-    await setCoverageStatus(beatsToLock, shouldLock);
-    setCoveragePlan({ ...coveragePlan, status: shouldLock ? "locked" : "draft" });
+    const named = Array.isArray(beatsToLock) ? beatsToLock.join(", ") : beatsToLock;
+
+    setLockBusy(shouldLock ? "locking" : "unlocking");
+    setLockProblem(null);
+    setLockDone(null);
+
+    // Which of the two awaits below failed changes what is true afterwards, and
+    // a lock that WAS accepted must never be reported as a refusal.
+    let accepted = false;
+    try {
+      await setCoverageStatus(beatsToLock, shouldLock);
+      accepted = true;
+
+      const fresh = await fetchCoveragePlan(beatsToLock);
+      setCoveragePlan(fresh);
+      const took = shouldLock
+        ? fresh.status === "locked" || fresh.status === "compiled"
+        : fresh.status === "draft";
+      if (took) {
+        setLockDone(
+          shouldLock
+            ? `${named} is locked — the saved plan reads "${fresh.status}". ` +
+              `Compile it when you are ready to spend.`
+            : `${named} is unlocked — the saved plan reads "${fresh.status}" and ` +
+              `can be edited again.`
+        );
+      } else {
+        // The request was accepted and the plan does not say so. Congratulating
+        // the human here is the false success §11.4 forbids.
+        setLockProblem({
+          message:
+            `The request to ${shouldLock ? "lock" : "unlock"} ${named} was accepted, but ` +
+            `the saved plan still reads "${fresh.status}" — so it is not ` +
+            `${shouldLock ? "locked" : "back in draft"}. Reopen the scene before acting on it.`,
+          problems: [],
+          changed: [],
+          wasLocking: shouldLock,
+        });
+      }
+    } catch (e) {
+      const err = e as LockRefusal;
+      if (accepted) {
+        // The lock took; reading the plan back did not. Reporting this as a
+        // refusal would be the opposite lie to the one above.
+        setLockDone(null);
+        setLockProblem({
+          message:
+            `${named} was ${shouldLock ? "locked" : "unlocked"}, but this screen could ` +
+            `not read the plan back afterwards, so what is shown below is from ` +
+            `before that. ${err?.message || "The scene endpoint did not answer."}`,
+          problems: [],
+          changed: [],
+          wasLocking: shouldLock,
+        });
+        return;
+      }
+      const changed = err?.changed || [];
+      setLockProblem({
+        message:
+          err?.message ||
+          `${shouldLock ? "Locking" : "Unlocking"} ${named} failed before the server answered.`,
+        problems: err?.problems || [],
+        changed,
+        wasLocking: shouldLock,
+      });
+      if (changed.length > 0) {
+        // Part of the scene moved. The status badge is describing beats this
+        // call has already changed, so it is re-read rather than left lying.
+        try {
+          setCoveragePlan(await fetchCoveragePlan(beatsToLock));
+        } catch {
+          // The refusal itself stands and is already on screen. A failed
+          // refresh must not overwrite it with a message about the refresh.
+        }
+      }
+    } finally {
+      setLockBusy(null);
+    }
   };
 
   /**
@@ -730,17 +969,50 @@ export default function DirectorWorkspace({
             </div>
           )}
         </div>
+        {/* A re-plan attempted from THIS view has nowhere else to be reported:
+            there is no plan, so the workspace below never renders. Without it a
+            failed first plan left this panel looking exactly as it did before
+            the click. */}
+        {redirectOutcome && (
+          <p
+            data-testid="redirect-outcome"
+            data-kind={redirectOutcome.kind}
+            className={`text-xs font-mono leading-relaxed max-w-lg ${
+              redirectOutcome.kind === "failed" ? "text-red-300" : "text-emerald-300"
+            }`}
+          >
+            {redirectOutcome.message}
+          </p>
+        )}
+        {redirecting && (
+          <p
+            data-testid="redirect-running"
+            className="text-xs font-mono text-amber-300/90 leading-relaxed max-w-lg"
+          >
+            Planning {sceneId} — this runs on the server and takes tens of seconds.
+            {redirectLog ? ` ${redirectLog.slice(-200)}` : ""}
+          </p>
+        )}
+
+        {/* Same rule as the two re-plan controls below: the label is the
+            feedback. This one had the spinner and the disabled state already and
+            still read the same while a minute-long job ran. */}
         <button
+          data-testid="plan-unplanned-beat"
           onClick={() => handleRedirectScene()}
           disabled={redirecting}
-          className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-mono font-bold rounded-xl transition-all flex items-center gap-2 shadow-lg neon-glow-amber"
+          className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-mono font-bold rounded-xl transition-all flex items-center gap-2 shadow-lg neon-glow-amber disabled:opacity-50"
         >
           {redirecting ? (
             <Sparkles className="w-4 h-4 animate-spin" />
           ) : (
             <Clapperboard className="w-4 h-4" />
           )}
-          <span>POST /api/director/plan ({sceneId})</span>
+          <span>
+            {redirecting
+              ? `PLANNING (${sceneId})…`
+              : `POST /api/director/plan (${sceneId})`}
+          </span>
         </button>
       </div>
     );
@@ -755,9 +1027,77 @@ export default function DirectorWorkspace({
     coveragePlan.live_beat_duration &&
       Math.abs(coveragePlan.live_beat_duration - targetDuration) > 0.1
   );
+  /** The beats a scene-level action covers — what a running job is running ON. */
+  const sceneBeatsLabel = (
+    coveragePlan.scene_beats && coveragePlan.scene_beats.length > 0
+      ? coveragePlan.scene_beats
+      : [sceneId]
+  ).join(", ");
 
   return (
     <div className="w-full flex flex-col gap-4 p-4 max-w-[1600px] mx-auto animate-in fade-in duration-300">
+      {/* What the last re-plan did.
+          ABOVE the stale banner, and outside it, on purpose: a successful
+          re-plan makes the plan un-stale, which unmounts that banner and the
+          control that was clicked. Rendered inside it, "it worked" would be
+          destroyed by the thing it is reporting. */}
+      {redirectOutcome && (
+        <div
+          data-testid="redirect-outcome"
+          data-kind={redirectOutcome.kind}
+          className={`glass-panel p-3.5 rounded-xl border flex items-start justify-between gap-3 ${
+            redirectOutcome.kind === "failed"
+              ? "border-red-500/50 bg-red-950/40"
+              : "border-emerald-500/40 bg-emerald-500/10"
+          }`}
+        >
+          <div className="flex items-start gap-2.5">
+            {redirectOutcome.kind === "failed" ? (
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            )}
+            <span
+              className={`text-xs font-mono leading-relaxed ${
+                redirectOutcome.kind === "failed" ? "text-red-200" : "text-emerald-200"
+              }`}
+            >
+              {redirectOutcome.message}
+            </span>
+          </div>
+          <button
+            onClick={() => setRedirectOutcome(null)}
+            className="shrink-0 text-zinc-400 hover:text-zinc-200 text-xs font-mono font-bold"
+            aria-label="Dismiss"
+          >
+            &#10005;
+          </button>
+        </div>
+      )}
+
+      {/* The job, while it runs — also outside the banner, for the same reason.
+          A re-plan started from the banner would otherwise report its progress
+          into a box that is about to disappear. */}
+      {redirecting && (
+        <div
+          data-testid="redirect-running"
+          className="glass-panel p-3.5 rounded-xl border border-amber-500/40 bg-amber-500/10 flex flex-col gap-2"
+        >
+          <div className="flex items-center gap-2 text-xs font-mono text-amber-200">
+            <Sparkles className="w-4 h-4 animate-spin shrink-0" />
+            <span>
+              Re-planning {sceneBeatsLabel} — this runs on the server and takes tens of
+              seconds. The plan on screen is replaced when it finishes.
+            </span>
+          </div>
+          {redirectLog && (
+            <pre className="max-h-24 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-[11px] font-mono text-zinc-400 whitespace-pre-wrap">
+              {redirectLog.slice(-600)}
+            </pre>
+          )}
+        </div>
+      )}
+
       {/* Stale Plan Snapshot Divergence Alert */}
       {isSnapshotStale && (
         <div className="glass-panel p-3.5 rounded-xl border border-amber-500/50 bg-amber-500/10 flex items-center justify-between text-amber-300 font-mono text-xs">
@@ -767,11 +1107,30 @@ export default function DirectorWorkspace({
               ⚠️ <strong>Stale Plan Snapshot:</strong> Live narration duration ({coveragePlan.live_beat_duration?.toFixed(1)}s) differs from plan snapshot ({targetDuration.toFixed(1)}s). Re-planning recommended.
             </span>
           </div>
+          {/* The button in the banner the human eventually found for themselves.
+              It had no busy state and no disabled state at all: a click started
+              a job of tens of seconds and the control was unchanged throughout,
+              which is the same reading as a dead button — and a second click
+              was a second request. */}
           <button
+            data-testid="replan-stale"
             onClick={handleRedirectScene}
-            className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 rounded text-[11px] font-bold transition-colors"
+            disabled={isLocked || redirecting}
+            title={
+              isLocked
+                ? "This plan is locked. Unlock it above before re-planning."
+                : "Throw away this coverage and plan the scene again"
+            }
+            className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 rounded text-[11px] font-bold transition-colors flex items-center gap-1.5 disabled:opacity-50"
           >
-            Re-plan Scene
+            {redirecting && <Sparkles className="w-3 h-3 animate-spin shrink-0" />}
+            <span>
+              {redirecting
+                ? `RE-PLANNING (${sceneBeatsLabel})…`
+                : isLocked
+                  ? "UNLOCK TO RE-PLAN"
+                  : "Re-plan Scene"}
+            </span>
           </button>
         </div>
       )}
@@ -844,15 +1203,28 @@ export default function DirectorWorkspace({
             </span>
           </div>
 
+          {/* Deliberately NOT disabled while findings are outstanding. The
+              server decides whether this plan can lock, and its refusal names
+              the beat, the count and the finding ids; a greyed-out control with
+              no explanation is the failure this project has rejected before.
+              Disabled only while a request of its own is in flight — that is a
+              fact about this button, not a guess about the answer. */}
           <button
+            data-testid="lock-toggle"
             onClick={handleToggleLock}
-            className={`px-5 py-2.5 rounded-xl font-mono text-xs font-bold transition-all duration-200 flex items-center gap-2 shadow-lg ${
+            disabled={Boolean(lockBusy)}
+            className={`px-5 py-2.5 rounded-xl font-mono text-xs font-bold transition-all duration-200 flex items-center gap-2 shadow-lg disabled:opacity-50 ${
               isLocked
                 ? "bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700"
                 : "bg-emerald-600 hover:bg-emerald-500 text-zinc-950 neon-glow-emerald"
             }`}
           >
-            {isLocked ? (
+            {lockBusy ? (
+              <>
+                <Sparkles className="w-4 h-4 animate-spin" />
+                <span>{lockBusy === "locking" ? "LOCKING…" : "UNLOCKING…"}</span>
+              </>
+            ) : isLocked ? (
               <>
                 <Unlock className="w-4 h-4 text-amber-400" />
                 <span>UNLOCK TO EDIT</span>
@@ -891,6 +1263,87 @@ export default function DirectorWorkspace({
           </button>
         </div>
       </div>
+
+      {/* Why the lock did not take, in the server's own words.
+
+          `lock_scene`'s headline is "nothing was locked" and every sentence
+          that names a beat, a count or a finding id is in `problems`, so the
+          list is rendered in full and nothing is collapsed into a summary. */}
+      {lockProblem && (
+        <div
+          data-testid="lock-problem"
+          className="glass-panel p-3.5 rounded-xl border border-amber-500/50 bg-amber-500/10 flex items-start justify-between gap-3"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="text-xs font-mono text-amber-200 leading-relaxed">
+              <span>{lockProblem.message}</span>
+              {lockProblem.problems.length > 0 && (
+                <ul className="mt-1.5 flex flex-col gap-1 list-disc pl-4">
+                  {lockProblem.problems.map((line, i) => (
+                    <li key={i} data-testid="lock-problem-detail">
+                      {line}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {lockProblem.changed.length > 0 && (
+                <span className="block mt-1.5 text-[11px] text-amber-300">
+                  {lockProblem.changed.join(", ")} did unlock before that, so this scene
+                  is now part locked and part draft. There is no bulk unlock route, so
+                  its beats are unlocked one at a time and they fail one at a time.
+                </span>
+              )}
+              {/* The refusal says the lock failed. It does not say WHERE the
+                  findings are, and the queue is where they get decided — so the
+                  count is stated from the plan on screen, which is the client's
+                  own fact, and the drawer is one click away. Not derived from
+                  the refusal's prose: a reworded message must not be able to
+                  change what this says. */}
+              {lockProblem.wasLocking && unresolvedWarnings.length > 0 && (
+                <span className="block mt-1.5 text-[11px] text-amber-300">
+                  This plan carries {unresolvedWarnings.length} finding
+                  {unresolvedWarnings.length === 1 ? "" : "s"} with no recorded decision.
+                  Locking requires each one resolved or accepted.
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {lockProblem.wasLocking && unresolvedWarnings.length > 0 && (
+              <button
+                data-testid="lock-open-queue"
+                onClick={() => setProblemDrawerOpen(true)}
+                className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 rounded-lg text-[11px] font-mono font-bold transition-colors flex items-center gap-1"
+              >
+                <span>Review {unresolvedWarnings.length} problem
+                  {unresolvedWarnings.length === 1 ? "" : "s"}</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <button
+              onClick={() => setLockProblem(null)}
+              className="text-zinc-400 hover:text-zinc-200 text-xs font-mono font-bold"
+              aria-label="Dismiss"
+            >
+              &#10005;
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* The lock that took, written from the status the server sent back. */}
+      {lockDone && (
+        <div
+          data-testid="lock-done"
+          className="glass-panel p-3.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 flex items-center gap-2.5"
+        >
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span className="text-xs font-mono text-emerald-200 leading-relaxed">
+            {lockDone}
+          </span>
+        </div>
+      )}
 
       {/* SECTION 1A: The spend gate.
           Gate 1's premise is that money is committed by a deliberate, informed
@@ -1080,9 +1533,26 @@ export default function DirectorWorkspace({
             rows={2}
             className="w-full bg-zinc-950/80 border border-zinc-800 rounded-xl p-3.5 text-xs text-zinc-100 placeholder-zinc-600 focus:border-amber-500 outline-none resize-none font-sans leading-relaxed disabled:opacity-50"
           />
+          {/* The label is the feedback, not the spinner. This button already had
+              `disabled` and a spinner while `redirecting`, and it still read
+              "REDIRECT SCENE" throughout a job of tens of seconds — weak
+              feedback on a long job reads as none. `CoverageSurveyPanel` says
+              `PLANNING (s003)…`; this says the same thing about the same
+              endpoint.
+
+              Locked is stated rather than left as a dead control: the planner
+              plans AROUND locked beats (`plan_scene`, replan=false, which is
+              what this sends), so a redirect issued here would return success
+              having changed nothing. */}
           <button
+            data-testid="redirect-scene"
             onClick={handleRedirectScene}
             disabled={isLocked || redirecting}
+            title={
+              isLocked
+                ? "This plan is locked. Unlock it above before re-planning."
+                : "Re-plan this scene's coverage from a note"
+            }
             className="absolute bottom-3 right-3 px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold font-mono rounded-lg transition-all flex items-center gap-1.5 shadow-lg disabled:opacity-50"
           >
             {redirecting ? (
@@ -1090,17 +1560,34 @@ export default function DirectorWorkspace({
             ) : (
               <Send className="w-3.5 h-3.5" />
             )}
-            <span>REDIRECT SCENE</span>
+            <span>
+              {redirecting
+                ? `RE-PLANNING (${sceneBeatsLabel})…`
+                : isLocked
+                  ? "UNLOCK TO REDIRECT"
+                  : "REDIRECT SCENE"}
+            </span>
           </button>
         </div>
 
-        {/* The planner is a background job of tens of seconds. Show its own log
-            rather than a spinner with nothing behind it. */}
-        {redirecting && redirectLog && (
-          <pre className="max-h-24 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-[11px] font-mono text-zinc-400 whitespace-pre-wrap">
-            {redirectLog.slice(-600)}
-          </pre>
+        {/* Why the control above is off, rather than a dead button. The action
+            it names lives in this same header, so it is named back. */}
+        {isLocked && !redirecting && (
+          <p
+            data-testid="redirect-locked-note"
+            className="text-[11px] font-mono text-zinc-400 leading-relaxed"
+          >
+            This plan is locked, so re-planning is turned off here — the planner
+            plans around locked beats and would leave this one exactly as it is.
+            Use UNLOCK TO EDIT above first; that returns the plan to draft without
+            discarding its coverage.
+          </p>
         )}
+
+        {/* The running state and the planner's log used to live here, inside
+            this panel. They are now at the top of the workspace, above the
+            Stale Plan Snapshot banner, because a re-plan started FROM that
+            banner unmounts it on success — see RedirectOutcome. */}
 
         {/* Quick Shortcuts Pills */}
         <div className="flex flex-wrap items-center gap-1.5">
