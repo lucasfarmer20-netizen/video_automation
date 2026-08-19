@@ -224,7 +224,9 @@ export default function WorkspacePage() {
   // maps to, so there is never a second, competing primary flow.
   const handleStagePrimary = async (action: string) => {
     if (action === "approve:coverage") { setActiveStage("direct"); return; }
-    if (action === "build:draft1") { await post("/api/assemble/rough_cut"); return; }
+    // Through startPaidRender, not a bare post: this action builds the rough
+    // cut, and the rough cut buys Tier-C video.
+    if (action === "build:draft1") { await startPaidRender("/api/assemble/rough_cut"); return; }
     if (action === "export:master") { await post("/api/assemble/timeline"); return; }
   };
 
@@ -435,8 +437,47 @@ export default function WorkspacePage() {
    * The button stays available either way; what changes is that the reply is
    * reported for what it is.
    */
+  /**
+   * Start a whole-episode render, after quoting the paid video it will buy.
+   *
+   * The batch render is the largest paid action in the studio and it was the one
+   * with no number anywhere: the button said "render", the server called fal
+   * once per Tier-C beat, and nobody was ever shown a total. A run that buys no
+   * paid video needs no confirmation and gets none — the server still refuses
+   * any beat that turns out to buy, so "quoted as free" cannot become a blank
+   * cheque.
+   */
+  const startPaidRender = async (path: string) => {
+    const quote = await getJson("/api/render/quote");
+    if (!quote?.ok) {
+      alert("Could not price this render, so nothing was started. Try again.");
+      return null;
+    }
+    let url = path;
+    if (quote.paid_beats > 0) {
+      const lines = (quote.beats || []).map((b: any) =>
+        `  ${b.scene_id}: ${b.generate_seconds}s on ${b.video_model}` +
+        `${b.generate_audio ? " with audio" : ""} — $${b.estimated_cost.toFixed(2)}`
+      ).join("\n");
+      if (!confirm(
+        `🎬 PAID: this render buys video for ${quote.paid_beats} beat(s) on ` +
+        `fal.ai.\n\n${lines}\n\nTOTAL $${quote.estimated_cost.toFixed(2)}\n\n` +
+        `Beats that already have a paid clip are kept, not re-bought.\n\nContinue?`
+      )) return null;
+      url = `${path}?accepted_cost=${quote.estimated_cost}`;
+    }
+    const r = await post(url);
+    if (r?.cost_unconfirmed) {
+      alert("Nothing was started and nothing was charged: " +
+            (r.error || "the price changed. Try again to see the new one."));
+      return null;
+    }
+    return r;
+  };
+
   const handleBuildDraft1 = async () => {
-    const r = await post("/api/assemble/rough_cut");
+    const r = await startPaidRender("/api/assemble/rough_cut");
+    if (!r) return;
     if (!r.ok) {
       alert("Draft 1 not started: " + (r.error || "unknown error"));
       return;
@@ -1008,14 +1049,52 @@ Moved to: ${res.moved_to}`);
     }
   };
 
+  /**
+   * Buy one beat's Tier-C clip.
+   *
+   * The confirm used to read "🎬 PAID: Video generation calls fal.ai. Continue?"
+   * and name no amount, for a call that ranges from $0.28 to $6.00 depending on
+   * the model, the beat's length and whether the audio toggle is on — and the
+   * request it sent carried no price either, so nothing between this button and
+   * fal knew what it cost.
+   *
+   * The number is now fetched from the server rather than computed here, and
+   * sent back with the request. Working it out in the browser would put a second
+   * pricing implementation next to the one that bills, which is how the quote
+   * and the ledger came to disagree in the first place.
+   */
   const handleGenerateVideo = async (sceneId: string, btn: HTMLButtonElement) => {
-    if (!confirm("🎬 PAID: Video generation calls fal.ai. Continue?")) return;
+    const quoted = await getJson(`/api/shot/${sceneId}/video_quote`);
+    const quote = quoted?.quote;
+    if (!quote) {
+      alert("Could not price this generation, so nothing was started. Try again.");
+      return;
+    }
+    const audio = quote.generate_audio ? "with audio" : "silent";
+    const stills = quote.stills
+      ? `\n  ${quote.stills} draft still${quote.stills === 1 ? "" : "s"} — $${quote.still_cost.toFixed(2)}`
+      : "";
+    if (!confirm(
+      `🎬 PAID: this generates ${sceneId} on fal.ai.\n\n` +
+      `  ${quote.generate_seconds}s on ${quote.video_model}, ${audio} — ` +
+      `$${quote.video_cost.toFixed(2)}${stills}\n\n` +
+      `TOTAL $${quote.estimated_cost.toFixed(2)}\n\nContinue?`
+    )) return;
     btn.disabled = true;
     const oldText = btn.textContent;
     btn.textContent = "Generating...";
-    const data = await post(`/api/shot/${sceneId}/generate_video`);
+    // The figure just confirmed travels WITH the request. The server refuses if
+    // it no longer matches, so a price that moved between the dialog and the
+    // click is re-quoted rather than silently spent.
+    const data = await post(`/api/shot/${sceneId}/generate_video`,
+                            { accepted_cost: quote.estimated_cost });
     btn.disabled = false;
     btn.textContent = oldText;
+    if (data.cost_unconfirmed) {
+      alert("Nothing was generated and nothing was charged: " +
+            (data.error || "the price changed. Try again to see the new one."));
+      return;
+    }
     if (data.ok) {
       fetchActiveProject();
       // The paid clip exists even when it could not be placed in the cut; say so
@@ -1202,7 +1281,11 @@ Moved to: ${res.moved_to}`);
   };
 
   const handleAssemble = async (stage: string) => {
-    const data = await post(`/api/assemble/${stage}`);
+    // The render stage is the one that spends. Everything else here is local.
+    const data = stage === "render"
+      ? await startPaidRender("/api/assemble/render")
+      : await post(`/api/assemble/${stage}`);
+    if (!data) return;
     if (data.ok) {
       alert(`${stage} process started in background!`);
     } else {
@@ -1510,7 +1593,7 @@ Moved to: ${res.moved_to}`);
                 return await getJson("/api/roughcut/plan");
               } catch { return null; }
             }}
-            onBuild={async () => { await post("/api/assemble/rough_cut"); }}
+            onBuild={async () => { await startPaidRender("/api/assemble/rough_cut"); }}
             onGoApprove={() => setActiveStage("direct")}
           />
 

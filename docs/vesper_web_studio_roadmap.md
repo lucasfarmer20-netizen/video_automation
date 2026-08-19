@@ -96,7 +96,8 @@ Complete route list, from the running app. **Every `POST` requires
 | `POST` | `/api/shot/{scene_id}` | see accepted fields below |
 | `POST` | `/api/regenerate/{scene_id}` | `{backend?: string}` — paid |
 | `POST` | `/api/shot/{id}/edit_image/{var_idx}` | `{prompt: string, backend?: string}` — paid |
-| `POST` | `/api/shot/{id}/generate_video` | `{video_model?: string}` — paid |
+| `GET` | `/api/shot/{id}/video_quote` | `?video_model=` — what the generation below will cost |
+| `POST` | `/api/shot/{id}/generate_video` | `{accepted_cost: number, video_model?: string}` — **paid; `accepted_cost` is required and must be the figure `video_quote` just returned** |
 | `POST` | `/api/shot/{id}/image` \| `/clip` \| `/reference` | multipart `file` |
 | `POST` | `/api/shot/{id}/delete_image/{i}` \| `/delete_video/{i}` | — |
 | `POST` | `/api/shot/{id}/chat` | `{messages: Message[]}` |
@@ -117,7 +118,8 @@ video_audio, narration, prompt, style_medium, motion_prompt, flow_hero
 | Method | Path | Payload |
 |---|---|---|
 | `POST` | `/api/approve` | — refuses unless every beat has `draft_image` |
-| `POST` | `/api/assemble/{stage}` | **no payload.** `stage` ∈ `drafts \| narration \| render \| preview \| timeline` |
+| `POST` | `/api/assemble/{stage}` | **no body.** `stage` ∈ `drafts \| narration \| render \| preview \| timeline`; `render` takes `?accepted_cost=` (see below) |
+| `GET` | `/api/render/quote` | `?force_paid=` — the paid video a whole-episode render would buy, beat by beat |
 | `GET` | `/api/assemble/status` | — returns `{jobs: {name: {status, log}}}` |
 | `POST` | `/api/render` | render knobs (backend, guidance_scale, nag_scale, …) |
 | `POST` | `/api/render/reference` \| `/clear` | multipart `file` / — |
@@ -126,6 +128,15 @@ video_audio, narration, prompt, style_medium, motion_prompt, flow_hero
 | `POST` | `/api/audio/sfx/{scene_id}` | — paid |
 
 `/api/assemble/render` takes **no** `{scenes: []}` filter; it processes every beat.
+
+**Paid video is quoted before it is bought.** `/api/assemble/render` and
+`/api/assemble/rough_cut` require `?accepted_cost=` whenever they plan to buy any,
+and it must equal the total `GET /api/render/quote` reports. A request that names no
+price is refused before the job starts — nothing is compiled and nothing is charged.
+The confirmed total is then spent down one beat at a time at the dispatch itself, so a
+beat the quote did not predict (one re-timed to its narration, say) is refused rather
+than bought. Gate 1 is still checked and is not a substitute: approval says a render
+budget was allocated, not that anyone agreed to this charge.
 
 ### Media
 
