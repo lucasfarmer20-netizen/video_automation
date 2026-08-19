@@ -25,6 +25,11 @@ TESTS = [
     "tests/test_beat_paid_video_quote.py",
     "tests/test_fal_tariff.py",
     "tests/test_cost_quote_matches_ledger.py",
+    # Added when these paths started recording what fal billed rather than only
+    # what we guessed: a mutation that satisfies the new tests by weakening the
+    # measured/estimated distinction has to fail somewhere, and this is where
+    # that distinction is owned.
+    "tests/test_measured_spend.py",
 ]
 
 # (label, file, find, replace, what breaking it would mean)
@@ -119,10 +124,46 @@ MUTATIONS = [
     (
         "the paid clip is dispatched without opening an attempt",
         "backend/main.py",
-        "        video_rel_path = record_paid_video(scene_id, priced, buy_the_clip)",
-        "        video_rel_path = buy_the_clip()",
+        "        video_rel_path = record_paid_video(\n            scene_id, priced, buy_the_clip,",
+        "        video_rel_path = buy_the_clip()\n        _dropped = (\n            scene_id, priced, buy_the_clip,",
         "money spent, no record -- the charge is invisible to spend() and "
         "cannot be reconciled against a fal invoice",
+    ),
+
+    # --- what fal billed, as opposed to what we guessed ---------------------------
+    (
+        "the measurement is obtained and never recorded",
+        "backend/main.py",
+        '        generation.succeed(beat_id, att.id, output=str(output or ""),\n'
+        "                           measurement=measurement)",
+        '        generation.succeed(beat_id, att.id, output=str(output or ""))',
+        "THE UNREACHED-FEATURE SHAPE: fal answers, the call site reads it, and "
+        "the ledger reports an estimate for ever. A mutation table over "
+        "generation.py alone cannot tell this from a working wiring",
+    ),
+    (
+        "our own estimate is recorded as fal's measurement",
+        "backend/main.py",
+        "            measurement = measure()",
+        '            measurement = {"units": q.generate_seconds, "unit": "seconds",\n'
+        '                           "cost": q.price, "request_id": ""}',
+        "an estimate wearing fal's name -- the exact lie cost_source exists to "
+        "make impossible, and indistinguishable from a real bill downstream",
+    ),
+    (
+        "the request id is never captured on the batch path",
+        "backend/main.py",
+        "                                                  on_enqueue=request_ids.append)",
+        "                                                  )",
+        "no request id means no measurement is possible, and no human can find "
+        "this charge on their fal invoice",
+    ),
+    (
+        "the request id is never captured on the beat route",
+        "backend/main.py",
+        "                                          on_enqueue=request_ids.append)",
+        "                                          )",
+        "same, on the per-beat Generate Video button",
     ),
     (
         "the attempt is opened with no cost on it",

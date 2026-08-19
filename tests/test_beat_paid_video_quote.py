@@ -71,7 +71,50 @@ BEAT = "s001"
 # under test passes for any implementation of it.
 VEO_8S_SILENT = 1.60
 VEO_8S_AUDIO = 3.20
-STILL = 0.15
+
+# One draft still, from the account's own line items rather than from a
+# published page: 22.0 images billed $0.8756 over 2026-08-15..19 on
+# `fal-ai/nano-banana`, the endpoint nano2 actually calls. $0.0398 each.
+#   GET https://api.fal.ai/v1/models/usage  (read 2026-08-18)
+STILL = 0.0398
+
+# fal's own handle on a paid request, echoed by the stub below.
+REQUEST_ID = "01a01871-5487-7162-bdb0-0cd41219c03e"
+
+
+class _Resp:
+    def __init__(self, status, headers=None, payload=None):
+        self.status_code = status
+        self.headers = headers or {}
+        self._payload = payload or {}
+
+    def json(self):
+        return self._payload
+
+
+def fal_says_nothing(url, params=None):
+    """fal declining to report a billed amount -- the common case, and the default.
+
+    Every measurement path returns None here, so an attempt keeps its estimate
+    and keeps it LABELLED as an estimate. Stubbed rather than left alone because
+    the real one makes an HTTP request, and a test suite must not.
+    """
+    return _Resp(500)
+
+
+def fal_bills(units, unit_price, unit="seconds"):
+    """fal answering the two calls a measurement needs."""
+
+    def get(url, params=None):
+        from backend import fal_billing
+        if url == fal_billing.PRICING_URL:
+            return _Resp(200, payload={"prices": [
+                {"endpoint_id": (params or {}).get("endpoint_id"),
+                 "unit_price": unit_price, "unit": unit, "currency": "USD"}]})
+        return _Resp(200, headers={fal_billing.BILLABLE_UNITS_HEADER: units},
+                     payload={"video": {"url": "x"}})
+
+    return get
 
 
 class Fal:
@@ -80,7 +123,15 @@ class Fal:
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
 
-    def subscribe(self, endpoint, arguments=None, with_logs=False):
+    def subscribe(self, endpoint, arguments=None, with_logs=False, on_enqueue=None):
+        # Asserted, not tolerated. Without the request id fal cannot be asked
+        # what it billed, and the human cannot find this clip's line on their
+        # dashboard -- and a feature obtained at the call site and never wired
+        # through looks identical to a working one from inside generation.py.
+        assert on_enqueue is not None, (
+            "the request id was not captured, so this generation can never be "
+            "reconciled against fal's own billing")
+        on_enqueue(REQUEST_ID)
         self.calls.append((endpoint, dict(arguments or {})))
         return {"video": {"url": "https://fal.example/clip.mp4"}}
 
@@ -133,6 +184,7 @@ def studio(tmp_path, monkeypatch):
     monkeypatch.setattr(M.fal_client, "upload_file", fal.upload_file, raising=False)
     monkeypatch.setattr(M.assets, "_download",
                         lambda url, dest: Path(dest).write_bytes(b"MP4"))
+    monkeypatch.setattr(M.fal_billing, "_get", fal_says_nothing)
     monkeypatch.setattr(M, "set_active_video_clip", lambda *a, **k: None)
     monkeypatch.setattr(M.assets, "extract_final_frame", lambda *a, **k: None)
     monkeypatch.setattr(M, "_pad_clip_to_beat", lambda *a, **k: None)
@@ -340,6 +392,81 @@ def test_the_confirmed_price_is_what_the_ledger_records(studio, audio, expected)
     _, arguments = fal.calls[0]
     assert arguments["generate_audio"] is audio
     assert arguments["duration"] == "8s"
+
+
+def test_what_fal_billed_is_recorded_when_fal_will_say(studio, monkeypatch):
+    """The estimate is what we quote; the measurement is what it cost.
+
+    The compile path reads ``x-fal-billable-units`` back off the completed
+    request and records it. These two paths did not exist when that was written,
+    so without this they would go on reporting an estimate for ever while the
+    beat next door reported a measurement -- the same asymmetry this whole change
+    is about, one field along.
+
+    A measurement can only be reached if the request ID was captured, which
+    ``fal_client.subscribe`` does not return. That is what makes this a wiring
+    test and not a restatement of ``generation.succeed``'s unit tests.
+    """
+    from backend import main as M
+    client, sb, shot, fal = studio
+    shot.video_audio = False
+    # fal bills 9 units at $0.20 for a request we quoted 8 seconds of.
+    # Deliberately NOT the quoted figure: a measurement that happened to equal
+    # the estimate could not show which of the two was recorded.
+    monkeypatch.setattr(M.fal_billing, "_get", fal_bills("9.0", 0.20))
+
+    r = client.post(f"/api/shot/{BEAT}/generate_video",
+                    json={"accepted_cost": VEO_8S_SILENT})
+
+    assert r.json()["ok"] is True
+    att = _video_attempts()[0]
+    assert att.cost_source == generation.MEASURED, (
+        "fal reported what it billed and the attempt still reads as an estimate")
+    assert att.cost == pytest.approx(1.80), (
+        f"fal billed 9 units x $0.20 = $1.80; the ledger recorded ${att.cost}")
+    assert att.billable_units == 9.0
+    assert att.provider_request_id == REQUEST_ID, (
+        "without fal's request id nobody can find this charge on the invoice")
+    # And OUR figure is still ours, untouched. The two must not be able to
+    # overwrite each other -- that is the distinction the field exists for.
+    assert att.estimated_cost == VEO_8S_SILENT
+
+
+def test_an_unmeasurable_charge_reads_as_an_estimate_not_as_a_measurement(studio):
+    """fal not answering is the common case, and it must not manufacture a claim.
+
+    ``measure`` returns None on every failure path, and the attempt then keeps
+    reporting the figure this repo computed, labelled as the estimate it is. A
+    cost that could not be obtained must never read as measured, and never as
+    zero.
+    """
+    client, sb, shot, fal = studio
+    shot.video_audio = False
+
+    client.post(f"/api/shot/{BEAT}/generate_video",
+                json={"accepted_cost": VEO_8S_SILENT})
+
+    att = _video_attempts()[0]
+    assert att.cost_source != generation.MEASURED, (
+        "fal said nothing and the attempt claims a measured cost anyway")
+    assert att.estimated_cost == VEO_8S_SILENT
+
+
+def test_the_batch_render_records_what_fal_billed_too(studio, monkeypatch):
+    """Both paths, because a gate on one route is not a gate on the spend."""
+    from backend import main as M
+    client, sb, shot, fal = studio
+    shot.video_audio = False
+    monkeypatch.setattr(M.fal_billing, "_get", fal_bills("9.0", 0.20))
+
+    M.generate_fal_and_render(
+        sb, log=lambda m: None,
+        authorised=paid_video.Authorisation.accepting(VEO_8S_SILENT))
+
+    att = _video_attempts()[0]
+    assert att.cost_source == generation.MEASURED
+    assert att.cost == pytest.approx(1.80)
+    assert att.provider_request_id == REQUEST_ID
 
 
 def test_the_quote_covers_the_still_this_route_also_buys(studio, tmp_path):
@@ -563,6 +690,13 @@ def test_the_quote_prices_the_seconds_that_go_on_the_wire(key):
     seedance is billed for its 15s ceiling. If the quote and the request could
     disagree about that, the number on the button would be for a call nobody
     makes.
+
+    Note what is NOT asserted here: that the price equals the seconds times the
+    rate. It does not, and assuming it did was its own defect -- wan v2.7 bills 6
+    units for a 4-second request, so a 2s wan shot is $0.60 and not $0.20 (see
+    ``capabilities.BILLED_UNITS``). The requested LENGTH is what this test is
+    about; how many units fal turns that length into is a separate question with
+    a separate authority, anchored in tests/test_fal_tariff.py.
     """
     import re
     for wanted in (2.0, 3.34, 5.0, 8.0, 20.0):
@@ -573,8 +707,12 @@ def test_the_quote_prices_the_seconds_that_go_on_the_wire(key):
         assert int(on_the_wire) == q.generate_seconds, (
             f"{key} at {wanted}s is quoted for {q.generate_seconds}s and asked "
             f"for {on_the_wire}s")
-        assert q.price == pytest.approx(
-            q.generate_seconds * capabilities.spec(key)["cost_per_second"], abs=1e-4)
+        # One money function, not two. paid_video does no arithmetic of its own,
+        # so a beat-level quote cannot drift from the compile path's -- which is
+        # the whole reason clip_price was collapsed into one function.
+        assert q.price == capabilities.clip_price(key, q.generate_seconds,
+                                                  generate_audio=False), (
+            f"{key} priced its own way instead of through clip_price")
 
 
 @pytest.mark.parametrize("key", sorted(
@@ -620,9 +758,14 @@ def test_the_compile_paths_quotes_are_exactly_what_they_were():
 def test_a_compiled_shot_is_quoted_at_the_silent_rate(tmp_path, monkeypatch):
     """End to end through the function the compile button actually calls.
 
-    ``quote_shot`` = stills + clip. One identity-uncritical shot buys one still
-    at $0.15, and its 8s veo clip is billed silent -- $1.75, the same figure as
-    before this change.
+    ``quote_shot`` = stills + clip. One identity-uncritical shot buys one still,
+    and its 8s veo clip is billed silent -- the same figures the compile button
+    showed before the audio dimension was added to ``clip_price``.
+
+    Both terms are literals here. The still moved to $0.0398 when the invoice
+    settled what `fal-ai/nano-banana` really bills, and a test that read the
+    constant instead would have followed it silently either way -- which is the
+    whole reason these expectations are written out.
     """
     from backend import director
     monkeypatch.setattr(config, "MANIFEST_PATH", tmp_path / "storyboard_manifest.json")
