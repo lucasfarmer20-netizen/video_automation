@@ -46,6 +46,7 @@ from . import director, spike_identity, planner, capabilities, casting, characte
 from . import fal_usage, reconcile
 from . import stages as stagemod
 from . import generation
+from . import paid_video
 from . import exports
 from . import slots as slotmod
 from . import projects
@@ -566,6 +567,62 @@ def record_paid_drafts(shot: Shot, backend: str, generate) -> None:
         print(f"Warning: could not settle draft attempt for {shot.scene_id}: {exc}")
 
 
+def record_paid_video(beat_id: str, q: paid_video.Quote, dispatch):
+    """Run a paid video generation with its price recorded before it is spent.
+
+    The beat-level paid video paths recorded nothing at all. Stills bought on the
+    way down went through ``record_paid_drafts`` and landed in the ledger; the
+    clip itself -- the expensive half, and the only part whose price moves with a
+    toggle in the UI -- did not, so ``generation.spend()`` for a beat rendered
+    that way reported the $0.15 stills and none of the $1.51 video. A charge the
+    ledger cannot see is a charge nobody can reconcile against a fal invoice
+    (contract §6.1).
+
+    ``q.price`` is the SAME number the human confirmed: both come from
+    ``paid_video.quote``, one call, so consent cannot be taken for one amount and
+    another recorded. That is the property ``capabilities.clip_price`` was
+    collapsed into one function to get, extended to the paths that never had it.
+
+    RECORDING, NOT GATING -- ``signature=""``, for the reason spelled out in
+    ``record_paid_drafts``: begin()'s reuse and in_flight arms would refuse a
+    deliberate re-render, which is a legitimate re-buy on these paths. The
+    permission question is answered before this by ``paid_video.Authorisation``.
+    Opening the attempt still fails closed, because "money spent, no record" is
+    the defect this exists to remove.
+
+    A failure after ``dispatch`` starts is IN DOUBT, never failed: fal may
+    already have been called and charged, and nothing here can tell. Same rule
+    the compile path uses.
+    """
+    att, how = generation.begin(beat_id=beat_id, shot_id=beat_id, signature="",
+                                kind="video", backend=q.backend, paid=True,
+                                estimated_cost=q.price)
+    if how != "created":
+        raise HTTPException(
+            status_code=409,
+            detail=(f"the generation ledger answered {how!r} for {beat_id}; "
+                    f"refusing to generate. Resolve it before rendering again."),
+        )
+
+    try:
+        output = dispatch()
+    except BaseException as exc:
+        try:
+            generation.in_doubt(beat_id, att.id, f"video generation raised: {exc}")
+        except Exception as led:  # noqa: BLE001
+            print(f"Warning: could not mark video attempt in doubt: {led}")
+        raise
+
+    try:
+        # No cost=, for the same reason the compile path leaves it unset: fal
+        # reports no billed amount, so our figure stays in estimated_cost where
+        # it is labelled as ours rather than as a confirmed invoice.
+        generation.succeed(beat_id, att.id, output=str(output or ""))
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: could not settle video attempt for {beat_id}: {exc}")
+    return output
+
+
 def _scan_projects() -> list[dict]:
     """Discover storyboard_manifest.json projects, one entry per real project.
 
@@ -866,12 +923,94 @@ def save_shot_assets(shot) -> None:
     save_current_project(current)
 
 
-def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) -> None:
+def _video_audio_wanted(sb: Storyboard, shot: Shot) -> bool:
+    """Whether this beat's clip will be generated with an audio track.
+
+    The beat's own override, then the episode default, then on. One function
+    because it is a PRICE input on ``veo_3_1`` -- 0.20/s silent against 0.40/s
+    with audio -- and the quote and the request have to read the toggle the same
+    way or the human is shown a number for a call nobody makes.
+    """
+    wanted = shot.video_audio
+    if wanted is None:
+        wanted = getattr(sb.render, "video_audio", True)
+    return bool(wanted)
+
+
+def paid_video_quote(sb: Storyboard, shot: Shot, key: str = "") -> paid_video.Quote:
+    """What this beat's Tier-C clip will cost, priced for the call about to be made."""
+    video_key = (key or getattr(shot, "video_model", None)
+                 or getattr(sb.render, "video_model", "seedance_2_0"))
+    return paid_video.quote(
+        video_key, float(getattr(shot.camera, "duration", 6.0)),
+        generate_audio=_video_audio_wanted(sb, shot))
+
+
+def _will_buy_paid_video(shot: Shot, out_dir: Path, force_paid: bool) -> bool:
+    """Will the render loop buy a clip for this beat?
+
+    Mirrors the loop's own skips -- locked coverage, an imported hero clip, and a
+    paid clip that is already on disk (which the loop re-places rather than
+    re-bills). It is the estimate side of the quote, and estimates drift: this
+    reads state that the loop itself may change on the way past.
+
+    That drift is survivable BECAUSE the authorisation is spent at the dispatch
+    rather than trusted from here. Over-predict and the human is quoted for a
+    beat that turns out not to buy. Under-predict and the extra dispatch runs out
+    of authorisation and refuses, loudly, having spent nothing. Neither direction
+    can produce an unquoted charge, which is the property that matters.
+    """
+    if director.has_locked_coverage(shot.scene_id):
+        return False
+    if getattr(shot, "hero_clip", False):
+        return False
+    if shot.motion_type != MotionType.AI_VIDEO:
+        return False
+    if force_paid:
+        return True
+    candidates = ([shot.video_clip] if shot.video_clip else []
+                  ) + list(shot.video_variations or [])
+    if not candidates:
+        return True
+    if (out_dir / f"{shot.scene_id}.mp4").exists():
+        return False
+    return not any(c and config.resolve_media(c, shot.scene_id) for c in candidates)
+
+
+def batch_paid_video_quote(sb: Storyboard, force_paid: bool = False) -> dict:
+    """The price of the paid video a whole-episode render would buy.
+
+    The batch render is the largest paid action in the studio and it was quoted
+    at nothing at all: the button said "render", the loop called fal once per
+    Tier-C beat, and no number was ever put in front of anybody.
+    """
+    out_dir = config.episode_paths(sb.title)["render"]
+    beats = []
+    for shot in sb.shots:
+        if not _will_buy_paid_video(shot, out_dir, force_paid):
+            continue
+        beats.append({"scene_id": shot.scene_id,
+                      **paid_video_quote(sb, shot).as_dict()})
+    return {
+        "beats": beats,
+        "paid_beats": len(beats),
+        "estimated_cost": round(sum(b["estimated_cost"] for b in beats), 4),
+    }
+
+
+def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None,
+                            authorised: paid_video.Authorisation | None = None) -> None:
     """Render every beat. Local tiers are free and always redone; paid ai_video
     beats that already have a placed clip are kept unless ``force_paid``.
 
     Without that guard, any re-run — a camera tweak, a fixed FX, a retry after
     one beat failed — silently re-billed every ai_video beat through fal.
+
+    ``authorised`` is the price a human was shown and confirmed, and it is spent
+    down one paid beat at a time. Omitting it authorises NOTHING -- the default
+    is a refusal, not a bypass -- because this loop's paid dispatch previously
+    needed no permission of any kind beyond Gate 1, and Gate 1 names no number.
+    A caller that has not quoted anybody has not been told yes.
     """
     # log_job() drops lines for a job that was never started, so when the rough
     # cut called this every per-beat line vanished and a 40-minute render looked
@@ -884,6 +1023,8 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
     # /api/assemble/render endpoint calls this bare, and the first time it ran it
     # died on RecursionError one beat in.
     log = log or (lambda m: log_job("render", m))
+    authorised = authorised or paid_video.Authorisation.none(
+        "this render was started without a confirmed price")
 
     config.require_for("assets")
 
@@ -970,12 +1111,38 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
             if is_ai:
                 video_key = getattr(shot, "video_model", None) or getattr(sb.render, "video_model", "seedance_2_0")
                 model_endpoint = resolve_video_model_endpoint(video_key)
-                log(f"[{idx}/{total}] PAID video for {shot.scene_id} via {model_endpoint} (chaining: {chaining_mode}) ...")
                 target_dur = float(getattr(shot.camera, "duration", 6.0))
 
-                gen_audio = shot.video_audio
-                if gen_audio is None:
-                    gen_audio = getattr(sb.render, "video_audio", True)
+                gen_audio = _video_audio_wanted(sb, shot)
+
+                # THE PRICE, AND THE PERMISSION, BEFORE ANYTHING ELSE.
+                #
+                # This block used to open with the log line and go straight on to
+                # build the request: no price was derived here, so the batch
+                # render called fal once per Tier-C beat against a number nobody
+                # had ever been shown. Quoting is not enough on its own -- the
+                # quote has to be one somebody said yes to, which is what
+                # `authorised` carries, and it is spent HERE rather than checked
+                # at the route, so a fifth caller of this function cannot arrive
+                # without one by forgetting to.
+                #
+                # `gen_audio` is an input to the price, not just to the request:
+                # on veo_3_1 the toggle is the difference between 0.20/s and
+                # 0.40/s.
+                q = paid_video_quote(sb, shot, video_key)
+                try:
+                    authorised.spend(q, f"{shot.scene_id}")
+                except paid_video.Unauthorised as exc:
+                    log(f"  !! {exc}")
+                    failures.append(shot.scene_id)
+                    prev_extracted_frame = None
+                    prev_video_dest_path = None
+                    continue
+
+                log(f"[{idx}/{total}] PAID video for {shot.scene_id} via "
+                    f"{model_endpoint} (${q.price:.2f}, {q.generate_seconds}s, "
+                    f"audio {'on' if q.generate_audio else 'off'}, "
+                    f"chaining: {chaining_mode}) ...")
 
                 # Every model's own spelling and its own limits, from the schemas.
                 # The hand-written clamp this replaces sent kling/wan/luma no
@@ -1040,25 +1207,28 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None) 
                     log(f"Native Video Extend: also extending from {prev_video_dest_path.name}...")
                     arguments["video_url"] = fal_client.upload_file(str(prev_video_dest_path))
             
-                log(f"Triggering fal.ai API with prompt: {motion_prompt[:80]}...")
-                result = fal_client.subscribe(model_endpoint, arguments=arguments, with_logs=True)
-                video_url = result.get("video", {}).get("url") or result.get("file", {}).get("url")
-                if not video_url:
-                    raise RuntimeError(f"No video URL returned from fal.ai for {shot.scene_id}")
+                def buy_the_clip():
+                    """The paid half, wrapped so the ledger brackets exactly it."""
+                    log(f"Triggering fal.ai API with prompt: {motion_prompt[:80]}...")
+                    result = fal_client.subscribe(model_endpoint, arguments=arguments, with_logs=True)
+                    video_url = result.get("video", {}).get("url") or result.get("file", {}).get("url")
+                    if not video_url:
+                        raise RuntimeError(f"No video URL returned from fal.ai for {shot.scene_id}")
 
-                import time
-                shot_assets_dir = config.assets_dir() / shot.scene_id
-                shot_assets_dir.mkdir(parents=True, exist_ok=True)
+                    import time
+                    shot_assets_dir = config.assets_dir() / shot.scene_id
+                    shot_assets_dir.mkdir(parents=True, exist_ok=True)
 
-                timestamp = int(time.time())
-                var_count = len(getattr(shot, "video_variations", []))
-                local_video_name = f"video_{timestamp}_{var_count}.mp4"
-                local_video_path = shot_assets_dir / local_video_name
+                    timestamp = int(time.time())
+                    var_count = len(getattr(shot, "video_variations", []))
+                    local_video_name = f"video_{timestamp}_{var_count}.mp4"
+                    local_video_path = shot_assets_dir / local_video_name
 
-                log(f"Downloading generated video from {video_url} to {local_video_path}...")
-                assets._download(video_url, local_video_path)
+                    log(f"Downloading generated video from {video_url} to {local_video_path}...")
+                    assets._download(video_url, local_video_path)
+                    return f"assets/{shot.scene_id}/{local_video_name}"
 
-                video_rel_path = f"assets/{shot.scene_id}/{local_video_name}"
+                video_rel_path = record_paid_video(shot.scene_id, q, buy_the_clip)
                 if not hasattr(shot, "video_variations") or shot.video_variations is None:
                     shot.video_variations = []
                 shot.video_variations.append(video_rel_path)
@@ -4024,8 +4194,64 @@ def require_paid_gate(sb, what: str = "render") -> None:
         )
 
 
+def shot_video_quote(sb: Storyboard, shot: Shot, video_model_key: str = "") -> dict:
+    """Everything ``POST /api/shot/{id}/generate_video`` will buy, priced.
+
+    Two terms, because the route spends on two things. The clip is the obvious
+    one. The other is the still: this route auto-generates draft images when the
+    beat has none, at ``DRAFT_IMAGE_COST`` each, and a quote that named only the
+    video would understate what the button costs -- which is the same defect the
+    compile path had when it quoted one image for a shot that bought four.
+    """
+    q = paid_video_quote(sb, shot, video_model_key)
+    have_still = bool(_resolve_local_image_file(shot.draft_image,
+                                                scene_id=shot.scene_id))
+    stills = 0 if have_still else _takes(sb)
+    still_cost = round(DRAFT_IMAGE_COST * stills, 4)
+    return {
+        **q.as_dict(),
+        "video_cost": q.price,
+        "stills": stills,
+        "still_cost": still_cost,
+        "estimated_cost": round(q.price + still_cost, 4),
+    }
+
+
+@app.get("/api/shot/{scene_id}/video_quote")
+def get_shot_video_quote(scene_id: str, video_model: str = ""):
+    """What this beat's "Generate Video" button is about to spend.
+
+    The studio had no way to ask. Its confirm dialog said "PAID: Video
+    generation calls fal.ai. Continue?" and named no amount, for a call that
+    ranges from $0.28 to $6.00 depending on the model, the beat's length and
+    whether the audio toggle is on -- and the human clicking it is allocating
+    render budget exactly as they do at Gate 1.
+    """
+    try:
+        sb = get_current_project()
+        shot = next((s for s in sb.shots if s.scene_id == scene_id), None)
+        if not shot:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        return {"ok": True, "scene_id": scene_id, "quote": shot_video_quote(
+            sb, shot, video_model)}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
 @app.post("/api/shot/{scene_id}/generate_video")
 async def generate_shot_video(scene_id: str, request: Request):
+    """Buy one beat's Tier-C clip.
+
+    ``accepted_cost`` is REQUIRED and must be the number this route just quoted.
+    Gate 1 is checked below and is not a substitute: approval says the human
+    allocated a render budget, not that they agreed to THIS charge, and until
+    now nothing between the button and fal knew what the charge was. A request
+    that cannot say what price it accepted has accepted no price, so it is
+    refused before anything is generated -- the same argument, and the same
+    shape, as the compile route's required ``plan_signature``.
+    """
     try:
         sb = get_current_project()
         shot = next((s for s in sb.shots if s.scene_id == scene_id), None)
@@ -4041,11 +4267,44 @@ async def generate_shot_video(scene_id: str, request: Request):
         config.require_for("video")
         data = await request.json()
         video_model_key = data.get("video_model") or getattr(shot, "video_model", None) or getattr(sb.render, "video_model", "seedance_2_0")
+
+        # THE COST GATE. Before the model is written to the shot, before the
+        # still is bought, before anything at all -- a refusal here must leave
+        # the beat exactly as it found it.
+        quote = shot_video_quote(sb, shot, video_model_key)
+        accepted = data.get("accepted_cost")
+        if not paid_video.accepted_matches(accepted, quote["estimated_cost"]):
+            return JSONResponse(status_code=409 if paid_video.is_a_number(accepted)
+                                else 400, content={
+                "ok": False,
+                "error": (
+                    f"this request did not say what price it agreed to, so "
+                    f"nothing was generated and nothing was charged. "
+                    f"{scene_id} costs ${quote['estimated_cost']:.2f} to "
+                    f"generate; confirm that figure and send it as "
+                    f"accepted_cost."
+                    if not paid_video.is_a_number(accepted) else
+                    f"the price of this generation changed after you were "
+                    f"quoted, so nothing was generated and nothing was "
+                    f"charged. {scene_id} now costs "
+                    f"${quote['estimated_cost']:.2f}; confirm the new figure."),
+                "quote": quote,
+                "accepted_cost": accepted if paid_video.is_a_number(accepted) else None,
+                "cost_unconfirmed": True,
+            })
+        # The video half of the figure just confirmed, carried down to the
+        # dispatch. It is the quote's own number rather than the client's float
+        # because the two agree to the cent by the line above, and the quote is
+        # the one that will also be written to the ledger -- deriving the
+        # authorisation from a display-rounded amount would refuse the very
+        # generation it was granted for.
+        authorised = paid_video.Authorisation.accepting(quote["video_cost"])
+
         shot.video_model = video_model_key
         shot.motion_type = MotionType.AI_VIDEO
 
         model_endpoint = resolve_video_model_endpoint(video_model_key)
-        
+
         local_image_path = _resolve_local_image_file(shot.draft_image, scene_id=shot.scene_id)
         if not local_image_path or not local_image_path.exists():
             print("Auto-generating still drafts before video render...")
@@ -4065,9 +4324,7 @@ async def generate_shot_video(scene_id: str, request: Request):
         public_image_url = fal_client.upload_file(str(local_image_path))
         target_dur = float(getattr(shot.camera, "duration", 6.0))
 
-        gen_audio = shot.video_audio
-        if gen_audio is None:
-            gen_audio = getattr(sb.render, "video_audio", True)
+        gen_audio = _video_audio_wanted(sb, shot)
 
         # Same schema-derived router as the batch path. These two blocks were
         # byte-for-byte duplicates, which is why both carried all four defects.
@@ -4098,23 +4355,30 @@ async def generate_shot_video(scene_id: str, request: Request):
                 public_video_url = fal_client.upload_file(str(prev_video_path))
                 arguments["video_url"] = public_video_url
 
-        result = fal_client.subscribe(model_endpoint, arguments=arguments, with_logs=True)
-        video_url = result.get("video", {}).get("url") or result.get("file", {}).get("url")
-        if not video_url:
-            raise RuntimeError("No video URL returned from fal.ai")
+        def buy_the_clip():
+            """The paid half, wrapped so the ledger brackets exactly it."""
+            result = fal_client.subscribe(model_endpoint, arguments=arguments, with_logs=True)
+            video_url = result.get("video", {}).get("url") or result.get("file", {}).get("url")
+            if not video_url:
+                raise RuntimeError("No video URL returned from fal.ai")
 
-        import time
-        shot_assets_dir = config.assets_dir() / scene_id
-        shot_assets_dir.mkdir(parents=True, exist_ok=True)
+            import time
+            shot_assets_dir = config.assets_dir() / scene_id
+            shot_assets_dir.mkdir(parents=True, exist_ok=True)
 
-        timestamp = int(time.time())
-        var_count = len(getattr(shot, "video_variations", []))
-        local_video_name = f"video_{timestamp}_{var_count}.mp4"
-        local_video_path = shot_assets_dir / local_video_name
+            timestamp = int(time.time())
+            var_count = len(getattr(shot, "video_variations", []))
+            local_video_name = f"video_{timestamp}_{var_count}.mp4"
+            local_video_path = shot_assets_dir / local_video_name
 
-        assets._download(video_url, local_video_path)
+            assets._download(video_url, local_video_path)
+            return f"assets/{scene_id}/{local_video_name}"
 
-        video_rel_path = f"assets/{scene_id}/{local_video_name}"
+        # Last thing before fal: the price this call was permitted at, taken out
+        # of what the human confirmed. Nothing between here and the provider.
+        priced = paid_video_quote(sb, shot, video_model_key)
+        authorised.spend(priced, scene_id)
+        video_rel_path = record_paid_video(scene_id, priced, buy_the_clip)
         if not hasattr(shot, "video_variations") or shot.video_variations is None:
             shot.video_variations = []
         shot.video_variations.append(video_rel_path)
@@ -4141,12 +4405,19 @@ async def generate_shot_video(scene_id: str, request: Request):
             "video_variation": video_rel_path,
             "placed": placed,
             "video_model": video_model_key,
+            "estimated_cost": priced.price,
             "warning": None if placed else
                 "The clip was generated and kept, but placing it in the cut failed. "
                 "Pick it from this beat's video variations, or re-run the render.",
         }
     except HTTPException as he:
         raise he
+    except paid_video.Unauthorised as exc:
+        # A refusal, not a fault. It reaches here only if the price moved between
+        # the gate above and the dispatch, and the honest answer is the same one
+        # the gate gives: nothing was generated, re-quote.
+        return JSONResponse(status_code=409, content={
+            "ok": False, "error": str(exc), "cost_unconfirmed": True})
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -4601,8 +4872,62 @@ def roughcut_plan():
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 
+def authorise_batch_render(sb: Storyboard, force_paid: bool, accepted_cost=None):
+    """Turn a confirmed price into permission to buy this render's paid video.
+
+    Returns ``(authorisation, refusal)`` with exactly one of them set. The
+    refusal is the response to send: nothing has been started, so nothing has
+    been charged.
+
+    When the render plans NO paid video the request needs no confirmation and
+    gets an authorisation of nothing -- not a bypass. If a beat turns out to buy
+    a clip anyway, that is precisely the case where the human was shown no
+    number for it, and the dispatch refuses.
+    """
+    quote = batch_paid_video_quote(sb, force_paid)
+    if not quote["paid_beats"]:
+        return paid_video.Authorisation.none(
+            "this render was quoted as buying no paid video"), None
+    total = quote["estimated_cost"]
+    if not paid_video.accepted_matches(accepted_cost, total):
+        stated = paid_video.is_a_number(accepted_cost)
+        return None, JSONResponse(status_code=409 if stated else 400, content={
+            "ok": False,
+            "error": (f"this render buys paid video for {quote['paid_beats']} "
+                      f"beat(s) and the request did not say what price it "
+                      f"agreed to, so nothing was started and nothing was "
+                      f"charged. It costs ${total:.2f}; confirm that figure "
+                      f"and send it as accepted_cost."
+                      if not stated else
+                      f"the price of this render changed after you were quoted, "
+                      f"so nothing was started and nothing was charged. It now "
+                      f"costs ${total:.2f} for {quote['paid_beats']} paid "
+                      f"beat(s); confirm the new figure."),
+            "quote": quote,
+            "cost_unconfirmed": True,
+        })
+    return paid_video.Authorisation.accepting(total), None
+
+
+@app.get("/api/render/quote")
+def get_render_quote(force_paid: bool = False):
+    """What a whole-episode render would spend on paid video, beat by beat.
+
+    The batch render is the largest paid action in the studio, and it was the
+    one with no number attached anywhere: the button said "render", and the loop
+    called fal once per Tier-C beat.
+    """
+    try:
+        sb = get_current_project()
+        return {"ok": True, **batch_paid_video_quote(sb, force_paid)}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
 @app.post("/api/assemble/rough_cut")
-def build_rough_cut(force_paid: bool = False):
+def build_rough_cut(force_paid: bool = False, accepted_cost: float | None = None):
     """Run everything needed for a rough cut, in dependency order, in one job.
 
     Each step is skipped when its output already exists, so this is safe to press
@@ -4612,12 +4937,23 @@ def build_rough_cut(force_paid: bool = False):
     It deliberately STOPS at the storyboard gate rather than approving on your
     behalf. Approval is where render budget is allocated, and a one-button build
     that silently cleared it would defeat the only spend control in the pipeline.
+
+    ``accepted_cost`` is the paid-video total this run was quoted at, and is
+    required when it plans to buy any. Note that this job re-times every beat to
+    its narration BEFORE rendering, and a beat's length is what its clip is
+    billed by -- so a beat that grows past its quote runs out of authorisation
+    and refuses rather than spending the difference. That is the intended
+    direction: the human gets re-quoted, having been charged nothing.
     """
     try:
         sb = get_current_project()
         if not sb.shots:
             return JSONResponse(status_code=400, content={
                 "ok": False, "error": "This project has no beats. Draft a storyboard first."})
+
+        authorised, refusal = authorise_batch_render(sb, force_paid, accepted_cost)
+        if refusal is not None:
+            return refusal
 
         def fn():
             ep = config.episode_paths(sb.title)
@@ -4718,7 +5054,8 @@ def build_rough_cut(force_paid: bool = False):
 
             # 4 — render
             note("[4/5] Rendering beats ...")
-            generate_fal_and_render(sb, force_paid=force_paid, log=note)
+            generate_fal_and_render(sb, force_paid=force_paid, log=note,
+                                    authorised=authorised)
 
             # 5 — assemble
             note("[5/5] Building the preview and the Resolve timeline ...")
@@ -4736,10 +5073,11 @@ def build_rough_cut(force_paid: bool = False):
 
 
 @app.post("/api/assemble/{stage}")
-def run_assemble_endpoint(stage: str, force_paid: bool = False):
+def run_assemble_endpoint(stage: str, force_paid: bool = False,
+                          accepted_cost: float | None = None):
     try:
         sb = get_current_project()
-        
+
         if stage == "drafts":
             # Bulk draft-image generation. This is the step CLAUDE.md places
             # before Gate 1: the storyboard cannot be approved until every beat
@@ -4807,8 +5145,16 @@ def run_assemble_endpoint(stage: str, force_paid: bool = False):
                 
         elif stage == "render":
             require_paid_gate(sb, "render")
+            # Gate 1 says a budget was allocated. It does not say how much this
+            # render costs, and until now nothing did: the loop bought a clip per
+            # Tier-C beat against a figure nobody had been shown.
+            authorised, refusal = authorise_batch_render(sb, force_paid, accepted_cost)
+            if refusal is not None:
+                return refusal
+
             def fn():
-                generate_fal_and_render(sb, force_paid=force_paid)
+                generate_fal_and_render(sb, force_paid=force_paid,
+                                        authorised=authorised)
                 # Auto-generate ambient SFX for all beats in the batch render pass
                 # Must match where timeline.build and build_preview read SFX
                 # from (episode_paths["sfx"]). These wrote to assets/sfx,
