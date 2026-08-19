@@ -213,6 +213,139 @@ VIDEO_CAPS: dict[str, dict] = {
 LOCAL_COST_PER_SECOND = 0.0
 COST_PER_IMAGE = float(os.environ.get("COST_PER_IMAGE", "0.15"))
 
+# --- how many units fal actually bills, as OBSERVED --------------------------------
+#
+# The rate above is right. The QUANTITY was not, and that is a separate defect
+# with a separate authority.
+#
+# `cost_per_second` is fal's published tariff, and every row is checked against
+# it. Multiplying it by the duration we REQUEST assumes fal bills the duration we
+# request. On the only endpoint where this pipeline has both numbers for a
+# below-default request, it does not:
+#
+#     wan v2.7    requested duration=4    fal billed 6.0 units    (x2, identical)
+#     kling 2.1   requested duration=5    fal billed 5   units    (x4, identical)
+#
+# So a 4s wan shot is quoted 4 x 0.10 = $0.40 and billed 6 x 0.10 = $0.60. A
+# correct rate times a wrong quantity, understating by 50%. Kling on the same
+# runs billed exactly what was asked, which is the point: this is PER ENDPOINT
+# and cannot be assumed either way. A confirmation is worth recording for the
+# same reason a discrepancy is.
+#
+# THE BILLING RULE IS NOT DISCOVERABLE BEFORE THE CALL. Checked, 2026-08-18:
+#
+# * `GET /v1/models/pricing` returns exactly endpoint_id, unit_price, unit,
+#   currency. No minimum, no step, no rounding.
+# * `GET /v1/models` (model metadata) returns display name, category, tags,
+#   thumbnail. Nothing about billing.
+# * The endpoint's own OpenAPI schema documents `duration` as
+#   `enum [2..15], default 5, "Output video duration in seconds (2-15)"`. That is
+#   what may be REQUESTED. It says nothing about what is BILLED -- and it is
+#   where `allowed_durations` above was faithfully transcribed from, which is how
+#   a schema that permits 4 became a quote that assumed 4.
+# * `POST /v1/models/pricing/estimate` with unit_quantity=4 answers $0.40 --
+#   fal's OWN cost estimator reproduces the same wrong figure, because it prices
+#   the quantity you hand it and does not know the rule either. Its
+#   `historical_api_price` mode answers $0, the account-level usage data being
+#   behind the admin key that `/v1/models/usage` 403s on.
+#
+# So this table records OBSERVATIONS, not a rule. Two requests at one duration
+# cannot distinguish a 6-unit floor from a 2-unit step from a 1.5x multiplier,
+# and nothing here pretends otherwise: `min_units_observed` is the smallest
+# billed quantity ever seen, used as a FLOOR under the quote. A floor can only
+# ever over-quote, which is the safe direction, and it is not a bound above it --
+# see the note under clip_price.
+#
+# `units_source` and `units_checked` carry the same provenance obligation as
+# `price_source`/`price_checked`: a bare number here is not auditable. The source
+# is a fal request id, so anyone can re-fetch the header and check it. Every
+# paid Tier-C attempt now records its own `billable_units` (see
+# backend.fal_billing), so production fills this table in from real billing
+# rather than from anybody's reasoning about it.
+BILLED_UNITS: dict[str, dict] = {
+    "wan_2_7": {
+        "min_units_observed": 6.0,
+        "unit": "seconds",
+        "observed_at_durations": [4.0],
+        "observations": 2,
+        "units_source": "x-fal-billable-units on fal requests "
+                        "01a01871-5487-7162-bdb0-0cd41219c03e and "
+                        "01a01833-50e1-7331-92cc-2681d6227e3d, both "
+                        "duration=4, both billed 6.0",
+        "units_checked": "2026-08-18",
+        "rule_known": False,
+    },
+    "kling_2_1_standard": {
+        "min_units_observed": 5.0,
+        "unit": "seconds",
+        "observed_at_durations": [5.0],
+        "observations": 4,
+        "units_source": "x-fal-billable-units on fal requests "
+                        "01a01873-45d3-7ac0-a938-62fa337f7299, "
+                        "01a0183e-b41a-77d0-998d-76c9f7920b38, "
+                        "01a0183d-62c0-73e1-93ba-bd572fd9e58d and "
+                        "01a01832-0a0e-7473-a194-238bd53c21b4, all "
+                        "duration=5, all billed 5 -- the requested duration WAS "
+                        "the billed quantity here",
+        "units_checked": "2026-08-18",
+        "rule_known": False,
+    },
+}
+
+
+def billed_units(key: str, generate_seconds: float) -> tuple[float, str]:
+    """How many units to expect to be billed, and why we believe that.
+
+    Returns ``(units, basis)``. ``basis`` is prose for a human reading a job log
+    or a quote; it is deliberately not a code, because the honest answer varies
+    in kind and not just in value.
+
+    Below the smallest quantity ever observed, the observation wins -- a request
+    for 4s of wan is quoted at the 6 units fal has twice billed for exactly that
+    request. Above it, we fall back to the requested duration, and say plainly
+    that nothing has ever confirmed it.
+    """
+    seconds = float(generate_seconds)
+    # Through spec() so an alias resolves the same way it does for the price. A
+    # key that finds its rate but misses its observed units would quote the
+    # published tariff while believing it had checked.
+    row = BILLED_UNITS.get(spec(key)["key"])
+    if not row:
+        return seconds, ("no billed quantity has ever been observed for this "
+                         "model; quoted at the requested duration")
+    floor = float(row["min_units_observed"])
+    at = ", ".join(f"{d:g}s" for d in row["observed_at_durations"])
+    if seconds in [float(d) for d in row["observed_at_durations"]]:
+        # This exact length HAS been billed, and what it billed is on the
+        # record. Saying "never observed" here would understate what is known
+        # as badly as the old code overstated it.
+        return floor, (
+            f"quoted at {floor:g} {row['unit']}, which is what fal billed for a "
+            f"{seconds:g}s request across {row['observations']} observation(s) "
+            f"of exactly this length")
+    if seconds < floor:
+        return floor, (
+            f"quoted at the {floor:g} {row['unit']} floor: fal has never been "
+            f"observed to bill this model less, across {row['observations']} "
+            f"request(s) at {at}. Whether that is a floor, a step or something "
+            f"else is NOT known — see BILLED_UNITS")
+    return seconds, (
+        f"quoted at the requested {seconds:g}s. fal's billing at this length "
+        f"has never been observed ({row['observations']} observation(s), at "
+        f"{at}), so this is the published tariff and not a measured quantity")
+
+
+def tariff_price(key: str, units: float) -> float:
+    """fal's published rate times a quantity of billing units.
+
+    Split out from :func:`clip_price` so the two questions stop sharing one
+    function: this one is anchored to fal's published tariff by
+    tests/test_fal_tariff.py, and knows nothing about how many units a request
+    turns into. ``clip_price`` answers the quantity question first and then
+    calls this.
+    """
+    return round(float(units) * float(spec(key)["cost_per_second"]), 4)
+
 # --- what one Tier-C generation costs, for the quote AND for the ledger ---------
 #
 # Two numbers used to answer this question and they disagreed. The quote came
@@ -257,8 +390,25 @@ def clip_price(key: str, generate_seconds: float) -> float:
     editorial length of the shot -- a 3.34s shot billed as kling's 5s minimum is
     billed for five seconds. Callers get that number from
     :func:`legal_durations` / :func:`resolve`, never from ``Shot.duration``.
+
+    The requested duration is NOT necessarily the billed quantity, which is a
+    thing this function used to assume and fal does not honour: wan v2.7 bills 6
+    units for a 4-second request. So the duration goes through
+    :func:`billed_units` first, and only then through the published tariff. That
+    substitution is the whole of the fix; the rate itself was always right.
+
+    Still not a bound. Below the observed floor the figure is anchored to a real
+    billed quantity; above it, it is the published tariff times a duration
+    nothing has ever confirmed. :func:`clip_price_basis` says which you have, and
+    a caller taking consent for this number should be prepared to say so.
     """
-    return round(float(generate_seconds) * float(spec(key)["cost_per_second"]), 4)
+    units, _ = billed_units(key, generate_seconds)
+    return tariff_price(key, units)
+
+
+def clip_price_basis(key: str, generate_seconds: float) -> str:
+    """Why :func:`clip_price` is the number it is, in one sentence, for a human."""
+    return billed_units(key, generate_seconds)[1]
 
 
 def spec(key: str) -> dict:

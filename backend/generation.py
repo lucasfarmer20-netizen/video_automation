@@ -485,6 +485,11 @@ def succeed(beat_id: str, attempt_id: str, output: str,
     return _finish(beat_id, attempt_id, status=SUCCEEDED, **changes)
 
 
+def _number(value) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value >= 0)
+
+
 def _measured_changes(measurement: dict) -> dict:
     """The fields a fal measurement writes, or nothing if it is not one.
 
@@ -493,22 +498,29 @@ def _measured_changes(measurement: dict) -> dict:
     attempt estimated -- reporting an unusable payload as measured would be the
     exact lie this whole change exists to remove -- so anything that does not
     parse yields ``{}`` and the estimate stands.
+
+    A measurement carrying units but no cost writes the QUANTITY and stops
+    there. That case is not a degraded nothing: the billed quantity is the half
+    this repo could never see, and the half that turned out to be wrong -- a 4
+    second wan request billing 6 units is what ``capabilities.BILLED_UNITS`` is
+    made of. Recording it without setting ``cost_source`` keeps the money
+    honest (the attempt still reports its estimate, still labelled an estimate)
+    while banking the observation that corrects the next quote.
     """
     if not isinstance(measurement, dict):
         return {}
-    amount = measurement.get("cost")
     units = measurement.get("units")
-    for value in (amount, units):
-        if (not isinstance(value, (int, float)) or isinstance(value, bool)
-                or not math.isfinite(value) or value < 0):
-            return {}
-    return {
-        "cost": float(amount),
-        "cost_source": MEASURED,
+    if not _number(units):
+        return {}
+    observed = {
         "billable_units": float(units),
         "billing_unit": str(measurement.get("unit") or ""),
         "provider_request_id": str(measurement.get("request_id") or ""),
     }
+    amount = measurement.get("cost")
+    if not _number(amount):
+        return observed
+    return {**observed, "cost": float(amount), "cost_source": MEASURED}
 
 
 def in_doubt(beat_id: str, attempt_id: str, reason: str) -> GenerationAttempt | None:

@@ -137,15 +137,22 @@ def _compile(sb, render_dir):
 # deployed run actually billed. Both are parametrised rather than asserted once,
 # because a per-model price table drifts per model.
 #
-# 2.0s, not the 3.0s this first used: at fal's published rates kling costs
-# $0.056/s against wan's $0.10/s, so kling wins any length it can serve. wan is
-# only the cheapest below kling's 5s floor (2s of wan is $0.20 against kling's
-# $0.28 minimum) or above its 10s ceiling. The router's assertion at the end of
-# the test is what catches this case silently ceasing to cover wan at all.
+# 12.0s, not the 2.0s this used to use. At fal's published rates kling costs
+# $0.056/s against wan's $0.10/s, so kling wins any length it can serve, and wan
+# was only cheapest below kling's 5s floor or above its 10s ceiling. The lower
+# of those two windows has since closed: measuring x-fal-billable-units showed
+# wan billing 6 units for a 4-second request, so capabilities.BILLED_UNITS now
+# quotes wan at that observed floor and 2s of wan is $0.60, not $0.20 -- dearer
+# than kling's $0.28 minimum. The router moved that case to kling on its own,
+# which is the corrected quantity doing its job on real money.
+#
+# So wan is now exercised from ABOVE kling's ceiling instead. The router
+# assertion at the end of the test is what catches this case silently ceasing to
+# cover wan at all, and it is what caught the move.
 
 @pytest.mark.parametrize("seconds,expect_backend", [
     (5.0, "kling_2_1_standard"),
-    (2.0, "wan_2_7"),
+    (12.0, "wan_2_7"),
 ])
 def test_a_paid_shot_is_never_quoted_below_what_the_ledger_records(
         tmp_path, monkeypatch, seconds, expect_backend):

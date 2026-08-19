@@ -100,12 +100,68 @@ def test_the_price_this_repo_charges_for_is_the_price_fal_publishes(
     pass for any table at all — which is precisely what happened before it
     existed: a reviewer mutated seedance's price inside clip_price to bill one
     second regardless of duration and all twelve cost tests still passed.
+
+    Asserted against ``tariff_price``, not ``clip_price``, since measuring
+    x-fal-billable-units split one question into two: what fal charges PER UNIT
+    (this file's subject, transcribed from the pricing page) and how many units
+    a request turns into (``capabilities.BILLED_UNITS``, observed from real
+    billing). ``clip_price`` is now the composition of the two, and the test
+    below holds it to this one.
     """
-    charged = capabilities.clip_price(key, seconds)
+    charged = capabilities.tariff_price(key, seconds)
     assert charged == pytest.approx(dollars, abs=0.005), (
         f"{key} at {seconds}s: this repo charges ${charged:.4f}, fal publishes "
         f"${dollars:.4f} ({how}). Re-read {source} and correct VIDEO_CAPS and "
         f"this row together.")
+
+
+@pytest.mark.parametrize("key,seconds,dollars,how,source", PUBLISHED_TARIFF)
+def test_the_quote_is_never_below_the_published_tariff(
+        key, seconds, dollars, how, source):
+    """``clip_price`` may exceed the published-rate arithmetic; never undercut it.
+
+    The billed-quantity floor can only push a quote UP — that is the whole
+    reason a floor was chosen over an average. A composition that came in under
+    the transcribed tariff would be under-quoting against fal's own published
+    figure, which is the direction Gate 1 exists to prevent.
+    """
+    quoted = capabilities.clip_price(key, seconds)
+    assert quoted >= dollars - 0.005, (
+        f"{key} at {seconds}s is quoted ${quoted:.4f}, below fal's published "
+        f"${dollars:.4f} ({how}). Re-read {source}.")
+
+
+# What fal ACTUALLY billed, transcribed from x-fal-billable-units on real
+# requests. The second authority: the pricing page says what a unit costs, and
+# only the header says how many units a request becomes.
+#
+# (backend, requested seconds, billed units, dollars, request id)
+OBSERVED_BILLING = [
+    ("wan_2_7", 4, 6.0, 0.60, "01a01871-5487-7162-bdb0-0cd41219c03e"),
+    ("wan_2_7", 4, 6.0, 0.60, "01a01833-50e1-7331-92cc-2681d6227e3d"),
+    ("kling_2_1_standard", 5, 5.0, 0.28, "01a01873-45d3-7ac0-a938-62fa337f7299"),
+    ("kling_2_1_standard", 5, 5.0, 0.28, "01a0183e-b41a-77d0-998d-76c9f7920b38"),
+]
+
+
+@pytest.mark.parametrize("key,seconds,units,dollars,request_id", OBSERVED_BILLING)
+def test_the_quote_covers_what_fal_actually_billed(key, seconds, units, dollars,
+                                                   request_id):
+    """The stronger anchor: not the published rate, the observed charge.
+
+    ``units`` and ``dollars`` are transcribed from fal's own response header for
+    a real request, re-fetchable at
+    ``GET https://queue.fal.run/{owner}/{alias}/requests/{request_id}``. This is
+    the only figure in this repo's history that was not somebody's arithmetic.
+
+    Before BILLED_UNITS existed, wan at 4s quoted $0.40 against this $0.60 — a
+    correct rate times a quantity fal does not charge, understating by 50%.
+    """
+    quoted = capabilities.clip_price(key, seconds)
+    assert quoted >= dollars - 0.005, (
+        f"{key} at {seconds}s is quoted ${quoted:.4f} and fal billed "
+        f"${dollars:.4f} ({units:g} units, request {request_id}). Consent would "
+        f"be taken for less than the charge.")
 
 
 def test_the_defaults_are_not_a_price_anyone_can_be_quoted_quietly():

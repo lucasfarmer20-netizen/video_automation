@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # not touch -- the quote/ledger agreement and the lineage guarantees.
 TESTS = ["tests/test_measured_spend.py",
          "tests/test_cost_quote_matches_ledger.py",
+         "tests/test_fal_tariff.py",
          "tests/test_generation_lineage.py"]
 
 # (label, file, find, replace, what breaking it would mean)
@@ -178,6 +179,74 @@ MUTATIONS = [
         "THE REACHABILITY MUTATION. Every unit test over generation.py still "
         "passes: the ledger can hold a measured cost and nothing puts one there",
     ),
+    # --- the quantity, not the rate -------------------------------------------------
+    #
+    # The rate was never wrong. The quantity was, and it survived the round that
+    # collapsed the quote and the ledger onto one function -- they then agreed
+    # with each other on a number fal does not bill. Same shape as the original
+    # defect, one level down: two figures anchored to each other, neither
+    # anchored to the authority.
+    (
+        "clip_price multiplies the rate by the REQUESTED duration again",
+        "backend/capabilities.py",
+        "    units, _ = billed_units(key, generate_seconds)\n"
+        "    return tariff_price(key, units)",
+        "    return tariff_price(key, generate_seconds)",
+        "THE SECOND DEFECT, restored: 4s of wan quoted $0.40 against a measured "
+        "$0.60. A correct rate times a quantity fal does not charge",
+    ),
+    (
+        "the observed floor stops applying below it",
+        "backend/capabilities.py",
+        "    if seconds < floor:\n        return floor, (",
+        "    if False:\n        return floor, (",
+        "a request under the smallest quantity fal was ever seen to bill is "
+        "quoted at the requested duration again",
+    ),
+    (
+        "one model's observed floor is generalised to every model",
+        "backend/capabilities.py",
+        '    row = BILLED_UNITS.get(spec(key)["key"])\n    if not row:',
+        '    row = BILLED_UNITS.get(spec(key)["key"]) or BILLED_UNITS["wan_2_7"]\n'
+        "    if not row:",
+        "kling billed exactly what it was asked for on four requests, so this is "
+        "demonstrably not a shared rule — inventing one is how the first table "
+        "came to be wrong",
+    ),
+    (
+        "wan's observed floor is quietly reduced to the duration we asked for",
+        "backend/capabilities.py",
+        '        "min_units_observed": 6.0,\n        "unit": "seconds",',
+        '        "min_units_observed": 4.0,\n        "unit": "seconds",',
+        "the table stops recording what fal billed and records what we requested "
+        "— the assumption that caused this in the first place",
+    ),
+    (
+        "an unobserved length describes itself as measured",
+        "backend/capabilities.py",
+        'f"quoted at the requested {seconds:g}s. fal\'s billing at this length "',
+        'f"quoted at a measured {seconds:g}s. fal\'s billing at this length "',
+        "the published tariff claims the authority of an observation",
+    ),
+    (
+        "the observed quantity is discarded when the rate lookup fails",
+        "backend/fal_billing.py",
+        "    priced = unit_price(endpoint, get=get) or {}",
+        "    priced = unit_price(endpoint, get=get)\n"
+        "    if priced is None:\n        return None\n"
+        "    priced = priced or {}",
+        "the half this repo could never see is thrown away because the half it "
+        "already had was unavailable; BILLED_UNITS stops filling in from "
+        "production",
+    ),
+    (
+        "units are recorded only when a cost is",
+        "backend/generation.py",
+        "    if not _number(amount):\n        return observed",
+        "    if not _number(amount):\n        return {}",
+        "an unpriced observation is dropped rather than banked",
+    ),
+
     (
         "the scene total drops the measured/estimated split",
         "backend/planner.py",
