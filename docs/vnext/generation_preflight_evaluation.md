@@ -11,20 +11,36 @@ justify or kill the critic is currently unmeasurable — including the 5–8
 regenerations that motivated the request.
 
 Everything asserted about the current system was read out of the code at
-`020cfe9` and is cited by `file:line`. Where the source brief's figures
+`648f81b` and is cited by `file:line`. Where the source brief's figures
 disagree with the code, the code wins and the correction is stated.
+
+**Revised after fal's invoice arrived.** A first draft of this document priced
+draft stills at `COST_PER_IMAGE = 0.15`. That constant was 3.8× over: fal's
+billing API bills `fal-ai/nano-banana` — the endpoint `nano2` actually calls — at
+**$0.0398** an image, and `648f81b` corrected the table with provenance
+(capabilities.py:237-254). Every figure below is at the corrected rate and says
+where it came from. The correction did not merely shrink the numbers; it moved a
+conclusion, and §9 is where it lands.
 
 ---
 
 ## 1. Summary
 
 **Corrected cost model.** The brief's conclusion — rerolled stills, not paid
-video, are the dominant generation cost — is right, and the code makes it *more*
-true than the brief claims, not less. Two of the brief's inputs are wrong:
-coverage runs ~5 shots per beat, not 6–10, and a routed paid clip costs **$0.56**,
-not $0.60–1.51, because `capabilities.resolve` ranks by price and picks Kling 2.1
-Standard. The ratio of reroll waste to video spend is roughly **9–15×**, against
-the brief's ~3×. §2.
+video, are the dominant generation cost — **holds, but only once you are
+rerolling, and by a smaller margin than either the brief or this document's first
+draft claimed.** Four of the brief's inputs are wrong (5 shots/beat not 6–10;
+$0.56/clip not $0.60–1.51; 15 or 27 beats not 18; a regenerate *click* is 3
+images, not 1) and one of mine was (stills are $0.0398, not $0.15). The
+corrections run in opposite directions and very nearly cancel: the ratio of
+reroll waste to video spend is **2.4–3.9×**, against the brief's ~3×. The brief's
+number was right for the wrong reasons. §2.
+
+**And at one attempt per still, video is twice the stills.** $2.99 of stills
+against $6.16 of clips on a 15-beat episode. Stills only overtake video at ~2
+attempts each. The scoping decision — preflight covers stills, not just
+`ai_video` — still holds at the observed reroll rate, but it is a 2–4× argument
+now, not an order-of-magnitude one, and it should not be sold as one. §2.4.
 
 **A. Where preflight sits.** Preflight **is** vNext Phase 4, arrived at from the
 other end. Phase 4 asks "is this package still the one that was approved?";
@@ -58,11 +74,16 @@ needs no new gate. §7.
 check that is not a model call at all.** The seven proposed critics are argued
 down to what the evidence supports. §8.
 
-**What a critic call costs.** ~$0.031/shot on Opus 5, ~$0.006 on Haiku 4.5,
-against a $0.15 still. It breaks even if it prevents **more than 0.21
-regenerations per shot** on Opus, or **0.04** on Haiku. Against a reported 4–7
-wasted attempts per accepted still, the margin is not close. This does not kill
-the feature. §9.
+**What a critic call costs — and this is where the invoice changed an answer.**
+~$0.031/shot on Opus 5, ~$0.006 on Haiku 4.5, against a **$0.0398** still.
+**An Opus-5 preflight costs 78% of the still it guards.** On the coverage path,
+where §2.5 shows there is no reroll to prevent, that is 78% of the asset value
+buying zero prevented spend — the money case there is not thin, it is **zero**,
+and preflight on that path must be carried by irreversibility alone or not built.
+On the beat path, where the rerolls actually are, the unit is a 3-image click at
+$0.1194 and break-even is 0.26 clicks per beat against 4–7 wasted ones — that
+still works on any model. **The conclusion splits by path, and the model choice
+stops being free: Haiku 4.5, not Opus 5.** §9.
 
 **Build first: telemetry.** Three ledger writes and one route, ~1 day, no paid
 path touched, shippable alone and useful alone. It is also the only way to find
@@ -75,22 +96,50 @@ risk that could still kill this feature. §10.
 
 ### 2.1 What the code actually charges
 
-`capabilities.COST_PER_IMAGE = 0.15`, env-overridable
-(capabilities.py:214). `main.py:475` aliases it as `DRAFT_IMAGE_COST` rather
-than restating the literal. That much the brief has right.
+**The rate.** `capabilities.COST_PER_IMAGE = 0.0398`, derived from
+`IMAGE_PRICE` and still env-overridable (capabilities.py:237-254).
+`main.py` aliases it as `DRAFT_IMAGE_COST` rather than restating the literal.
 
-**The brief's "$0.15 per attempt" is wrong on the path where the rerolls
-happen.** There are two still paths with different take counts:
+The brief's $0.15 is what the constant said until `648f81b`, and the way it was
+wrong is instructive: it priced **the model the docstring named**
+(`fal-ai/gemini-3-pro-image-preview`) rather than **the endpoint the code calls**
+(`assets.NANO2_ENDPOINT` = `fal-ai/nano-banana`, and `nano2` is
+`DEFAULT_BACKEND`). The invoice bills the latter at **22.0 images for $0.8756
+over 2026-08-15..19, i.e. $0.0398 each exactly**. Source:
+`GET https://api.fal.ai/v1/models/usage`, admin key, checked 2026-08-18. This is
+the first cost figure in the repo anchored to what was *charged* rather than what
+was *advertised*, and the direction is the safe one — every quote a human
+consented to was higher than the bill.
+
+`assets.py`'s docstring now records the residue honestly: three claims about
+which model serves `fal-ai/nano-banana`, two of them prose, and it declines to
+assert one because the invoice settles which endpoint *runs*, not which model
+answers (assets.py:10-21). Preflight has no stake in that question; it is noted
+because it is the same class of defect this document keeps finding — a name in a
+comment standing in for a fact about what the code does.
+
+**Scale, before any of the arithmetic below.** The human's entire fal spend
+across all five days of the project is **$3.20**: wan 12s $1.20, kling 20s $1.12,
+nano-banana 22 images $0.8756. Every figure in this section should be read
+against that, and §9 is where it starts to matter.
+
+**The brief's "$0.15 per attempt" was wrong twice over** — wrong rate, and wrong
+quantity on the path where the rerolls happen. There are two still paths with
+different take counts:
 
 | Path | Takes per call | Cost per call | Where |
 |---|---|---|---|
-| Beat draft (`/api/regenerate/{scene_id}`, batch render, video auto-draft) | `_takes(sb)` — `render.variations`, default **3**, clamped 1–8 | **$0.45** | main.py:1855-1865, 4172, 925, 4051 |
-| Draft refine (`/api/shot/{id}/edit_image/{idx}`) | hardcoded **3** | **$0.45** | main.py:3850 |
-| Director coverage compile | `still_takes(ds)` — **1**, or 4 if `identity_critical` | **$0.15** / $0.60 | director.py:1044-1053 |
+| Beat draft (`/api/regenerate/{scene_id}`, batch render, video auto-draft) | `_takes(sb)` — `render.variations`, default **3**, clamped 1–8 | **$0.1194** | main.py:1855-1865, 4172, 925, 4051 |
+| Draft refine (`/api/shot/{id}/edit_image/{idx}`) | hardcoded **3** | **$0.1194** | main.py:3850 |
+| Director coverage compile | `still_takes(ds)` — **1**, or 4 if `identity_critical` | **$0.0398** / $0.159 | director.py:1044-1053 |
 
-So a single click of "Regenerate Still" in the studio is $0.45, not $0.15. If the
-human's 5–8 attempts are 5–8 *clicks* on a beat, that is $2.25–3.60 per accepted
-beat still, and 15–24 images to look at, not 5–8.
+So a single click of "Regenerate Still" is **$0.1194** — three images, not one.
+If the human's 5–8 attempts are 5–8 *clicks* on a beat, that is **$0.60–0.96**
+per accepted beat still, and **15–24 images to look at, not 5–8**.
+
+The take-count finding survives the price correction entirely and is the more
+useful half of it: the number of images being reviewed is 3× what the human is
+counting, and *that* is a workload fact, not a money fact.
 
 ### 2.2 What coverage actually looks like
 
@@ -127,35 +176,83 @@ s011.02  10.0s  ai_video  ->  kling_2_1_standard  10s  $0.56
 s017.02  10.0s  ai_video  ->  kling_2_1_standard  10s  $0.56
 ```
 
-**$0.56, and the whole 20-shot four-beat sample quotes at $4.68.**
+**$0.56, and the whole 20-shot four-beat sample now quotes at $2.48** (it was
+$4.68 at the old still price — the clips did not move, the stills did).
 
-Two caveats that keep this honest. Kling wins only while its row is correct —
-`price_checked: 2026-08-16`, sourced, and `tests/test_fal_tariff.py` is what
-holds it, not the comment. And a *gestural* shot excludes any model whose legal
-length exceeds the shot (capabilities.py:445-446), which removes Kling's 5s/10s
-grid for most coverage lengths and pushes the shot up the price ladder or off it
-entirely. Zero shots in the sample are gestural, so this is a latent, not
-observed, cost.
+**The invoice confirms the video rows rather than correcting them.** The same
+billing data that caught the image constant reports kling 20s at $1.12, which is
+$0.056/s exactly — the table's figure (capabilities.py:138). `BILLED_UNITS`
+records four kling requests at `duration=5` all billed 5 units
+(capabilities.py:318-332). So the video side of this model rests on observed
+billing, not transcription, and the $0.56 stands.
+
+Three caveats that keep it honest.
+
+* **Quantity, not just rate.** `648f81b` also found that fal can bill more units
+  than were requested: wan v2.7 asked for `duration=4` and was billed **6.0**,
+  twice, identically (capabilities.py:266, 306-317). `BILLED_UNITS` now applies the
+  smallest observed quantity as a *floor* under the quote — a floor can only
+  over-quote, the safe direction — and the comment is explicit that this is an
+  observation, not a discovered rule: two requests at one duration cannot
+  distinguish a 6-unit floor from a 2-unit step from a 1.5× multiplier. The three
+  real paid shots route to kling, where the observed quantity equals the request,
+  so they are unaffected. A plan that routed to wan would not be.
+* **The rule is not discoverable before the call.** `/v1/models/pricing` returns
+  a unit price and nothing else; the endpoint's OpenAPI schema documents what may
+  be *requested*, not what is *billed*; and fal's own estimator reproduces the
+  same wrong figure because it prices the quantity handed to it
+  (capabilities.py:275-293). Any preflight that claims to predict a bill is
+  claiming something fal's own API does not.
+* **Gestural shots.** A gestural shot excludes any model whose legal length
+  exceeds it (capabilities.py:445-446), which removes Kling's 5s/10s grid for
+  most coverage lengths and pushes the shot up the price ladder or off it
+  entirely. Zero shots in the sample are gestural, so this is latent, not
+  observed.
 
 ### 2.4 Corrected episode arithmetic
 
-15-beat episode, 5.0 shots/beat = **75 director shots**, ~11 paid clips.
+15-beat episode (`storyboard_manifest.json`, 331s), 5.0 shots/beat = **75
+director shots**, ~11 paid clips:
 
 | | 1 attempt/still | 5 attempts | 8 attempts |
 |---|---|---|---|
-| Coverage stills (75 × $0.15 × n) | $11.25 | $56.25 | $90.00 |
-| Paid clips (11 × $0.56) | $6.30 | $6.30 | $6.30 |
-| **Total** | **$17.55** | **$62.55** | **$96.30** |
+| Coverage stills (75 × $0.0398 × n) | $2.99 | $14.93 | $23.88 |
+| Paid clips (11 × $0.56) | $6.16 | $6.16 | $6.16 |
+| **Total** | **$9.14** | **$21.09** | **$30.04** |
+| stills ÷ video | **0.5×** | 2.4× | 3.9× |
 
-27-beat episode, 135 shots, ~20 clips: **$31.45 / $112 / $173.**
+Scaled to the 10-minute unit CLAUDE.md's budget is denominated in — both real
+manifests are ~5.2–5.5 minutes, so a 10-minute episode at the same 22s/beat
+density is 27 beats, 135 shots, ~20 clips: **$16.57 / $38.07 / $54.18.**
 
-The one-attempt column lands inside CLAUDE.md's $15–25 target, which is a
-reasonable sign the model is right. The reroll column is where the money goes.
+**Read the last row before anything else.** At one attempt per still, **video is
+twice the stills.** Stills do not overtake video until roughly two attempts each.
+The brief's framing — *"rerolled stills, not paid video, are the dominant
+generation cost"* — is a claim about the reroll regime, not about the pipeline,
+and it is true only inside that regime. At the observed 5–8 attempts it holds by
+**2.4–3.9×**.
 
-**The correction strengthens the brief's scoping conclusion.** Brief: video
-$22–54 against rerolled stills $108–170, ratio ~3×. Corrected: video **$6–11**
-against rerolled stills **$56–162**, ratio **9–15×**. A preflight scoped only to
-`ai_video` would be guarding the smaller line item by an order of magnitude.
+**Both corrections were real and they very nearly cancel.**
+
+| | video | rerolled stills | ratio |
+|---|---|---|---|
+| Brief | $22–54 | $108–170 | ~3× |
+| This document, first draft | $6–11 | $56–162 | 9–15× |
+| **Corrected against the invoice** | **$6–11** | **$15–43** | **2.4–3.9×** |
+
+The brief overstated both sides; the first draft of this document corrected the
+video side and inherited the wrong still price, which overstated the ratio in the
+other direction. **The brief's ~3× was the right number for the wrong reasons.**
+
+The scoping decision it was offered to support survives — a preflight scoped only
+to `ai_video` would still be guarding the smaller line item at observed reroll
+rates — but the margin is 2–4×, not an order of magnitude, and it must not be
+sold as one. At one attempt per still the scoping argument inverts outright.
+
+The 10-minute single-attempt figure ($16.57) lands inside CLAUDE.md's $15–25
+band, which is some evidence the model is right. Worth noting that the band was
+set against a still price 3.8× too high, so it has more room in it than anyone
+knew.
 
 ### 2.5 The finding that reframes the whole problem
 
@@ -179,15 +276,39 @@ in the UI; it is absent end to end.
 Two consequences for this design:
 
 1. **The 5–8 regenerations are on the beat path, not the coverage path.** They
-   are $0.45 each, and they happen *before* the Director plans coverage over that
-   beat. Any preflight aimed at the reroll loop the human described must cover
-   `assets._compose_prompt(Shot)` — the beat composer — or it will not touch the
-   spend it was built for.
+   are $0.1194 each, and they happen *before* the Director plans coverage over
+   that beat. Any preflight aimed at the reroll loop the human described must
+   cover `assets._compose_prompt(Shot)` — the beat composer — or it will not
+   touch the spend it was built for.
 2. **On the coverage path, preflight is the only chance.** One still is bought,
-   at $0.15, with no picker and no re-roll. A bad prompt there produces a bad shot
-   that stays bad until the plan is destroyed. That is the strongest argument in
-   this document for preflight existing at all, and it is not an argument about
-   money.
+   with no picker and no re-roll. A bad prompt there produces a bad shot that
+   stays bad until the plan is destroyed. That is the strongest argument in this
+   document for preflight existing at all, and it is not an argument about money.
+
+**The invoice makes the second point stronger, not weaker, and the reason is
+worth being explicit about.** At $0.15 a still it was possible to read that
+paragraph as a money argument wearing a quality argument's clothes — $11.25 of
+un-rerollable stills per episode is a number one can care about on its own. At
+$0.0398 it is **$2.99**, and the money reading collapses. What is left is the
+argument that was always the real one:
+
+> The coverage path buys exactly one image per shot, offers no way to buy
+> another, and no way to look at an alternative. A prompt defect there is not
+> expensive — it is **permanent**, until someone destroys the plan and the
+> approval with it.
+
+That is a claim about irreversibility, and irreversibility does not get cheaper
+when the asset does. A $0.0398 shot you cannot replace is worse than a $0.15 shot
+you can, and every gate in this repo is built on the same asymmetry — Gate 1
+resolves ambiguity to *not approved* because "a beat wrongly shown as unapproved
+costs one click [while] a beat wrongly treated as approved costs money on work
+nobody sanctioned" (manifest.py:80-84). The direction of error, not its
+magnitude, is what justifies the gate.
+
+So: **§2.5 is the reason to build preflight for coverage. §2.4 is the reason to
+build it for beats. They are different arguments and only one of them is about
+money** — which is exactly why §9's finding, that the money argument does not
+survive on the coverage path, does not kill the feature there.
 
 ---
 
@@ -400,8 +521,8 @@ Two paths currently bypass it. See §11.
 
 | # | Route / control | Buys | Attempt opened? | Prompt ledger row? | Reason recorded? |
 |---|---|---|---|---|---|
-| 1 | `POST /api/regenerate/{scene_id}` (main.py:4153) | 3 stills, $0.45 | yes, `record_paid_drafts` | yes | **no** |
-| 2 | `POST /api/shot/{id}/edit_image/{idx}` (main.py:3816) | 3 stills, $0.45 | **no** | **no** | **no** |
+| 1 | `POST /api/regenerate/{scene_id}` (main.py:4153) | 3 stills, $0.1194 | yes, `record_paid_drafts` | yes | **no** |
+| 2 | `POST /api/shot/{id}/edit_image/{idx}` (main.py:3816) | 3 stills, $0.1194 | **no** | **no** | **no** |
 | 3 | `POST /api/shot/{id}/generate_video` (main.py:4026) | ≤3 stills + 1 clip | stills yes; clip separately | stills yes | **no** |
 | 4 | `POST /api/render` batch (main.py:900-930) | 3 stills/beat | yes | yes | n/a (first pass) |
 | 5 | `POST /api/director/compile/{beat_id}` (main.py:3109) | 1 still/shot + clips | yes | yes | n/a (never re-buys) |
@@ -744,23 +865,29 @@ P0 should ship even if every model critic is rejected.
 
 ### What each costs to run
 
-Assume 75 director shots + 15 beats per episode.
-
-| Critic | Calls/episode | Model | ~$/episode |
-|---|---|---|---|
-| P0 completeness | 0 (code) | — | $0.00 |
-| P1 one instant | 90 | Haiku 4.5 | $0.56 |
-| P2 intent realisation | 75 | Haiku 4.5 | $0.47 |
-| P3 motion complexity | 11 | Opus 5 | $0.34 |
-| **total** | | | **~$1.37** |
-
-Against $56–90 of reroll waste on the same episode. Even at Opus 5 for all three
-(~$5.20) the arithmetic is not close.
-
 **P1 and P2 should be one call, not two.** They read the same inputs and return
 findings into the same list; two calls doubles the input tokens to halve nothing.
-Listed separately above because they are separately justifiable and separately
-removable.
+They are listed separately above because they are separately justifiable and
+separately removable, but priced below as one call.
+
+15-beat episode: 75 coverage shots + 15 beats = 90 still-critic calls, 11 motion
+calls.
+
+| Critic | Calls | Haiku 4.5 | Opus 5 |
+|---|---|---|---|
+| P0 completeness | 0 (code) | $0.00 | $0.00 |
+| P1+P2 still critic | 90 | $0.54 | $2.79 |
+| P3 motion critic | 11 | $0.07 | $0.34 |
+| **total** | | **$0.61** | **$3.13** |
+
+**The Opus 5 column is roughly the human's entire fal spend to date ($3.20), to
+guard an episode whose stills cost $2.99.** Read §9 before choosing a model; on
+the corrected numbers this is no longer a rounding error and the choice is no
+longer free.
+
+Against beat-path reroll waste of **$7.16–12.54** on the same episode (15 beats ×
+4–7 wasted clicks × $0.1194), the Haiku column is comfortable everywhere and the
+Opus column is comfortable only on the beat path.
 
 ---
 
@@ -773,8 +900,14 @@ $1/$5.**
 **Method, stated so it can be checked:** token counts are estimated at ~4
 characters per token from measured string lengths in this repo, not obtained from
 `count_tokens` (that would mean sending this project's content to an external
-service during a read-only evaluation). Treat them as ±30%; the conclusion has
-about 20× of headroom, so the imprecision does not reach it.
+service during a read-only evaluation). Treat them as ±30%.
+
+**That error bar mattered less at $0.15 than it does at $0.0398.** The first
+draft of this document said the conclusion had "about 20× of headroom, so the
+imprecision does not reach it". At the corrected still price the headroom on the
+Opus 5 row is **1.3×**, and ±30% *does* reach it. The Haiku row keeps ~6× and is
+still safe. Anyone proposing to run this on an Opus-tier model should measure the
+tokens properly before committing to it; anyone proposing Haiku need not.
 
 Per-shot still critic (P1+P2 combined):
 
@@ -791,30 +924,69 @@ output  findings JSON                     ~250 tok
                                          ~1,000 tok
 ```
 
-| Model | Input | Output | **Per shot** | Break-even vs a $0.15 still |
-|---|---|---|---|---|
-| Opus 5 | $0.0056 | $0.0250 | **$0.031** | prevents > **0.21** regenerations/shot |
-| Sonnet 5 (promo) | $0.0022 | $0.0100 | **$0.012** | > **0.08** |
-| Haiku 4.5 | $0.0011 | $0.0050 | **$0.006** | > **0.04** |
+| Model | Input | Output | **Per call** |
+|---|---|---|---|
+| Opus 5 | $0.0056 | $0.0250 | **$0.031** |
+| Sonnet 5 (promo) | $0.0022 | $0.0100 | **$0.012** |
+| Haiku 4.5 | $0.0011 | $0.0050 | **$0.006** |
 
-Against a reported 5–8 attempts per accepted still — 4 to 7 *wasted* attempts —
-a critic that prevents even one reroll in five shots pays for itself on the
-dearest model. **Preflight does not cost more than the rerolls it prevents, and
-it is not close enough to need a more precise estimate.**
+### The break-even, and it splits by path
+
+**Say it plainly, because it is the most useful sentence in this document: on the
+coverage path an Opus-5 preflight costs 78% of the still it guards, and prevents
+nothing, because there is nothing to prevent.**
+
+The unit differs by path, and that is the whole finding:
+
+**Coverage path** — one still, $0.0398, no picker, no re-roll (§2.5):
+
+| Model | Per shot | Break-even | As a share of the asset |
+|---|---|---|---|
+| Opus 5 | $0.031 | > 0.78 rerolls/shot | **78%** |
+| Sonnet 5 (promo) | $0.012 | > 0.30 | 30% |
+| Haiku 4.5 | $0.006 | > 0.15 | **15%** |
+
+The break-even column is unreachable here **at any price**, because the observed
+reroll rate on this path is exactly **zero** — `compile_coverage` never re-buys a
+still and no route exists to make it. There is no arithmetic under which
+coverage-path preflight pays for itself in prevented spend. Its entire
+justification is §2.5's irreversibility argument, and it should be built and
+defended on that basis or not built.
+
+That does not make it indefensible — 15 cents on the dollar to stop a permanent
+defect in the only take that will ever exist is an easy trade, and one this repo
+makes routinely. **78 cents on the dollar is not.** So: Haiku 4.5, and the model
+choice is now load-bearing rather than a footnote.
+
+**Beat path** — one click, three images, $0.1194, and this is where the observed
+4–7 wasted attempts actually are:
+
+| Model | Per beat | Break-even | As a share of one click |
+|---|---|---|---|
+| Opus 5 | $0.031 | > 0.26 clicks/beat | 26% |
+| Sonnet 5 (promo) | $0.012 | > 0.10 | 10% |
+| Haiku 4.5 | $0.006 | > 0.05 | 5% |
+
+Against 4–7 wasted clicks per beat this clears comfortably on every model,
+including Opus 5. **Preflight pays for itself on the beat path and does not on
+the coverage path, and the two need to be argued separately rather than as one
+feature.**
 
 Latency: one non-streaming Haiku call at this size is ~2–4s; Opus 5 with adaptive
 thinking is ~8–20s. Across 90 shots that is a job, not a request — it belongs
 behind `start_job` at lock time, where the human is already waiting for the
-planner, not in the compile request path.
+planner, not in the compile request path. At Haiku that is ~3–6 minutes for an
+episode; at Opus 5 it is ~15–30, which is its own argument.
 
 **The caveat that could still kill it, and it is not a cost caveat.** All of the
 above assumes preflight can *see* the cause. A critic that reads only text cannot
 predict face drift, model randomness, an anatomy failure, or the case Spike A
 measured — anchor text alone producing four different men across four takes
 (spike_identity.py:61-63). If the human's rerolls are dominated by those, a
-prompt critic prevents approximately nothing and $1.37/episode buys noise.
+prompt critic prevents approximately nothing and $0.61/episode buys noise.
 **Nothing in the system currently records which it is.** That is §10, and it is
-why §10 is first.
+why §10 is first — and the invoice has just made it more urgent, not less: the
+smaller the prize, the less margin there is for building against a guess.
 
 ---
 
@@ -882,7 +1054,7 @@ Per the brief. None of these was touched.
 **11.1 — `edit_image` spends money with no record on either side.**
 `POST /api/shot/{scene_id}/edit_image/{var_idx}` (main.py:3816-3878) calls
 `fal_client.upload_file` and `assets.generate_image_edit(n=3)` — three paid
-images, ~$0.45 — and:
+images, ~$0.1194 — and:
 
 * opens **no** `generation.begin` attempt, so `spend()` and `at_risk()` cannot
   see it;
@@ -992,13 +1164,25 @@ producers.
 preflight findings; a test asserts an existing plan file loads unchanged and its
 recorded dispositions still apply.
 
-**Slice 4 — P1+P2, the still critic. (~2 days.)**
-One model call per shot at lock time, behind `start_job`. Findings land as
-`stage: "preflight"` warnings. `DIRECTOR_MODEL`-style env override; default
-Haiku 4.5 on the §9 arithmetic.
+**Slice 4a — P1+P2 on the BEAT path. (~2 days.)**
+One model call per beat, over `assets._compose_prompt(Shot)`, at draft time.
+This is the half that pays for itself: §9 puts break-even at 0.05–0.26 clicks per
+beat against 4–7 observed. `PREFLIGHT_MODEL` env override in the
+`DIRECTOR_MODEL` style; **default Haiku 4.5, and the default is now a decision
+rather than a detail** — see §9.
+*Exit:* regenerating a beat still runs the critic first; findings are shown and
+dispositioned; the run cost is in the job log. **Gated on slice 1 showing the
+rerolls have a text-visible cause.**
+
+**Slice 4b — the same critic on the COVERAGE path. (~1 day on top of 4a.)**
+Same call at lock time, behind `start_job`, findings as `stage: "preflight"`
+warnings so the existing `unresolved_warnings` gate carries them.
+**Justified by §2.5's irreversibility argument and explicitly not by §9's
+money argument, which does not close on this path at any model price.** Split
+from 4a so that judgement is made deliberately and can be declined on its own
+without losing the half that pays.
 *Exit:* locking a scene runs the critic; findings appear beside Director
-warnings and are dispositioned the same way; the run cost is reported in the job
-log. **Gated on slice 1 showing the rerolls have a text-visible cause.**
+warnings and are dispositioned the same way.
 
 **Slice 5 — the Phase 4 stamp. (~2 days.)**
 The stamp of §5 written at lock, checked in `generation.begin`. This is the
@@ -1048,7 +1232,7 @@ it.
 says "stills and video" as though those are one path. They are not, and §2.5
 shows the split is where the money is:
 
-* **Beat stills** (`assets._compose_prompt(Shot)`, 3 takes, re-rollable, $0.45 a
+* **Beat stills** (`assets._compose_prompt(Shot)`, 3 takes, re-rollable, $0.1194 a
   click) — this is where the 5–8 regenerations happen, and preflight here saves
   money.
 * **Coverage stills** (`still_takes`, 1 take, *not* re-rollable) — preflight here
@@ -1069,9 +1253,30 @@ actually matters.
   live on the GCS mount and are not present in this worktree. Every measurement
   here comes from committed artefacts — the four plans in `director_plans/`, the
   two real manifests, and the code.
+* Did not query fal's billing API. The invoice figures in §2.1 and §2.3 —
+  $0.0398/image, kling 20s $1.12, wan billed 6 units for a 4-unit request, the
+  $3.20 account total — were obtained by another session with an admin key and
+  are cited from `648f81b`'s committed provenance
+  (`capabilities.py:237-254`, `:262-333`), not re-fetched here.
 * Did not verify the fal tariff rows against fal's published pricing. That is
   `tests/test_fal_tariff.py`'s job and it is the thing keeping §2.3 honest, not
   this document.
 * Did not measure tokens with `count_tokens`. §9 states the estimation method
-  and its error bar.
+  and its error bar — and, at the corrected still price, states where that error
+  bar has stopped being comfortable.
 * Did not invent a success probability for any shot, and did not propose one.
+
+### What the price correction should be read as
+
+The first draft of this document argued, from `COST_PER_IMAGE = 0.15`, that
+preflight was so obviously cheap relative to the waste it prevented that the
+estimate did not need to be precise. That was true of the constant and false of
+the world. The lesson is the one `capabilities.py` already had written down about
+the seedance row and has now had to write down twice: **a transcribed price is
+not a measured one, and a conclusion whose margin comes from a transcription
+inherits its error.**
+
+What survives untouched is everything that was not derived from that constant —
+§2.2's shot counts, §2.5's irreversibility finding, §3's inventory, and the
+answers to A, B and C. What moved is every figure downstream of $0.15, and one
+recommendation: the critic's model is no longer free to choose.
