@@ -85,6 +85,34 @@ PLAN_VERSION = 1
 # difference between both beats finishing and both failing halfway.
 _COMPILE_LOCK = threading.Lock()
 
+# How many times one shot's LOCAL render may be attempted inside a compile.
+#
+# Two compiles in twenty-three renders died the same way:
+#
+#   !! s003.06 FAILED: [Errno 32] Broken pipe      (shot 6 of 7)
+#   !! s005.05 FAILED: [Errno 32] Broken pipe      (shot 5 of 6)
+#
+# Both free-tier `parallax`, both the penultimate shot of their beat, both with
+# an EMPTY `FFMPEG STDERR OUTPUT` and an EPIPE on the write into ffmpeg's stdin.
+# Empty stderr plus an immediate broken pipe is a child that was *killed*, not
+# one that rejected its input -- ffmpeg never lived long enough to complain. The
+# container survived both (the compile carried on to the next shot), so this is
+# not the instance being terminated.
+#
+# The cause is NOT established. No OOM or termination events appear in the Cloud
+# Run logs, and container memory sat around 26% mean of 4Gi with no reliable
+# peak. A kernel OOM-killer inside the container picking ffmpeg as the
+# highest-RSS process fits the evidence exactly as well as a transient write
+# failure against the gcsfuse mount does, and neither is assumed here. What IS
+# established is that both were transient: the human re-ran the compile by hand
+# and the same shot rendered immediately, with no code change.
+#
+# So a local render is attempted twice before six finished shots are abandoned
+# for the seventh. This is resilience, not a diagnosis, and it must not grow
+# into one. See `local_only` in `_compile_locked` for the boundary that keeps it
+# away from anything that can be billed.
+LOCAL_RENDER_ATTEMPTS = 2
+
 
 @dataclass
 class DirectorShot:
@@ -1273,6 +1301,11 @@ def compile_coverage(plan: CoveragePlan, sb: Storyboard, render_dir: Path,
     Resume-safe by the same rule as the rest of the pipeline: a shot that already
     has a current clip is skipped, so re-running after a failure costs only what
     failed. The plan is saved after each shot for the same reason.
+
+    A shot whose LOCAL render fails is attempted once more before the beat is
+    given up on — see ``LOCAL_RENDER_ATTEMPTS``. That never extends to a paid
+    generation: the boundary is ``local_only`` in ``_compile_locked``, and it is
+    set only where nothing left to run for that shot can be charged for.
     """
     # Imported lazily and per-branch: a plan made entirely of library assets, or a
     # resumed run whose shots are already rendered, has no business requiring the
@@ -1330,6 +1363,10 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
 
     img_backend = backend or getattr(sb.render, "backend", "") or "nano2"
     failures: list[str] = []
+    # Shots that only finished because they were rendered twice. Reported in the
+    # completion line, so a compile that needed a retry cannot be mistaken for
+    # one that did not.
+    retried: list[str] = []
 
     for i, ds in enumerate(plan.coverage, start=1):
         target = out_dir / f"{ds.id}.mp4"
@@ -1340,252 +1377,316 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
         log(f"[{i}/{len(plan.coverage)}] {ds.id} — {ds.shot_size or '?'} "
             f"{ds.purpose or ''} ({ds.duration:.2f}s)")
         ds.error = ""
-        try:
-            if ds.source == "library":
-                src = resolve_library_ref(ds.source_ref)
-                if not src:
-                    raise PlanError(f"library asset not found: {ds.source_ref}")
+        # A retry re-enters the whole attempt, so anything inside it that is not
+        # idempotent needs saying once. The library branch's provenance row is
+        # the only such thing: copying a file twice is harmless, writing the
+        # ledger twice invents a second reuse of one asset. The generated branch
+        # needs no equivalent because its own reuse guards already cover it --
+        # ds.draft_variations is written before the render is attempted, so the
+        # second attempt takes the reuse arm and buys nothing.
+        recorded_library = False
+        for attempt in range(1, LOCAL_RENDER_ATTEMPTS + 1):
+            # Flipped to True at the exact point where everything still to run
+            # for THIS shot is local and costs nothing -- and only there. While
+            # it is False a failure may already have been billed, or may be
+            # billed by the retry itself, and the shot is abandoned instead.
+            # See LOCAL_RENDER_ATTEMPTS, and the two assignments below.
+            local_only = False
+            try:
+                if ds.source == "library":
+                    src = resolve_library_ref(ds.source_ref)
+                    if not src:
+                        raise PlanError(f"library asset not found: {ds.source_ref}")
 
-                # Reusing the beat's own existing clip is the natural way to keep
-                # motion that has already been paid for -- but this compile ends by
-                # writing that exact path, so the plan would cite a file it is about
-                # to destroy. It survives one run (the copy happens first) and then
-                # becomes unreproducible. Promote it to the series library instead,
-                # and rewrite the reference to the stable location.
-                beat_clip = Path(render_dir) / f"{plan.beat_id}.mp4"
-                if src.resolve() == beat_clip.resolve():
-                    stable = library_root() / f"{plan.beat_id}__{ds.id}.mp4"
-                    stable.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(src, stable)
-                    log(f"  promoted {src.name} to the shot library as {stable.name} "
-                        f"(it was the beat clip this compile overwrites)")
-                    ds.source_ref = stable.name
-                    src = stable
-                shutil.copyfile(Path(src), target)
-                log(f"  reused library asset {ds.source_ref}")
-                # Reused assets still need provenance, or the taste data grows a
-                # hole exactly where the cheapest shots are.
-                ledger.record_generation(
-                    scene_id=ds.id, path=config.rel_media_path(target),
-                    strategy="library", prompt=ds.prompt or ds.source_ref,
-                    backend="library", batch=plan.plan_id or plan.beat_id, slot=i - 1,
-                    style_medium=getattr(beat, "style_medium", "") or "",
-                    motion_type=ds.motion_type,
-                )
-            else:
-                # lazy: only generated shots need these
-                from . import assets, capabilities, motion
-
-                synth = _synthetic_shot(ds, beat)
-
-                # A shot showing a known character gets their likeness, and their
-                # anchor text via Shot.references -> _character_clause.
-                who, ref_path = character_in_shot(ds)
-                subject_url = ""
-                if who:
-                    synth.references = list(dict.fromkeys(list(synth.references) + [who]))
-                    if ref_path:
-                        import fal_client
-                        subject_url = fal_client.upload_file(ref_path)
-                        log(f"  {ds.id}: {who} likeness reference attached")
-                    elif ds.face_visibility in ("moderate", "high"):
-                        log(f"  !! {ds.id} shows {who} at face_visibility="
-                            f"{ds.face_visibility} but {who} has no reference image — "
-                            f"expect a different face. Upload one via "
-                            f"POST /api/characters/{who}/reference")
-
-                if ds.draft_variations:
-                    # Resumed run: reuse the stills already paid for.
-                    synth.draft_variations = list(ds.draft_variations)
-                    synth.chosen_variation = ds.chosen_variation
-                    synth.draft_image = (ds.draft_variations[ds.chosen_variation or 0])
-                else:
-                    # Stills bought during a compile are money, and this path
-                    # recorded none of it: it called assets.generate_for_shot
-                    # directly, so generation.spend() reported the video tier
-                    # alone. The first real compile bought $1.20 of stills and the
-                    # ledger's total for the beat was $1.20 — the clips only. A
-                    # spend the ledger cannot see is a spend nobody can reconcile
-                    # against a bill (§6.1), so it opens an attempt like every
-                    # other charge.
-                    #
-                    # Recording, not gating: signature="" skips begin()'s reuse
-                    # and in_flight arms, for the same reason main.py's draft path
-                    # does — a deliberate re-draft is a legitimate re-buy. Opening
-                    # it still fails closed, because "money spent, no record" is
-                    # the whole defect.
-                    n = still_takes(ds)
-                    still_price = round(capabilities.COST_PER_IMAGE * n, 3)
-                    att_img, how_img = generation.begin(
-                        beat_id=plan.beat_id, shot_id=ds.id, signature="",
-                        kind="image", backend=img_backend, paid=True,
-                        estimated_cost=still_price)
-                    if how_img != "created":
-                        raise PlanError(
-                            f"{ds.id}: the generation ledger answered {how_img!r} "
-                            f"for its stills; refusing to generate. Resolve "
-                            f"attempt {att_img.attempt} before compiling again.")
-                    try:
-                        assets.generate_for_shot(
-                            synth, n, backend=img_backend, render=sb.render, log=log,
-                            subject_url=subject_url or None)
-                    except BaseException as exc:
-                        # in_doubt, not fail: fal may already have been called and
-                        # charged, and nothing here can tell. Same rule the video
-                        # path below uses.
-                        generation.in_doubt(plan.beat_id, att_img.id,
-                                            f"still generation raised: {exc}")
-                        raise
-                    ds.draft_variations = list(synth.draft_variations)
-                    ds.chosen_variation = synth.chosen_variation
-                    # No cost=, for the reason given at the video settle below:
-                    # fal reports no billed amount, so the figure stays in
-                    # estimated_cost where it is labelled as ours.
-                    generation.succeed(plan.beat_id, att_img.id,
-                                       output=(ds.draft_variations or [""])[0])
-
-                if ds.motion_type == "ai_video":
-                    # generate_paid_clip downloads to `target`. ds.clip was only
-                    # assigned AFTER normalize/fit below, so a post-processing
-                    # failure left a paid mp4 sitting on disk that the resume guard
-                    # could not see (it tests ds.clip and not ds.error, and the
-                    # handler sets ds.error) -- and the retry the error message
-                    # asks for went straight back to fal. Every attempt bought the
-                    # same clip again. Spike F hit exactly this: the generation
-                    # succeeded and the compile failed after it.
-                    #
-                    # So: generate only when nothing is on disk, and record the
-                    # paid bytes the instant they land, before anything that can
-                    # fail runs against them.
-                    want = paid_signature(ds)
-                    have = (ds.paid_clip
-                            and ds.paid_clip == config.rel_media_path(target)
-                            and ds.paid_signature == want
-                            and target.is_file() and target.stat().st_size > 0)
-                    if have:
-                        log(f"  {ds.id}: paid clip already downloaded — re-running "
-                            f"post-processing only, not re-billing")
-                    else:
-                        # No idempotency key is minted here, deliberately. A key
-                        # derived from these same inputs would be identical on a
-                        # legitimate re-buy -- media truncated or deleted -- and
-                        # would refuse to replace footage that is genuinely gone.
-                        # A random key would be a NEW key after the crash it is
-                        # meant to survive, so it would not dedupe either. The
-                        # crash window is closed by the in_flight guard below
-                        # instead, which asks the question that actually matters:
-                        # is an attempt for these inputs already running?
-                        #
-                        # Every paid generation opens an attempt first. The
-                        # attempt is what decides whether money may be spent:
-                        # only a "created" disposition permits a call to fal, so
-                        # a duplicate request or an unchanged shot cannot reach
-                        # the API however it arrives here (§11.1). The lineage
-                        # is the same record, so a failure below stays attached
-                        # to the shot instead of vanishing (§11.6).
-                        #
-                        # Priced through paid_clip_price, which is the same
-                        # function that produced the quote on the button. Before,
-                        # this was a flat PAID_CLIP_COST while the quote came off
-                        # the per-second table, and the two simply disagreed.
-                        clip_price = paid_clip_price(ds)
-                        if clip_price is None:
-                            # generate_paid_clip would refuse below anyway, but
-                            # the attempt is opened FIRST -- so refusing here is
-                            # the difference between no record and a paid attempt
-                            # carrying a confident $0.00 for a call that could
-                            # never be made.
-                            raise PlanError(unproducible(ds))
-                        att, how = generation.begin(
-                            beat_id=plan.beat_id, shot_id=ds.id, signature=want,
-                            kind="video", backend=ds.backend, paid=True,
-                            estimated_cost=clip_price,
-                            exists=_media_present,
+                    # Reusing the beat's own existing clip is the natural way to keep
+                    # motion that has already been paid for -- but this compile ends by
+                    # writing that exact path, so the plan would cite a file it is about
+                    # to destroy. It survives one run (the copy happens first) and then
+                    # becomes unreproducible. Promote it to the series library instead,
+                    # and rewrite the reference to the stable location.
+                    beat_clip = Path(render_dir) / f"{plan.beat_id}.mp4"
+                    if src.resolve() == beat_clip.resolve():
+                        stable = library_root() / f"{plan.beat_id}__{ds.id}.mp4"
+                        stable.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(src, stable)
+                        log(f"  promoted {src.name} to the shot library as {stable.name} "
+                            f"(it was the beat clip this compile overwrites)")
+                        ds.source_ref = stable.name
+                        src = stable
+                    shutil.copyfile(Path(src), target)
+                    log(f"  reused library asset {ds.source_ref}")
+                    # Reused assets still need provenance, or the taste data grows a
+                    # hole exactly where the cheapest shots are.
+                    if not recorded_library:
+                        ledger.record_generation(
+                            scene_id=ds.id, path=config.rel_media_path(target),
+                            strategy="library", prompt=ds.prompt or ds.source_ref,
+                            backend="library", batch=plan.plan_id or plan.beat_id,
+                            slot=i - 1,
+                            style_medium=getattr(beat, "style_medium", "") or "",
+                            motion_type=ds.motion_type,
                         )
-                        if how == "in_flight":
-                            # The provider may already have been paid. Refusing
-                            # is the only answer that cannot bill twice.
-                            raise PlanError(
-                                f"{ds.id}: a paid generation for these inputs is "
-                                f"still recorded as running (attempt "
-                                f"{att.attempt}). It may have been billed. Resolve "
-                                f"it before retrying — see generation.abandon().")
-                        if how != "created":
-                            log(f"  {ds.id}: not re-billing — {how} "
-                                f"(attempt {att.attempt})")
-                            ds.selected_attempt = att.id
-                            ds.clip = att.output or ds.clip
-                            ds.paid_clip = att.output or ds.paid_clip
-                            ds.paid_signature = want
-                            save_plan(plan)
-                        else:
-                            # --- before dispatch -------------------------------
-                            # Everything here happens BEFORE the provider is
-                            # called, so a failure in it carries no billing
-                            # uncertainty and must close the attempt as an
-                            # ordinary, retryable failure. Leaving it in doubt
-                            # stranded the beat behind a recovery step that
-                            # exists for a risk that had not been taken: a
-                            # permission error deleting a stale file would
-                            # record a possibly-billed attempt with no reason.
-                            try:
-                                # Anything at `target` now is either a free
-                                # render or a clip bought for different inputs.
-                                # Neither is this shot's paid clip, so it must
-                                # not be mistaken for one.
-                                if target.is_file() and not ds.paid_clip:
-                                    log(f"  {ds.id}: discarding a non-paid file "
-                                        f"already at {target.name} before generating")
-                                target.unlink(missing_ok=True)
-                            except BaseException as exc:
-                                generation.fail(plan.beat_id, att.id,
-                                                f"before dispatch: {exc}")
-                                raise
-                            # --- dispatch --------------------------------------
-                            try:
-                                generate_paid_clip(ds, synth, sb, out_dir, log=log)
-                            except BaseException as exc:
-                                # NOT marked failed. Once the provider has been
-                                # called, whether it billed is unknown, and
-                                # "failed" invites a retry that buys the clip a
-                                # second time. It stays running so the next
-                                # request sees it as in_flight and refuses,
-                                # until a human resolves it.
-                                generation.in_doubt(plan.beat_id, att.id, str(exc))
-                                raise
-                            ds.clip = config.rel_media_path(target)
-                            ds.paid_clip = ds.clip
-                            ds.paid_signature = want
-                            ds.selected_attempt = att.id
-                            # cost= is left unset ON PURPOSE. GenerationAttempt
-                            # documents `cost` as "the real one when the provider
-                            # reported it" and `estimated_cost` as ours, and
-                            # _amount() prefers the first -- so writing our own
-                            # figure into `cost` made every attempt look like a
-                            # confirmed invoice and left the distinction between
-                            # the two fields meaning nothing.
-                            #
-                            # fal does not report one. fal_client.subscribe
-                            # returns the model's output payload and nothing
-                            # else; it surfaces no billing amount and no response
-                            # headers, so there is no billed figure to record on
-                            # this path. Saying that plainly is the honest answer
-                            # -- the total is unchanged, because _amount() falls
-                            # back to estimated_cost, but it is now labelled as
-                            # the estimate it has always been.
-                            generation.succeed(plan.beat_id, att.id, ds.clip)
-                            save_plan(plan)
+                        recorded_library = True
+                    # A library shot buys nothing at all, so the ffmpeg calls
+                    # below it are retryable — the copy above is idempotent and
+                    # the ledger row is guarded.
+                    local_only = True
                 else:
-                    motion.render_shot(synth, out_dir=out_dir, storyboard=sb)
+                    # lazy: only generated shots need these
+                    from . import assets, capabilities, motion
 
-            normalize_clip(target, log=log)
-            fit_clip(target, ds.duration, gestural=ds.gestural, log=log)
-            ds.clip = config.rel_media_path(target)
-        except Exception as exc:  # noqa: BLE001
-            # One shot failing must not abandon the others already paid for.
-            ds.error = str(exc)
-            failures.append(ds.id)
-            log(f"  !! {ds.id} FAILED: {exc}")
+                    synth = _synthetic_shot(ds, beat)
+
+                    # A shot showing a known character gets their likeness, and their
+                    # anchor text via Shot.references -> _character_clause.
+                    who, ref_path = character_in_shot(ds)
+                    subject_url = ""
+                    if who:
+                        synth.references = list(dict.fromkeys(list(synth.references) + [who]))
+                        if ref_path:
+                            import fal_client
+                            subject_url = fal_client.upload_file(ref_path)
+                            log(f"  {ds.id}: {who} likeness reference attached")
+                        elif ds.face_visibility in ("moderate", "high"):
+                            log(f"  !! {ds.id} shows {who} at face_visibility="
+                                f"{ds.face_visibility} but {who} has no reference image — "
+                                f"expect a different face. Upload one via "
+                                f"POST /api/characters/{who}/reference")
+
+                    if ds.draft_variations:
+                        # Resumed run: reuse the stills already paid for.
+                        synth.draft_variations = list(ds.draft_variations)
+                        synth.chosen_variation = ds.chosen_variation
+                        synth.draft_image = (ds.draft_variations[ds.chosen_variation or 0])
+                    else:
+                        # Stills bought during a compile are money, and this path
+                        # recorded none of it: it called assets.generate_for_shot
+                        # directly, so generation.spend() reported the video tier
+                        # alone. The first real compile bought $1.20 of stills and the
+                        # ledger's total for the beat was $1.20 — the clips only. A
+                        # spend the ledger cannot see is a spend nobody can reconcile
+                        # against a bill (§6.1), so it opens an attempt like every
+                        # other charge.
+                        #
+                        # Recording, not gating: signature="" skips begin()'s reuse
+                        # and in_flight arms, for the same reason main.py's draft path
+                        # does — a deliberate re-draft is a legitimate re-buy. Opening
+                        # it still fails closed, because "money spent, no record" is
+                        # the whole defect.
+                        n = still_takes(ds)
+                        still_price = round(capabilities.COST_PER_IMAGE * n, 3)
+                        att_img, how_img = generation.begin(
+                            beat_id=plan.beat_id, shot_id=ds.id, signature="",
+                            kind="image", backend=img_backend, paid=True,
+                            estimated_cost=still_price)
+                        if how_img != "created":
+                            raise PlanError(
+                                f"{ds.id}: the generation ledger answered {how_img!r} "
+                                f"for its stills; refusing to generate. Resolve "
+                                f"attempt {att_img.attempt} before compiling again.")
+                        try:
+                            assets.generate_for_shot(
+                                synth, n, backend=img_backend, render=sb.render, log=log,
+                                subject_url=subject_url or None)
+                        except BaseException as exc:
+                            # in_doubt, not fail: fal may already have been called and
+                            # charged, and nothing here can tell. Same rule the video
+                            # path below uses.
+                            generation.in_doubt(plan.beat_id, att_img.id,
+                                                f"still generation raised: {exc}")
+                            raise
+                        ds.draft_variations = list(synth.draft_variations)
+                        ds.chosen_variation = synth.chosen_variation
+                        # No cost=, for the reason given at the video settle below:
+                        # fal reports no billed amount, so the figure stays in
+                        # estimated_cost where it is labelled as ours.
+                        generation.succeed(plan.beat_id, att_img.id,
+                                           output=(ds.draft_variations or [""])[0])
+
+                    if ds.motion_type == "ai_video":
+                        # generate_paid_clip downloads to `target`. ds.clip was only
+                        # assigned AFTER normalize/fit below, so a post-processing
+                        # failure left a paid mp4 sitting on disk that the resume guard
+                        # could not see (it tests ds.clip and not ds.error, and the
+                        # handler sets ds.error) -- and the retry the error message
+                        # asks for went straight back to fal. Every attempt bought the
+                        # same clip again. Spike F hit exactly this: the generation
+                        # succeeded and the compile failed after it.
+                        #
+                        # So: generate only when nothing is on disk, and record the
+                        # paid bytes the instant they land, before anything that can
+                        # fail runs against them.
+                        want = paid_signature(ds)
+                        have = (ds.paid_clip
+                                and ds.paid_clip == config.rel_media_path(target)
+                                and ds.paid_signature == want
+                                and target.is_file() and target.stat().st_size > 0)
+                        if have:
+                            log(f"  {ds.id}: paid clip already downloaded — re-running "
+                                f"post-processing only, not re-billing")
+                        else:
+                            # No idempotency key is minted here, deliberately. A key
+                            # derived from these same inputs would be identical on a
+                            # legitimate re-buy -- media truncated or deleted -- and
+                            # would refuse to replace footage that is genuinely gone.
+                            # A random key would be a NEW key after the crash it is
+                            # meant to survive, so it would not dedupe either. The
+                            # crash window is closed by the in_flight guard below
+                            # instead, which asks the question that actually matters:
+                            # is an attempt for these inputs already running?
+                            #
+                            # Every paid generation opens an attempt first. The
+                            # attempt is what decides whether money may be spent:
+                            # only a "created" disposition permits a call to fal, so
+                            # a duplicate request or an unchanged shot cannot reach
+                            # the API however it arrives here (§11.1). The lineage
+                            # is the same record, so a failure below stays attached
+                            # to the shot instead of vanishing (§11.6).
+                            #
+                            # Priced through paid_clip_price, which is the same
+                            # function that produced the quote on the button. Before,
+                            # this was a flat PAID_CLIP_COST while the quote came off
+                            # the per-second table, and the two simply disagreed.
+                            clip_price = paid_clip_price(ds)
+                            if clip_price is None:
+                                # generate_paid_clip would refuse below anyway, but
+                                # the attempt is opened FIRST -- so refusing here is
+                                # the difference between no record and a paid attempt
+                                # carrying a confident $0.00 for a call that could
+                                # never be made.
+                                raise PlanError(unproducible(ds))
+                            att, how = generation.begin(
+                                beat_id=plan.beat_id, shot_id=ds.id, signature=want,
+                                kind="video", backend=ds.backend, paid=True,
+                                estimated_cost=clip_price,
+                                exists=_media_present,
+                            )
+                            if how == "in_flight":
+                                # The provider may already have been paid. Refusing
+                                # is the only answer that cannot bill twice.
+                                raise PlanError(
+                                    f"{ds.id}: a paid generation for these inputs is "
+                                    f"still recorded as running (attempt "
+                                    f"{att.attempt}). It may have been billed. Resolve "
+                                    f"it before retrying — see generation.abandon().")
+                            if how != "created":
+                                log(f"  {ds.id}: not re-billing — {how} "
+                                    f"(attempt {att.attempt})")
+                                ds.selected_attempt = att.id
+                                ds.clip = att.output or ds.clip
+                                ds.paid_clip = att.output or ds.paid_clip
+                                ds.paid_signature = want
+                                save_plan(plan)
+                            else:
+                                # --- before dispatch -------------------------------
+                                # Everything here happens BEFORE the provider is
+                                # called, so a failure in it carries no billing
+                                # uncertainty and must close the attempt as an
+                                # ordinary, retryable failure. Leaving it in doubt
+                                # stranded the beat behind a recovery step that
+                                # exists for a risk that had not been taken: a
+                                # permission error deleting a stale file would
+                                # record a possibly-billed attempt with no reason.
+                                try:
+                                    # Anything at `target` now is either a free
+                                    # render or a clip bought for different inputs.
+                                    # Neither is this shot's paid clip, so it must
+                                    # not be mistaken for one.
+                                    if target.is_file() and not ds.paid_clip:
+                                        log(f"  {ds.id}: discarding a non-paid file "
+                                            f"already at {target.name} before generating")
+                                    target.unlink(missing_ok=True)
+                                except BaseException as exc:
+                                    generation.fail(plan.beat_id, att.id,
+                                                    f"before dispatch: {exc}")
+                                    raise
+                                # --- dispatch --------------------------------------
+                                try:
+                                    generate_paid_clip(ds, synth, sb, out_dir, log=log)
+                                except BaseException as exc:
+                                    # NOT marked failed. Once the provider has been
+                                    # called, whether it billed is unknown, and
+                                    # "failed" invites a retry that buys the clip a
+                                    # second time. It stays running so the next
+                                    # request sees it as in_flight and refuses,
+                                    # until a human resolves it.
+                                    generation.in_doubt(plan.beat_id, att.id, str(exc))
+                                    raise
+                                ds.clip = config.rel_media_path(target)
+                                ds.paid_clip = ds.clip
+                                ds.paid_signature = want
+                                ds.selected_attempt = att.id
+                                # cost= is left unset ON PURPOSE. GenerationAttempt
+                                # documents `cost` as "the real one when the provider
+                                # reported it" and `estimated_cost` as ours, and
+                                # _amount() prefers the first -- so writing our own
+                                # figure into `cost` made every attempt look like a
+                                # confirmed invoice and left the distinction between
+                                # the two fields meaning nothing.
+                                #
+                                # fal does not report one. fal_client.subscribe
+                                # returns the model's output payload and nothing
+                                # else; it surfaces no billing amount and no response
+                                # headers, so there is no billed figure to record on
+                                # this path. Saying that plainly is the honest answer
+                                # -- the total is unchanged, because _amount() falls
+                                # back to estimated_cost, but it is now labelled as
+                                # the estimate it has always been.
+                                generation.succeed(plan.beat_id, att.id, ds.clip)
+                                save_plan(plan)
+                    else:
+                        # Tier A/B. Every charge this shot can incur is already
+                        # behind us: the stills were either reused from a prior
+                        # run or bought and settled in the ledger just above,
+                        # and ds.draft_variations now holds them, so a second
+                        # attempt takes the reuse branch and calls fal for
+                        # nothing. What remains -- render_shot, normalize, fit
+                        # -- is local, free, and repeatable.
+                        #
+                        # Note this deliberately does NOT cover the `ai_video`
+                        # branch above, including the case where the clip is
+                        # already bought and only post-processing failed. The
+                        # money is spent either way there, but a retry has to
+                        # re-enter the shot, and the guard that stops a second
+                        # purchase (`have`) requires the downloaded file to
+                        # still be non-empty -- while the operation that failed
+                        # is `shutil.copyfile` over that very file. A kill in
+                        # the middle of it leaves nothing to protect, and
+                        # tests/test_paid_rebill.py says plainly what happens
+                        # next to a paid clip whose bytes are gone: it is bought
+                        # again, deliberately. A failure alone cannot tell a
+                        # destroyed download from an intact one, so paid shots
+                        # are not retried at all.
+                        local_only = True
+                        motion.render_shot(synth, out_dir=out_dir, storyboard=sb)
+
+                normalize_clip(target, log=log)
+                fit_clip(target, ds.duration, gestural=ds.gestural, log=log)
+                ds.clip = config.rel_media_path(target)
+            except Exception as exc:  # noqa: BLE001
+                # One shot failing must not abandon the others already paid for.
+                if local_only and attempt < LOCAL_RENDER_ATTEMPTS:
+                    # Free tier only: nothing between here and the end of the
+                    # shot can be charged for, so a second go costs wall clock
+                    # and nothing else. Said out loud, because a silent retry
+                    # that later succeeds would read as a clean first run.
+                    log(f"  .. {ds.id} attempt {attempt} failed ({exc}) — "
+                        f"retrying; this is a local render, nothing is re-bought")
+                    continue
+                ds.error = str(exc)
+                failures.append(ds.id)
+                if attempt > 1:
+                    log(f"  !! {ds.id} FAILED after {attempt} attempts "
+                        f"(retried, still failed): {exc}")
+                else:
+                    log(f"  !! {ds.id} FAILED: {exc}")
+                break
+            else:
+                if attempt > 1:
+                    retried.append(ds.id)
+                    log(f"  {ds.id}: succeeded on attempt {attempt} "
+                        f"(the first one failed and was retried)")
+                break
         save_plan(plan)
 
     if failures:
@@ -1603,8 +1704,11 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
     fit_clip(beat_clip, float(beat.camera.duration), gestural=False, log=log)
 
     final = probe_seconds(beat_clip)
+    # A compile that needed a retry must not read like one that did not.
+    retry_note = (f" — {len(retried)} shot(s) needed a retry: {retried}"
+                  if retried else "")
     log(f"  {plan.beat_id}: {len(plan.coverage)} shots -> {final:.2f}s "
-        f"(beat is {float(beat.camera.duration):.2f}s)")
+        f"(beat is {float(beat.camera.duration):.2f}s){retry_note}")
 
     plan.status = "compiled"
     plan.compiled = {
@@ -1612,6 +1716,7 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
         "runtime": round(final, 3),
         "shots": len(plan.coverage),
         "sub_clips": [ds.clip for ds in plan.coverage],
+        "retried": list(retried),
     }
     save_plan(plan)
     return beat_clip
