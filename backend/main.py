@@ -46,6 +46,7 @@ from . import director, spike_identity, planner, capabilities, casting, characte
 from . import fal_usage, reconcile
 from . import stages as stagemod
 from . import generation
+from . import fal_billing
 from . import paid_video
 from . import exports
 from . import slots as slotmod
@@ -567,7 +568,7 @@ def record_paid_drafts(shot: Shot, backend: str, generate) -> None:
         print(f"Warning: could not settle draft attempt for {shot.scene_id}: {exc}")
 
 
-def record_paid_video(beat_id: str, q: paid_video.Quote, dispatch):
+def record_paid_video(beat_id: str, q: paid_video.Quote, dispatch, measure=None):
     """Run a paid video generation with its price recorded before it is spent.
 
     The beat-level paid video paths recorded nothing at all. Stills bought on the
@@ -593,6 +594,13 @@ def record_paid_video(beat_id: str, q: paid_video.Quote, dispatch):
     A failure after ``dispatch`` starts is IN DOUBT, never failed: fal may
     already have been called and charged, and nothing here can tell. Same rule
     the compile path uses.
+
+    ``measure`` is what fal says it billed, asked for after the clip is in hand
+    -- see ``backend.fal_billing``. It is a callable rather than a value because
+    it cannot be known until the request has an id, and it is optional because
+    fal does not always answer. Without it these paths would record an estimate
+    where the compile path records a measurement, which is the same asymmetry
+    this whole change exists to remove, one field along.
     """
     att, how = generation.begin(beat_id=beat_id, shot_id=beat_id, signature="",
                                 kind="video", backend=q.backend, paid=True,
@@ -613,11 +621,25 @@ def record_paid_video(beat_id: str, q: paid_video.Quote, dispatch):
             print(f"Warning: could not mark video attempt in doubt: {led}")
         raise
 
+    # What fal says it billed, if it will say. LAST, and after the clip is in
+    # hand: getting the media is what was paid for, and asking the price must
+    # not delay or endanger it. ``measure`` returns None whenever fal does not
+    # answer, and then the attempt keeps its estimate, labelled as an estimate --
+    # a cost that could not be obtained must never read as a measured one.
+    measurement = None
+    if measure is not None:
+        try:
+            measurement = measure()
+        except Exception as exc:  # noqa: BLE001 — the money is already spent
+            print(f"Warning: could not read fal's billed amount for {beat_id}: {exc}")
+
     try:
-        # No cost=, for the same reason the compile path leaves it unset: fal
-        # reports no billed amount, so our figure stays in estimated_cost where
-        # it is labelled as ours rather than as a confirmed invoice.
-        generation.succeed(beat_id, att.id, output=str(output or ""))
+        # No bare cost=, for the same reason the compile path leaves it unset: a
+        # figure with no provenance written into `cost` is what made every
+        # attempt read as a confirmed invoice. `measurement` is the one thing
+        # that may claim otherwise, and it is fal's own answer or nothing.
+        generation.succeed(beat_id, att.id, output=str(output or ""),
+                           measurement=measurement)
     except Exception as exc:  # noqa: BLE001
         print(f"Warning: could not settle video attempt for {beat_id}: {exc}")
     return output
@@ -1207,10 +1229,19 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None,
                     log(f"Native Video Extend: also extending from {prev_video_dest_path.name}...")
                     arguments["video_url"] = fal_client.upload_file(str(prev_video_dest_path))
             
+                # fal's handle on the thing about to be charged for.
+                # `subscribe` does not return it, and without it there is no way
+                # to ask fal afterwards what it billed -- nor for a human to find
+                # this clip's line on their dashboard. Captured before the call,
+                # so even a request that dies mid-flight leaves the id behind.
+                request_ids: list[str] = []
+
                 def buy_the_clip():
                     """The paid half, wrapped so the ledger brackets exactly it."""
                     log(f"Triggering fal.ai API with prompt: {motion_prompt[:80]}...")
-                    result = fal_client.subscribe(model_endpoint, arguments=arguments, with_logs=True)
+                    result = fal_client.subscribe(model_endpoint, arguments=arguments,
+                                                  with_logs=True,
+                                                  on_enqueue=request_ids.append)
                     video_url = result.get("video", {}).get("url") or result.get("file", {}).get("url")
                     if not video_url:
                         raise RuntimeError(f"No video URL returned from fal.ai for {shot.scene_id}")
@@ -1228,7 +1259,11 @@ def generate_fal_and_render(sb: Storyboard, force_paid: bool = False, log=None,
                     assets._download(video_url, local_video_path)
                     return f"assets/{shot.scene_id}/{local_video_name}"
 
-                video_rel_path = record_paid_video(shot.scene_id, q, buy_the_clip)
+                video_rel_path = record_paid_video(
+                    shot.scene_id, q, buy_the_clip,
+                    measure=lambda: fal_billing.measure_quietly(
+                        model_endpoint, request_ids[0], log=log)
+                    if request_ids else None)
                 if not hasattr(shot, "video_variations") or shot.video_variations is None:
                     shot.video_variations = []
                 shot.video_variations.append(video_rel_path)
@@ -4355,9 +4390,15 @@ async def generate_shot_video(scene_id: str, request: Request):
                 public_video_url = fal_client.upload_file(str(prev_video_path))
                 arguments["video_url"] = public_video_url
 
+        # See the batch path: fal's request id is the only way to ask what this
+        # was billed, and `subscribe` does not return it.
+        request_ids: list[str] = []
+
         def buy_the_clip():
             """The paid half, wrapped so the ledger brackets exactly it."""
-            result = fal_client.subscribe(model_endpoint, arguments=arguments, with_logs=True)
+            result = fal_client.subscribe(model_endpoint, arguments=arguments,
+                                          with_logs=True,
+                                          on_enqueue=request_ids.append)
             video_url = result.get("video", {}).get("url") or result.get("file", {}).get("url")
             if not video_url:
                 raise RuntimeError("No video URL returned from fal.ai")
@@ -4378,7 +4419,12 @@ async def generate_shot_video(scene_id: str, request: Request):
         # of what the human confirmed. Nothing between here and the provider.
         priced = paid_video_quote(sb, shot, video_model_key)
         authorised.spend(priced, scene_id)
-        video_rel_path = record_paid_video(scene_id, priced, buy_the_clip)
+        video_rel_path = record_paid_video(
+            scene_id, priced, buy_the_clip,
+            measure=lambda: fal_billing.measure_quietly(
+                model_endpoint, request_ids[0],
+                log=lambda m: log_job("render", m))
+            if request_ids else None)
         if not hasattr(shot, "video_variations") or shot.video_variations is None:
             shot.video_variations = []
         shot.video_variations.append(video_rel_path)
