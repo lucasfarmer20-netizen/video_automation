@@ -1230,8 +1230,13 @@ def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
     if not url:
         raise PlanError(f"{ds.id}: no video URL returned by {endpoint}")
 
+    dest = out_dir / f"{ds.id}.mp4"
+    assets._download(url, dest)
+    log(f"  downloaded {dest.name}")
+
     if on_billed is not None and request_ids:
-        # After the money is gone and before anything can go wrong with it. A
+        # Last, and deliberately so. Getting the clip in hand is the thing that
+        # was paid for; asking what it cost is optional and must not delay it. A
         # re-fetch of a completed result is free, and measure_quietly swallows
         # its own failures, so the worst case here is that the attempt records
         # our estimate exactly as it did before this existed.
@@ -1242,9 +1247,6 @@ def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
                 f"(we estimated ${capabilities.clip_price(key, dur_int):.4f})")
         on_billed(billed)
 
-    dest = out_dir / f"{ds.id}.mp4"
-    assets._download(url, dest)
-    log(f"  downloaded {dest.name}")
     return dest
 
 

@@ -198,6 +198,19 @@ up, plus the standing backlog:
   the narrow window between `begin()` and dispatch — the `target.unlink()` block
   in `director.py` — where a kill books money at risk that could not have been
   charged
+- **follow-up from measuring spend:** only the Tier-C video path
+  (`director.generate_paid_clip`) reads fal's billed quantity back. Draft images
+  (`main.py`) and generated music/SFX (`audio.py`) still record an estimate and
+  report as estimated, correctly but incompletely — the image endpoints bill per
+  image or per **megapixel** and the audio ones per **compute second**, so a
+  duration- or count-based estimate cannot express either. Extending
+  `backend.fal_billing` there means summing `x-fal-billable-units` across the
+  several requests one attempt makes (`_subscribe_topup` retries into a batch),
+  which is why it was not folded into the first pass. Also: `/v1/models/usage`,
+  fal's per-line-item billing API and the only thing that could reconcile
+  against the *invoice* rather than the list price, answers 403 to the key this
+  pipeline holds — it needs an admin key. Until someone provisions one, the fal
+  billing dashboard is ground truth and the spend summary says so
 - TG-S4-04 concurrent HTTP compile
 - TG-S4-05 background-job generation identity
 - TG-S4-06 structurally invalid ledger shapes (JSON-valid, wrong shape)
