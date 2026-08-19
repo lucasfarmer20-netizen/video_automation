@@ -154,24 +154,29 @@ def measure(endpoint: str, request_id: str, *, get=None) -> dict | None:
     ``None`` is a first-class answer and the common one for any endpoint that
     does not set the header. The caller records nothing in that case, which
     leaves the attempt reading as estimated -- correctly, because it is.
+
+    ``cost`` is ``None`` when the billed QUANTITY was obtained and the rate was
+    not. That is not a failure to be discarded: the quantity is the half this
+    repo could never see, and it is the half that turned out to be wrong --
+    ``capabilities.BILLED_UNITS`` is built from exactly these observations. So a
+    units-only result is still returned and still recorded on the attempt; it
+    simply does not claim a measured cost, because it does not have one.
     """
     if not endpoint or not request_id or not _key():
         return None
     units = billable_units(endpoint, request_id, get=get)
     if units is None:
         return None
-    priced = unit_price(endpoint, get=get)
-    if priced is None:
-        return None
-    cost = round(units * priced["unit_price"], 6)
+    priced = unit_price(endpoint, get=get) or {}
+    price = priced.get("unit_price")
     return {
         "request_id": request_id,
         "endpoint": endpoint,
         "units": units,
-        "unit": priced["unit"],
-        "unit_price": priced["unit_price"],
-        "currency": priced["currency"],
-        "cost": cost,
+        "unit": priced.get("unit", ""),
+        "unit_price": price,
+        "currency": priced.get("currency", "USD"),
+        "cost": None if price is None else round(units * price, 6),
         "source": MEASURED,
     }
 

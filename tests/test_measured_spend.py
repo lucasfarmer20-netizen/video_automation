@@ -104,19 +104,28 @@ def test_the_billed_quantity_is_read_from_the_header_not_the_body():
     assert got["request_id"] == WAN_REQUEST
 
 
-def test_a_four_second_request_billed_for_six_is_reported_as_six():
-    """The regression in one line: the estimate is 33% under and the ledger
-    would have reported the estimate as a bill."""
+def test_a_four_second_request_billed_for_six_closes_the_quote_gap():
+    """The second defect, and its fix, in one place.
+
+    ``tariff_price`` is the published rate times the duration we ASK for -- the
+    arithmetic the quote used to do, and 33% under what fal charged.
+    ``clip_price`` now goes through the observed billed quantity first, so the
+    number a human consents to matches the number fal takes.
+    """
     from backend import capabilities
 
-    estimate = capabilities.clip_price("wan_2_7", 4)
     measured = fal_billing.measure(WAN, WAN_REQUEST, get=_fal("6.0", 0.1))["cost"]
+    quoted = capabilities.clip_price("wan_2_7", 4)
 
-    assert measured > estimate, (
-        f"fal billed ${measured:.2f} for a request we quoted at ${estimate:.2f}. "
-        f"If the measurement does not exceed the estimate here, the test data "
-        f"no longer reproduces the case that motivated measuring at all")
-    assert estimate == pytest.approx(0.40) and measured == pytest.approx(0.60)
+    assert quoted >= measured, (
+        f"fal billed ${measured:.2f} for a request quoted at ${quoted:.2f} — "
+        f"consent taken for less than the charge, which is the direction that "
+        f"matters")
+    assert measured == pytest.approx(0.60)
+    assert capabilities.tariff_price("wan_2_7", 4) == pytest.approx(0.40), (
+        "the published-rate arithmetic is unchanged; only the quantity moved")
+    assert "floor" in capabilities.clip_price_basis("wan_2_7", 2), (
+        "a quote resting on an observed floor must say so")
 
 
 def test_a_kling_five_second_clip_measures_at_the_published_rate():
@@ -129,7 +138,6 @@ def test_a_kling_five_second_clip_measures_at_the_published_rate():
 @pytest.mark.parametrize("get, why", [
     (_fal(None, 0.1), "the endpoint sets no billable-units header"),
     (_fal("6.0", 0.1, result_status=500), "the result fetch failed"),
-    (_fal("6.0", 0.1, pricing_status=403), "the pricing call was refused"),
     (_fal("not-a-number", 0.1), "the header did not parse"),
     (_fal("-3", 0.1), "the header was negative"),
 ])
@@ -141,6 +149,39 @@ def test_a_measurement_that_cannot_be_obtained_is_none_never_a_number(get, why):
     the defect this module exists to remove, relocated to the error path.
     """
     assert fal_billing.measure(WAN, WAN_REQUEST, get=get) is None, why
+
+
+def test_the_billed_quantity_is_kept_even_when_the_rate_is_not():
+    """Units without a price is not a failure — it is the half we could never see.
+
+    The quantity is what turned out to be wrong (4s requested, 6 units billed),
+    and ``capabilities.BILLED_UNITS`` is built from exactly these observations.
+    Discarding it because the rate lookup happened to fail would throw away the
+    more valuable of the two numbers.
+    """
+    got = fal_billing.measure(WAN, WAN_REQUEST, get=_fal("6.0", 0.1, pricing_status=403))
+
+    assert got["units"] == 6.0, "the observed billed quantity was discarded"
+    assert got["cost"] is None, (
+        "a cost was reported without a rate to compute it from")
+
+
+def test_units_without_a_cost_are_recorded_without_claiming_a_measured_spend():
+    att = _paid(estimated_cost=0.40)
+    generation.succeed("s001", att.id, "a.mp4",
+                       measurement=fal_billing.measure(
+                           WAN, WAN_REQUEST, get=_fal("6.0", 0.1, pricing_status=403)))
+
+    s = generation.spend("s001")
+    assert s["measured"] == 0.0, (
+        "an attempt with no priced measurement was reported as measured spend")
+    assert s["estimated"] == pytest.approx(0.40)
+
+    row = generation.for_shot("s001", "s001.01")[0]
+    assert row.billable_units == 6.0, (
+        "the observed quantity was not banked — nothing will correct the next "
+        "quote")
+    assert row.cost_source == "" and row.provider_request_id == WAN_REQUEST
 
 
 def test_the_result_url_drops_the_variant_path():
@@ -520,3 +561,37 @@ def test_an_unreadable_beat_makes_the_scene_measurement_unknown_not_zero(
         "a ledger nobody could read reported a measured figure")
     assert total["spend_is_measured"] is False
     assert total["spent"] is None and "unknown" in total["summary"]
+
+
+# --- the quote says which kind of number it is -------------------------------------
+
+def test_the_basis_never_calls_an_unobserved_length_measured():
+    """A quote resting on the published tariff must not borrow the authority of
+    an observation.
+
+    Three different states, three different sentences. The failure this guards
+    is the quiet one: prose that reads as though fal confirmed a quantity it was
+    never asked about, which is how the requested duration came to be treated as
+    the billed one in the first place.
+    """
+    from backend import capabilities
+
+    unobserved = capabilities.clip_price_basis("wan_2_7", 15)
+    assert "quoted at the requested" in unobserved, (
+        f"a length fal has never billed must name the requested duration as the "
+        f"source of the figure, not dress it as an observation: {unobserved!r}")
+    assert "not a measured quantity" in unobserved, (
+        f"an unverified quantity must say it is unverified: {unobserved!r}")
+
+    confirmed = capabilities.clip_price_basis("kling_2_1_standard", 5)
+    assert "what fal billed" in confirmed, (
+        f"a length fal HAS billed, four times, must say so: {confirmed!r}")
+
+    floored = capabilities.clip_price_basis("wan_2_7", 2)
+    assert "floor" in floored and "NOT known" in floored, (
+        f"a floor must be stated as a floor, and its rule as unknown: {floored!r}")
+
+    unpriced = capabilities.clip_price_basis("luma_dream_machine", 5)
+    assert "has ever been observed" in unpriced and "measured" not in unpriced, (
+        f"a model with no observations at all must not imply it has any: "
+        f"{unpriced!r}")

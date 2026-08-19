@@ -1101,6 +1101,21 @@ def routed_clip(ds: "DirectorShot") -> dict:
     return routed
 
 
+def quote_basis(ds: "DirectorShot") -> str:
+    """Why this shot's paid quote is the number it is, for a human.
+
+    Routed through the same resolver as the price, so the sentence can never
+    describe a model other than the one that will be billed.
+    """
+    from . import capabilities
+
+    routed = routed_clip(ds)
+    if not routed.get("backend"):
+        return "no configured model can produce this shot"
+    return capabilities.clip_price_basis(routed["backend"],
+                                         routed["generate_seconds"])
+
+
 def paid_clip_price(ds: "DirectorShot") -> float | None:
     """What this shot's clip is quoted at, and therefore recorded at.
 
@@ -1583,6 +1598,14 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                                 # carrying a confident $0.00 for a call that could
                                 # never be made.
                                 raise PlanError(unproducible(ds))
+                            # Said out loud, because the quote is not uniformly
+                            # trustworthy and the human reading this log is the
+                            # one who consented to it. Below an observed floor
+                            # the figure is anchored to a real billed quantity;
+                            # above it, it is the published tariff times a
+                            # duration fal has never confirmed it bills.
+                            log(f"  {ds.id}: ${clip_price:.2f} — "
+                                f"{quote_basis(ds)}")
                             att, how = generation.begin(
                                 beat_id=plan.beat_id, shot_id=ds.id, signature=want,
                                 kind="video", backend=ds.backend, paid=True,
