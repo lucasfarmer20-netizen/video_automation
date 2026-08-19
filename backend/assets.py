@@ -1,11 +1,24 @@
 """Assets stage: draft-image generation.
 
-Default backend is **``nano2``** — Nano Banana 2 / Gemini 3 Pro Image
-(``fal-ai/gemini-3-pro-image-preview``): a reasoning image model with strong
-prompt adherence, text rendering, and character consistency. Each beat's prompt
-leads with the culture-authentic historical art medium (composed by the script
-stage), plus the per-shot character anchors, with the avoidance list folded into
-the prompt text (the model has no ``negative_prompt`` field). ~$0.15/image.
+Default backend is **``nano2``** — a reasoning image model with strong prompt
+adherence, text rendering, and character consistency. Each beat's prompt leads
+with the culture-authentic historical art medium (composed by the script stage),
+plus the per-shot character anchors, with the avoidance list folded into the
+prompt text (the model has no ``negative_prompt`` field). **$0.0398/image**, per
+fal's own line items (``capabilities.IMAGE_PRICE``).
+
+UNRESOLVED, and left unresolved deliberately: this paragraph used to name
+``fal-ai/gemini-3-pro-image-preview`` as the endpoint and CLAUDE.md still does,
+while ``NANO2_ENDPOINT`` below is ``fal-ai/nano-banana`` and the comment beside
+it calls that Gemini 3.1 *Flash* Image. Three claims, two of them prose. What is
+settled is which endpoint RUNS: the account's invoice bills
+``fal-ai/nano-banana`` for every draft still, so the constant is right and the
+prose was wrong -- the price quoted here was $0.15 against a billed $0.0398, a
+3.8x overstatement in every episode quote, and it came from pricing the model
+the docstring named rather than the endpoint the code called. Which model fal
+serves behind ``fal-ai/nano-banana`` is NOT settled by that evidence and nobody
+has verified it, so this docstring no longer asserts one. Do not "correct" the
+constant to match a sentence; the bill is the authority over both.
 
 Other backends:
 - ``--backend flux-cfg``  FLUX.1 [dev] (flux-general) + NAG negative prompt (~$0.04, cheaper).
@@ -38,7 +51,7 @@ STYLE_REF = "style"  # implicit style reference applied to every Nano Banana bea
 
 NANO2_ENDPOINT = "fal-ai/nano-banana"  # Nano Banana 2 (Gemini 3.1 Flash Image)
 NANO2_EDIT_ENDPOINT = "fal-ai/nano-banana/edit"  # image-conditioned (frame ref)
-NANO2_RESOLUTION = "2K"               # 1K/2K same price ($0.15/img); 4K is 2x
+NANO2_RESOLUTION = "2K"               # 1K/2K same price ($0.0398/img billed); 4K is 2x
 CFG_ENDPOINT = "fal-ai/flux-general"  # FLUX.1 [dev] w/ NAG negative prompt (cheaper fallback)
 NANO_ENDPOINT = "fal-ai/nano-banana/edit"
 LORA_ENDPOINT = "fal-ai/flux-lora"
@@ -62,7 +75,7 @@ IMAGE_BACKENDS: dict[str, dict] = {
         "label": "Nano Banana 2 — Gemini 3 Pro Image",
         "endpoint": NANO2_ENDPOINT,
         "handler": "nano2",
-        "note": "Reasoning model. Best prompt adherence, text rendering and character consistency. ~$0.15/img.",
+        "note": "Reasoning model. Best prompt adherence, text rendering and character consistency. $0.0398/img (billed).",
     },
     "flux-cfg": {
         "label": "FLUX.1 dev + NAG negative",
@@ -322,7 +335,8 @@ def _generate_nano2(prompt: str, n: int, negative: str = NEGATIVE_PROMPT,
     A reasoning model, not CFG-diffusion, so there is no ``negative_prompt`` field:
     the medium-leading positive prompt (from ``_compose_prompt``) carries the style,
     and the avoidance list is folded into the prompt text. Strong prompt adherence,
-    text rendering, and character consistency. ~$0.15/image (2K, same price as 1K).
+    text rendering, and character consistency. $0.0398/image billed (2K, same
+    price as 1K) -- see capabilities.IMAGE_PRICE for the evidence.
 
     If ``frame_url`` is set (the project's global frame reference), the edit endpoint
     conditions on it: the model keeps that image's border / page-edges / framing but

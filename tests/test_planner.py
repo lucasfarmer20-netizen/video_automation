@@ -75,7 +75,7 @@ def test_character_reference_requirement_filters_models():
 def test_cost_estimate_includes_the_still():
     free = cap.estimate_shot_cost("parallax", 5.0, takes=1)
     paid = cap.estimate_shot_cost("ai_video", 5.0, takes=1)
-    assert free == pytest.approx(cap.COST_PER_IMAGE)
+    assert free == pytest.approx(cap.COST_PER_IMAGE, abs=1e-6)
     assert paid > free
 
 

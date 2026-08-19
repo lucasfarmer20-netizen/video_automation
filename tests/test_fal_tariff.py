@@ -226,3 +226,85 @@ def test_a_price_is_not_a_bound_and_the_code_does_not_claim_it_is():
     assert "PAID_CLIP_FLOOR" not in src, (
         "the flat floor is back. It bounded nothing — it only masked short "
         "requests while the table underneath it was wrong")
+
+
+# --- the draft still, anchored to the INVOICE rather than to a pricing page ------
+#
+# Every figure above is transcribed from a published page. This one is stronger
+# evidence than any of them: it is what the account was actually billed, read
+# back from fal's own line items.
+#
+#     fal-ai/nano-banana    22.0 images    $0.8756    (2026-08-15..19)
+#
+# The two literals below are that line, copied. The per-image rate is NOT
+# computed from capabilities — dividing this repo's own number by itself is the
+# circularity the top of this file exists to refuse. It is the quotient of two
+# transcribed invoice figures, which is why it can contradict the code.
+#
+# It did. `COST_PER_IMAGE` defaulted to 0.15, priced from the model assets.py's
+# docstring NAMED (`fal-ai/gemini-3-pro-image-preview`) rather than the endpoint
+# `nano2` actually CALLS (`assets.NANO2_ENDPOINT` = `fal-ai/nano-banana`, and
+# nano2 is `DEFAULT_BACKEND`). Every still in every quote was 3.8x over.
+INVOICE_IMAGES = 22.0
+INVOICE_IMAGE_DOLLARS = 0.8756
+INVOICE_IMAGE_ENDPOINT = "fal-ai/nano-banana"
+INVOICE_WINDOW = "2026-08-15..2026-08-19"
+INVOICE_SOURCE = ("fal billing API: GET https://api.fal.ai/v1/models/usage "
+                  "(admin key)")
+
+
+def test_a_draft_still_is_charged_what_fal_billed_for_one():
+    """The anchor for the image tier. Transcribed, never derived.
+
+    Overstating is the safe direction — no human was ever charged more than a
+    quote they consented to — which is why this is a correctness fix and not an
+    exposure. It is still wrong, and a quote that is wrong by 3.8x sizes every
+    episode against a budget that does not exist.
+    """
+    billed_per_image = INVOICE_IMAGE_DOLLARS / INVOICE_IMAGES
+    assert capabilities.COST_PER_IMAGE == pytest.approx(billed_per_image, abs=1e-6), (
+        f"this repo charges ${capabilities.COST_PER_IMAGE} per draft still; fal "
+        f"billed {INVOICE_IMAGES} images at ${INVOICE_IMAGE_DOLLARS} over "
+        f"{INVOICE_WINDOW}, which is ${billed_per_image:.4f} each. Re-read the "
+        f"invoice ({INVOICE_SOURCE}) and correct capabilities.IMAGE_PRICE and "
+        f"this row together.")
+
+
+def test_the_endpoint_that_price_belongs_to_is_the_one_a_draft_still_calls():
+    """The mapping the price depends on, checked rather than assumed.
+
+    If `nano2` resolved somewhere else in some path, the invoice line above
+    would be pricing a different model and the correction would be wrong. It
+    does not: DEFAULT_BACKEND is `nano2`, the registry maps it to
+    NANO2_ENDPOINT, and NANO2_ENDPOINT is what the invoice bills.
+    """
+    from backend import assets
+
+    assert assets.NANO2_ENDPOINT == INVOICE_IMAGE_ENDPOINT, (
+        f"draft stills now call {assets.NANO2_ENDPOINT!r}, not the "
+        f"{INVOICE_IMAGE_ENDPOINT!r} the price above was read off. The rate is "
+        f"no longer anchored to anything.")
+    assert assets.DEFAULT_BACKEND == "nano2"
+    assert assets.IMAGE_BACKENDS["nano2"]["endpoint"] == INVOICE_IMAGE_ENDPOINT
+    assert capabilities.IMAGE_PRICE["endpoint"] == INVOICE_IMAGE_ENDPOINT
+
+
+def test_the_image_price_says_where_its_number_came_from():
+    """Same rule as the video rows: a bare float that moves money is not
+    auditable, and this one sat unsourced at 3.8x the billed rate."""
+    missing = [f for f in ("price_basis", "price_source", "price_checked")
+               if not str(capabilities.IMAGE_PRICE.get(f) or "").strip()]
+    assert not missing, (
+        f"the draft-still price cannot be audited back to a source: {missing}")
+
+
+def test_the_script_stage_quotes_stills_at_the_same_rate_as_the_director():
+    """Two literals of one price is how a correction reaches one quote and not
+    the other. `script.COST_PER_IMAGE` was its own
+    `os.environ.get("COST_PER_IMAGE", "0.15")`, so fixing capabilities alone
+    would have left every budget plan sizing stills 3.8x over."""
+    from backend import script
+
+    assert script.COST_PER_IMAGE == capabilities.COST_PER_IMAGE, (
+        f"the script stage quotes stills at ${script.COST_PER_IMAGE} while the "
+        f"Director charges ${capabilities.COST_PER_IMAGE}")

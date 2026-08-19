@@ -42,7 +42,7 @@ for reveals, cinematic 16:9 — never a modern digital / 3D / anime / photograph
 | `config.py` | Env/secret loading (`os.environ.get`) + derived path constants |
 | `script.py` | Claude API script draft (anti-AI-tell system prompt); the **script gate** |
 | `audio.py` | ElevenLabs narration (TTS) + **librosa analysis of the background MUSIC track** (transients, rhythm shifts, silent gaps) to anchor cuts |
-| `assets.py` | fal.ai draft images: default `nano2` (Gemini 3 Pro Image); fallback `flux-general` (NAG); legacy nano / flux-lora |
+| `assets.py` | fal.ai draft images: default `nano2` (`fal-ai/nano-banana`); fallback `flux-general` (NAG); legacy nano / flux-lora |
 | `depth.py` | Depth map → layer separation → gap inpaint (local, free) |
 | `motion.py` | 2.5D parallax + procedural-FX render engine (moviepy/ffmpeg, local, free) |
 | `dashboard.py` | Flask/HTML local UI = the storyboard/budget gate |
@@ -99,11 +99,24 @@ Every shot carries a `motion_type`. Reserve the paid tier for ~8–12 hero shots
   into the **historical art medium authentic to its culture** (`Storyboard.cultural_origin`
   → per-beat `Shot.style_medium`), so variety across cultures never reads as
   inconsistency.
-- Draft images default to **`nano2` — Nano Banana 2 / Gemini 3 Pro Image**
-  (`fal-ai/gemini-3-pro-image-preview`): a reasoning model with strong prompt
+- Draft images default to **`nano2`**: a reasoning model with strong prompt
   adherence + character consistency. `style_medium` leads the positive prompt (plus
   the per-shot character anchors); it has no `negative_prompt` field, so the avoidance
-  list is folded into the prompt. ~$0.15/image (2K).
+  list is folded into the prompt. **$0.0398/image** — that is the account's own
+  billed rate, not a published one (`capabilities.IMAGE_PRICE`). It read `~$0.15`
+  here and in `capabilities.COST_PER_IMAGE` for months, a 3.8x overstatement in
+  every episode quote, because the price was read off the model this file NAMED
+  rather than the endpoint the code CALLS. Overstating is the safe direction — no
+  human was ever charged more than they consented to — but it sized every budget
+  against money that was never going to be spent.
+- **Unresolved, and to be left unresolved without evidence:** this file and
+  `assets.py`'s docstring said the endpoint is `fal-ai/gemini-3-pro-image-preview`;
+  `assets.NANO2_ENDPOINT` is `fal-ai/nano-banana` and its inline comment calls that
+  Gemini 3.1 *Flash* Image. The invoice settles which endpoint RUNS —
+  `fal-ai/nano-banana` is what gets billed for every draft still — so the constant
+  is right and the prose was wrong. It does not settle which model fal serves
+  behind that endpoint, and nobody has checked. Do not "fix" the constant to match
+  a sentence.
 - Cheaper fallback: **`flux-cfg` — `fal-ai/flux-general` (FLUX.1 [dev])**, where the
   negative prompt is applied via **NAG** (`nag_scale`), ~$0.04/image. (`use_real_cfg`
   + a negative prompt 422s that endpoint, so NAG — not real CFG — is used.)
@@ -133,8 +146,10 @@ Every shot carries a `motion_type`. Reserve the paid tier for ~8–12 hero shots
 
 ## fal.ai model IDs
 
-- Draft (Tier 1, default): `fal-ai/gemini-3-pro-image-preview` — Nano Banana 2 / Gemini
-  3 Pro Image (~$0.15/img). Cheaper fallback: `fal-ai/flux-general` (FLUX.1 [dev], NAG
-  negative via `nag_scale`). Legacy: `fal-ai/flux-lora` (trained LoRA),
-  `fal-ai/nano-banana/edit` (style-transfer), `fal-ai/flux/dev`
+- Draft (Tier 1, default): `fal-ai/nano-banana` — what `nano2` actually requests and
+  what the invoice bills, at **$0.0398/img** (see the note under Style consistency;
+  this line used to read `fal-ai/gemini-3-pro-image-preview` at ~$0.15). Cheaper
+  fallback: `fal-ai/flux-general` (FLUX.1 [dev], NAG negative via `nag_scale`).
+  Legacy: `fal-ai/flux-lora` (trained LoRA), `fal-ai/nano-banana/edit`
+  (style-transfer), `fal-ai/flux/dev`
 - Video (Tier 2): `fal-ai/kling-video/v3/image-to-video` or `fal-ai/bytedance/seedance-2.0`

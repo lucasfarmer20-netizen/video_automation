@@ -211,7 +211,47 @@ VIDEO_CAPS: dict[str, dict] = {
 # Local tiers. Free, unlimited length, and the reason this pipeline can afford a
 # ten-minute episode at all.
 LOCAL_COST_PER_SECOND = 0.0
-COST_PER_IMAGE = float(os.environ.get("COST_PER_IMAGE", "0.15"))
+
+# --- what one draft still costs ------------------------------------------------
+#
+# Same provenance discipline as the video rows above, and for the same reason: a
+# bare float that moves real money is not auditable, and this one was wrong by
+# 3.8x for as long as it existed.
+#
+# It sat at 0.15 -- transcribed from a published page for `nano2`, described in
+# assets.py as Gemini 3 Pro Image. The account's own invoice bills the endpoint
+# `nano2` ACTUALLY requests, `fal-ai/nano-banana`, at $0.0398 an image. That is
+# not a page anyone had to re-read; it is fal's billing API answering for
+# itself, and it is the first figure in this repo anchored to what was charged
+# rather than to what was advertised.
+#
+# The direction matters and is stated rather than left to be inferred: an
+# OVERSTATEMENT is the safe direction. Every quote a human consented to was
+# higher than the real bill, so nobody was ever charged more than they agreed
+# to. This is a correctness fix, not an exposure -- which is exactly the
+# opposite of the seedance row, where the table was 3x UNDER and consent was
+# taken for one amount while another was spent.
+#
+# Kept env-overridable, as it always was: fal's prices move, and a figure that
+# can only be corrected by a deploy goes stale in silence.
+IMAGE_PRICE: dict = {
+    "endpoint": "fal-ai/nano-banana",
+    "cost_per_image": 0.0398,
+    "unit": "images",
+    "price_basis": "billed rate for the endpoint `nano2` (DEFAULT_BACKEND) "
+                   "actually calls -- assets.NANO2_ENDPOINT is "
+                   "'fal-ai/nano-banana'. Derived from the account's own line "
+                   "items: 22.0 images billed $0.8756 over 2026-08-15..19, "
+                   "which is $0.0398/image exactly. Resolution is not a factor "
+                   "in the line item; this path requests 2K "
+                   "(assets.NANO2_RESOLUTION).",
+    "price_source": "fal billing API: GET https://api.fal.ai/v1/models/usage "
+                    "(admin key required; see backend/fal_usage.py)",
+    "price_checked": "2026-08-18",
+}
+
+COST_PER_IMAGE = float(os.environ.get(
+    "COST_PER_IMAGE", str(IMAGE_PRICE["cost_per_image"])))
 
 # --- how many units fal actually bills, as OBSERVED --------------------------------
 #
@@ -633,7 +673,14 @@ def estimate_shot_cost(motion_type: str, seconds: float, takes: int = 1,
     if motion_type == "ai_video":
         r = resolve({"duration": seconds}, prefer=[backend] if backend else None)
         cost += float(r.get("estimated_cost") or 0.0)
-    return round(cost, 3)
+    # Four decimals, not three. Every money figure in this repo now rounds to
+    # 4dp, matching ``clip_price``. At the old $0.15 an image, 3dp was exact;
+    # at the billed $0.0398 it is not, and a quote that rounds a still to
+    # $0.040 is a systematic ~0.5% divergence from what fal bills -- which
+    # ``backend.reconcile`` would then report as a real, sustained gap on
+    # every image endpoint. Manufacturing the exact signal the reconciliation
+    # exists to detect is worse than not rounding at all.
+    return round(cost, 4)
 
 
 def table() -> list[dict]:

@@ -1154,7 +1154,9 @@ def quote_shot(ds: "DirectorShot") -> float:
         # charge that cannot happen.
         if clip is not None:
             price += clip
-    return round(price, 3)
+    # 4dp, the same as capabilities.clip_price and estimate_shot_cost -- see
+    # the note there. A still now costs $0.0398 and 3dp quietly rounds it up.
+    return round(price, 4)
 
 
 def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
@@ -1517,7 +1519,7 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                         # it still fails closed, because "money spent, no record" is
                         # the whole defect.
                         n = still_takes(ds)
-                        still_price = round(capabilities.COST_PER_IMAGE * n, 3)
+                        still_price = round(capabilities.COST_PER_IMAGE * n, 4)
                         att_img, how_img = generation.begin(
                             beat_id=plan.beat_id, shot_id=ds.id, signature="",
                             kind="image", backend=img_backend, paid=True,

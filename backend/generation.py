@@ -573,11 +573,16 @@ def fail(beat_id: str, attempt_id: str, error: str) -> GenerationAttempt | None:
     return _finish(beat_id, attempt_id, status=FAILED, error=str(error)[:2000])
 
 
-def _amount(a: GenerationAttempt) -> float:
+def amount(a: GenerationAttempt) -> float:
     """The best figure this record carries for what it cost.
 
     The real one when the provider reported it, otherwise the price the attempt
     was opened for. Never zero merely because nobody wrote the invoice down.
+
+    Public (it was ``_amount``) because ``backend.reconcile`` totals the same
+    rows against fal's invoice and must use the same rule. A second
+    implementation of "what did this attempt cost" is exactly how the quote and
+    the ledger came to disagree in the first place.
 
     A MEASURED cost is used even when it is 0.00, and that is the point of
     checking ``cost_source`` first rather than truthiness. fal answering "0
@@ -706,10 +711,10 @@ def spend(beat_id: str, shot_id: str | None = None) -> dict:
     # float() because sum([]) is the integer 0, so an empty ledger reported
     # `"spent": 0` while a populated one reported `"spent": 0.6`. Harmless in
     # JSON and confusing everywhere else; a money field should have one type.
-    measured_total = round(float(sum(_amount(a) for a in from_fal)), 4)
-    estimated_total = round(float(sum(_amount(a) for a in inferred)), 4)
+    measured_total = round(float(sum(amount(a) for a in from_fal)), 4)
+    estimated_total = round(float(sum(amount(a) for a in inferred)), 4)
     spent = round(measured_total + estimated_total, 4)
-    risk = round(float(sum(_amount(a) for a in unsettled)), 4)
+    risk = round(float(sum(amount(a) for a in unsettled)), 4)
     return {
         "attempts": len(rows),
         "failed": sum(1 for a in rows if a.status == FAILED),

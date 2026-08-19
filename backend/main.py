@@ -43,6 +43,7 @@ def secure_filename(filename: str) -> str:
 # Submodule imports
 from . import atomic, config, manifest, script, assets, audio, motion, timeline, sizzle, metadata, bundle, ledger
 from . import director, spike_identity, planner, capabilities, casting, characters
+from . import fal_usage, reconcile
 from . import stages as stagemod
 from . import generation
 from . import exports
@@ -467,7 +468,7 @@ def save_current_project(sb: Storyboard):
     manifest.save(sb)
 
 
-# nano2 / Gemini 3 Pro Image, ~$0.15 per 2K image. An alias, not a second copy:
+# nano2, billed $0.0398 per image on `fal-ai/nano-banana`. An alias, not a copy:
 # this is what the ledger is CHARGED and capabilities.COST_PER_IMAGE is what the
 # Director QUOTES, and a duplicated literal is precisely how the paid video tier
 # came to quote $0.40 for a clip it recorded at $0.60. COST_PER_IMAGE is
@@ -5681,6 +5682,131 @@ def serve_references_files(filepath: str):
 @app.get("/render/{filepath:path}")
 def serve_render_files(filepath: str):
     return serve_media_files(f"render/{filepath}")
+
+
+# --- Reconciliation: what we recorded vs what fal billed (§6.1) ------------------
+#
+# WHY RUNNING ONE IS A POST.
+#
+# `require_studio_key` only enforces X-Studio-Key on non-GET methods, and this
+# service is deployed --allow-unauthenticated. A GET that reached out to fal's
+# account-wide billing API would therefore be triggerable by anyone with the URL,
+# on every page load, against a rate-limited management endpoint that reads the
+# whole account's billing. So running a reconciliation is a POST -- gated
+# whenever a studio key is configured -- and page loads read the cached result
+# from the GET, which never calls fal.
+#
+# The cache is in-process and deliberately short-lived: the usage series is
+# bucketed hourly, so re-asking inside the TTL cannot learn anything new. It is
+# not durable state and is not meant to be; a cold start reports that nothing has
+# been run yet, which is the honest answer and is not a zero.
+RECONCILE_TTL = float(os.environ.get("RECONCILE_TTL_SECONDS", "900"))
+
+# The default window. Long enough that an hourly-bucketed series has several
+# points in it, short enough that a sustained divergence is still legible against
+# a one-off boundary effect.
+RECONCILE_DEFAULT_DAYS = 7.0
+
+_RECONCILIATION: dict | None = None
+
+
+def _reconcile_projects() -> list[Path]:
+    """Every project directory whose generation ledger should be counted.
+
+    The invoice is account-wide, so reconciling ONE project against it would show
+    fal higher than the record every single time and teach the reader to ignore
+    the difference. Scanning all of them is the only comparison with a meaningful
+    zero.
+    """
+    dirs: list[Path] = []
+    seen: set[Path] = set()
+    for entry in _scan_projects():
+        try:
+            resolved = Path(entry["rel"]).resolve().parent
+        except Exception:  # noqa: BLE001
+            continue
+        if resolved not in seen:
+            seen.add(resolved)
+            dirs.append(resolved)
+    return dirs or [config.project_dir()]
+
+
+@app.post("/api/spend/reconcile")
+async def run_spend_reconciliation(request: Request):
+    """Ask fal what it billed, and set it beside what this pipeline recorded.
+
+    Read-only on both sides. Nothing here writes to a generation ledger, and a
+    difference is never "repaired" into one: the recorded cost is what was
+    observed when the money went, the invoice line is a different observation of
+    a different thing, and overwriting the first with the second destroys the
+    only evidence that they ever disagreed.
+
+    Body, all optional: ``start`` / ``end`` as ISO timestamps, ``days`` for a
+    trailing window, ``refresh`` to bypass the cache.
+    """
+    try:
+        raw = await request.body()
+        data = json.loads(raw) if raw else {}
+    except Exception:  # noqa: BLE001
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    start = str(data.get("start") or "").strip()
+    end = str(data.get("end") or "").strip()
+    try:
+        days = float(data.get("days") or RECONCILE_DEFAULT_DAYS)
+    except (TypeError, ValueError):
+        days = RECONCILE_DEFAULT_DAYS
+    refresh = bool(data.get("refresh"))
+
+    global _RECONCILIATION
+    cached = _RECONCILIATION
+    fresh = (cached is not None and not refresh and not start and not end
+             and cached.get("days") == days
+             and (_dt.datetime.now(_dt.timezone.utc)
+                  - cached["checked_at"]).total_seconds() < RECONCILE_TTL)
+    if fresh:
+        return {"ok": True, "cached": True,
+                "checked_at": cached["checked_at"].isoformat(timespec="seconds"),
+                **cached["payload"]}
+
+    payload = reconcile.report(start, end, days=days,
+                               project_dirs=_reconcile_projects())
+    now = _dt.datetime.now(_dt.timezone.utc)
+    _RECONCILIATION = {"checked_at": now, "days": days, "payload": payload}
+    return {"ok": True, "cached": False,
+            "checked_at": now.isoformat(timespec="seconds"), **payload}
+
+
+@app.get("/api/spend/reconcile")
+def last_spend_reconciliation():
+    """The last reconciliation, without calling fal.
+
+    Answers ``ran: False`` when there is none, rather than an empty report. A
+    reconciliation that never ran and one that found no difference are opposite
+    facts, and they render identically the moment either is allowed back as
+    zeros.
+    """
+    cached = _RECONCILIATION
+    if cached is None:
+        return {
+            "ok": True,
+            "ran": False,
+            "available": False,
+            "reason": "not_run",
+            "admin_key_configured": fal_usage.configured(),
+            "summary": ("No reconciliation has been run in this process. POST to "
+                        "this path to ask fal for the account's line items."),
+        }
+    return {
+        "ok": True,
+        "ran": True,
+        "cached": True,
+        "checked_at": cached["checked_at"].isoformat(timespec="seconds"),
+        "admin_key_configured": fal_usage.configured(),
+        **cached["payload"],
+    }
 
 
 # Serving the static UI (Next.js static export fallback handler)

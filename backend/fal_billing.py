@@ -37,9 +37,16 @@ Two honesty limits, stated because this module is about not overclaiming:
   what it billed for the request; the rate is fal's live list price. It is not
   the line on the account, because account-level discounts are not visible
   here: ``GET /v1/models/usage``, the per-line-item billing API, answers 403 to
-  the key this pipeline holds -- it requires an admin key -- so there is no
-  after-the-fact reconciliation available to us. The human's fal billing
-  dashboard remains the only invoice.
+  the ``FAL_KEY`` this module holds -- it requires an admin key.
+
+  An earlier version of this note went on to say that there was therefore "no
+  after-the-fact reconciliation available to us". That was true of this key and
+  false of the account: with ``FAL_ADMIN_KEY`` the same endpoint answers 200,
+  and ``backend.fal_usage`` reads it. What reconciliation still cannot do is
+  join a line item to a request -- fal's line items carry no request id -- so it
+  is per-endpoint over a window and never per-attempt. See
+  ``backend.reconcile``. That is a THIRD fact beside this one, not a correction
+  of it: nothing there may overwrite what this module measured.
 * Absent means absent. Every failure path here returns ``None`` rather than a
   number, and the caller then records nothing rather than promoting an estimate
   into a field that means "measured". A cost this module could not obtain must
