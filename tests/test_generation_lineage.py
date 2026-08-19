@@ -279,7 +279,7 @@ def scene(tmp_path, monkeypatch):
 
     calls = {"paid": 0}
 
-    def fake_paid(ds_, synth, sb_, out_dir, log=print):
+    def fake_paid(ds_, synth, sb_, out_dir, log=print, on_billed=None):
         calls["paid"] += 1
         target = Path(out_dir) / f"{ds_.id}.mp4"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -370,7 +370,7 @@ def test_a_crash_after_charging_does_not_buy_the_clip_again(scene):
     """
     director, _, sb, render_dir, calls = scene
 
-    def charge_then_die(ds_, synth, sb_, out_dir, log=print):
+    def charge_then_die(ds_, synth, sb_, out_dir, log=print, on_billed=None):
         calls["paid"] += 1
         target = Path(out_dir) / f"{ds_.id}.mp4"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -409,7 +409,7 @@ def test_abandoning_a_stuck_attempt_unblocks_the_retry(scene):
     the risk; the machine never makes that call for them."""
     director, _, sb, render_dir, calls = scene
 
-    def charge_then_die(ds_, synth, sb_, out_dir, log=print):
+    def charge_then_die(ds_, synth, sb_, out_dir, log=print, on_billed=None):
         calls["paid"] += 1
         raise KeyboardInterrupt("container reclaimed")
 

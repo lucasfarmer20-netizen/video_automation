@@ -81,7 +81,7 @@ def _scene(tmp_path, monkeypatch, *, seconds: float, backend: str = "",
 
     calls = {"paid": 0, "stills": 0}
 
-    def fake_paid(ds_, synth, sb_, out_dir, log=print):
+    def fake_paid(ds_, synth, sb_, out_dir, log=print, on_billed=None):
         calls["paid"] += 1
         target = Path(out_dir) / f"{ds_.id}.mp4"
         target.parent.mkdir(parents=True, exist_ok=True)

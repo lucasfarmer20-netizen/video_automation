@@ -52,7 +52,7 @@ def test_a_failing_compile_does_not_re_bill_the_paid_clip(scene, monkeypatch):
     plan, sb, render_dir = scene
     calls = {"paid": 0}
 
-    def fake_paid(ds, synth, sb_, out_dir, log=print):
+    def fake_paid(ds, synth, sb_, out_dir, log=print, on_billed=None):
         calls["paid"] += 1
         target = Path(out_dir) / f"{ds.id}.mp4"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -80,7 +80,7 @@ def test_the_paid_clip_is_recorded_before_anything_that_can_fail(scene, monkeypa
     """The record and the bytes must not be able to diverge."""
     plan, sb, render_dir = scene
 
-    def fake_paid(ds, synth, sb_, out_dir, log=print):
+    def fake_paid(ds, synth, sb_, out_dir, log=print, on_billed=None):
         (Path(out_dir) / f"{ds.id}.mp4").write_bytes(b"PAID-BYTES")
 
     monkeypatch.setattr(director, "generate_paid_clip", fake_paid)
@@ -105,7 +105,7 @@ def test_a_zero_byte_download_is_not_mistaken_for_a_paid_clip(scene, monkeypatch
     shot_dir.mkdir(parents=True, exist_ok=True)
     (shot_dir / "s011.01.mp4").write_bytes(b"")   # truncated download
 
-    def fake_paid(ds, synth, sb_, out_dir, log=print):
+    def fake_paid(ds, synth, sb_, out_dir, log=print, on_billed=None):
         calls["paid"] += 1
         (Path(out_dir) / f"{ds.id}.mp4").write_bytes(b"PAID-BYTES")
 
@@ -131,7 +131,7 @@ def test_a_free_render_left_at_the_target_is_not_mistaken_for_paid(scene, monkey
     shot_dir.mkdir(parents=True, exist_ok=True)
     (shot_dir / "s011.01.mp4").write_bytes(b"FREE-PARALLAX-RENDER")
 
-    def fake_paid(ds, synth, sb_, out_dir, log=print):
+    def fake_paid(ds, synth, sb_, out_dir, log=print, on_billed=None):
         calls["paid"] += 1
         (Path(out_dir) / f"{ds.id}.mp4").write_bytes(b"PAID-BYTES")
 
@@ -151,7 +151,7 @@ def test_a_clip_bought_for_different_inputs_is_not_reused(scene, monkeypatch):
     plan, sb, render_dir = scene
     calls = {"paid": 0}
 
-    def fake_paid(ds, synth, sb_, out_dir, log=print):
+    def fake_paid(ds, synth, sb_, out_dir, log=print, on_billed=None):
         calls["paid"] += 1
         (Path(out_dir) / f"{ds.id}.mp4").write_bytes(b"PAID-BYTES")
 
@@ -178,7 +178,7 @@ def test_an_unchanged_shot_is_still_never_re_billed(scene, monkeypatch):
     plan, sb, render_dir = scene
     calls = {"paid": 0}
 
-    def fake_paid(ds, synth, sb_, out_dir, log=print):
+    def fake_paid(ds, synth, sb_, out_dir, log=print, on_billed=None):
         calls["paid"] += 1
         (Path(out_dir) / f"{ds.id}.mp4").write_bytes(b"PAID-BYTES")
 
@@ -210,7 +210,7 @@ def test_a_recorded_paid_clip_that_got_truncated_is_regenerated(scene, monkeypat
     plan, sb, render_dir = scene
     calls = {"paid": 0}
 
-    def fake_paid(ds, synth, sb_, out_dir, log=print):
+    def fake_paid(ds, synth, sb_, out_dir, log=print, on_billed=None):
         calls["paid"] += 1
         (Path(out_dir) / f"{ds.id}.mp4").write_bytes(b"PAID-BYTES")
 
