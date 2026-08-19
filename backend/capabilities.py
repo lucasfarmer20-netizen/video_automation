@@ -70,6 +70,14 @@ CONTINUOUS: dict = {
     "price_basis": "unknown model — priced at the dearest configured rate",
     "price_source": "",
     "price_checked": "",
+    # Same argument, one dimension over: a model nobody has priced, asked for
+    # audio, is quoted at the dearest configured WITH-AUDIO rate. Reachable only
+    # if a future row declares supports_generate_audio and omits its own audio
+    # rate -- test_fal_tariff refuses that -- so this is the backstop under the
+    # test rather than the policy.
+    "cost_per_second_audio": 0.40,
+    "price_basis_audio": "unknown model — priced at the dearest configured "
+                         "with-audio rate",
     "needs_start_image": True,
     "supports_reference_image": False,
     "supports_character_reference": False,
@@ -95,6 +103,16 @@ VIDEO_CAPS: dict[str, dict] = {
                        "so it gets the 720p default.",
         "price_source": "https://fal.ai/models/bytedance/seedance-2.0/image-to-video",
         "price_checked": "2026-08-16",
+        # Audio is free on this one, and that is a transcription, not an
+        # assumption: fal's page says "audio generation is included at no extra
+        # cost regardless of the generate_audio setting". Stated as its own
+        # number anyway, because "the audio rate happens to equal the silent
+        # rate" and "nobody filled the audio rate in" must not look the same to
+        # a reader or to clip_price.
+        "cost_per_second_audio": 0.3024,
+        "price_basis_audio": "same as silent — fal includes audio generation at "
+                             "no extra cost regardless of generate_audio",
+        "price_checked_audio": "2026-08-18",
         "needs_start_image": True,
         "supports_reference_image": False,
         "supports_character_reference": False,
@@ -108,16 +126,28 @@ VIDEO_CAPS: dict[str, dict] = {
         "duration_wire_type": 'string',
         "duration_default": '8s',
         "supports_generate_audio": True,
-        # 0.40 was the WITH-AUDIO rate. director.generate_paid_clip sends
-        # generate_audio=False unconditionally and says why (the beat's narration,
-        # SFX and music are mixed separately), so this path is billed at half
-        # that. Priced for the request this code actually makes; if audio is ever
-        # turned on here, this doubles.
+        # THE ROW WHERE AUDIO IS THE PRICE. 0.20 is the silent rate and 0.40 is
+        # the with-audio rate; on this model the toggle is a 2x difference, the
+        # largest in the table.
+        #
+        # This comment used to say "director.generate_paid_clip sends
+        # generate_audio=False unconditionally ... if audio is ever turned on
+        # here, this doubles", and stop there. It was true of the compile path
+        # and false of the two beat-level paths in main.py, which pass the
+        # studio's audio toggle straight through to fal -- so the row's stated
+        # basis and the request those paths actually made disagreed, silently,
+        # at double. Both figures now live here as numbers, and clip_price picks
+        # between them from the generate_audio of the request being priced.
         "cost_per_second": 0.20,
         "price_basis": "720p/1080p WITHOUT audio. With audio it is 0.40/s; 4K is "
                        "0.40 silent and 0.60 with audio.",
         "price_source": "https://fal.ai/models/fal-ai/veo3.1/image-to-video",
         "price_checked": "2026-08-16",
+        "cost_per_second_audio": 0.40,
+        "price_basis_audio": "720p/1080p WITH audio (this pipeline pins no "
+                             "resolution, so it gets that default tier; 4K "
+                             "would be 0.60/s with audio)",
+        "price_checked_audio": "2026-08-18",
         "needs_start_image": True,
         "supports_reference_image": True,
         "supports_character_reference": False,
@@ -375,7 +405,7 @@ def billed_units(key: str, generate_seconds: float) -> tuple[float, str]:
         f"{at}), so this is the published tariff and not a measured quantity")
 
 
-def tariff_price(key: str, units: float) -> float:
+def tariff_price(key: str, units: float, *, generate_audio: bool = False) -> float:
     """fal's published rate times a quantity of billing units.
 
     Split out from :func:`clip_price` so the two questions stop sharing one
@@ -383,8 +413,14 @@ def tariff_price(key: str, units: float) -> float:
     tests/test_fal_tariff.py, and knows nothing about how many units a request
     turns into. ``clip_price`` answers the quantity question first and then
     calls this.
+
+    ``generate_audio`` belongs on THIS side of the split, not the other. It
+    selects which published rate a unit is charged at -- veo_3_1 is 0.20/s silent
+    and 0.40/s with audio -- and says nothing about how many units there will be.
+    See :func:`rate_per_second`.
     """
-    return round(float(units) * float(spec(key)["cost_per_second"]), 4)
+    rate = rate_per_second(key, generate_audio=generate_audio)
+    return round(float(units) * rate, 4)
 
 # --- what one Tier-C generation costs, for the quote AND for the ledger ---------
 #
@@ -423,13 +459,41 @@ def tariff_price(key: str, units: float) -> float:
 # for one number while another is recorded.
 
 
-def clip_price(key: str, generate_seconds: float) -> float:
+def rate_per_second(key: str, *, generate_audio: bool = False) -> float:
+    """The per-second rate for the request as it will actually be sent.
+
+    Audio is a price dimension on exactly the models that accept an audio flag,
+    because ``video_arguments`` omits ``generate_audio`` entirely for the rest --
+    a caller asking for audio on kling cannot be billed for audio, since kling is
+    never told about it. So the silent rate is the right answer there, and that
+    is a fact about this pipeline's request shape, not a rounding-down.
+
+    For a model that DOES take the flag, the rate comes from its own transcribed
+    ``cost_per_second_audio``. The fallback underneath is deliberately the dearer
+    of (this model's silent rate, the dearest configured audio rate): a row that
+    declares it supports audio and does not say what audio costs is the one case
+    where nothing is known, and the direction that must not happen is quoting a
+    human less than the call turns out to cost.
+    """
+    caps = spec(key)
+    silent = float(caps["cost_per_second"])
+    if not generate_audio or not caps.get("supports_generate_audio"):
+        return silent
+    stated = caps.get("cost_per_second_audio")
+    if stated is not None:
+        return float(stated)
+    return max(silent, float(CONTINUOUS["cost_per_second_audio"]))
+
+
+def clip_price(key: str, generate_seconds: float, *,
+               generate_audio: bool = False) -> float:
     """Best-effort price of one Tier-C generation. Not a bound — see above.
 
     ``generate_seconds`` is the length actually requested of the model, not the
     editorial length of the shot -- a 3.34s shot billed as kling's 5s minimum is
     billed for five seconds. Callers get that number from
-    :func:`legal_durations` / :func:`resolve`, never from ``Shot.duration``.
+    :func:`legal_durations` / :func:`resolve` / :func:`clamp_duration`, never
+    from ``Shot.duration``.
 
     The requested duration is NOT necessarily the billed quantity, which is a
     thing this function used to assume and fal does not honour: wan v2.7 bills 6
@@ -437,17 +501,39 @@ def clip_price(key: str, generate_seconds: float) -> float:
     :func:`billed_units` first, and only then through the published tariff. That
     substitution is the whole of the fix; the rate itself was always right.
 
+    ``generate_audio`` picks WHICH published rate, and the two questions are
+    orthogonal by construction: :func:`billed_units` answers how many units the
+    request becomes, :func:`rate_per_second` answers what a unit of it costs.
+    Audio changes only the second, and only on the models fal is actually sent an
+    audio flag for.
+
+    IT DEFAULTS TO FALSE, and the default is load-bearing rather than a
+    convenience. Every caller that existed before this argument did --
+    :func:`resolve`, and through it ``director.paid_clip_price`` and the quote on
+    the compile button -- prices a request that sends ``generate_audio=False``
+    unconditionally (``director.generate_paid_clip``). Defaulting the other way
+    would move a number a human has already been quoted, in the one function
+    where the quote and the ledger are supposed to be the same call. Adding the
+    dimension must not change any existing answer; the only new answers are for
+    the requests that actually carry audio.
+
     Still not a bound. Below the observed floor the figure is anchored to a real
     billed quantity; above it, it is the published tariff times a duration
     nothing has ever confirmed. :func:`clip_price_basis` says which you have, and
     a caller taking consent for this number should be prepared to say so.
     """
     units, _ = billed_units(key, generate_seconds)
-    return tariff_price(key, units)
+    return tariff_price(key, units, generate_audio=generate_audio)
 
 
 def clip_price_basis(key: str, generate_seconds: float) -> str:
-    """Why :func:`clip_price` is the number it is, in one sentence, for a human."""
+    """Why :func:`clip_price` is the number it is, in one sentence, for a human.
+
+    About the QUANTITY only. Which rate that quantity is multiplied by -- silent
+    or with audio -- is not in doubt in the way the billed unit count is: it is
+    published, transcribed and anchored, and the caller knows which one it asked
+    for. What nobody knows is fal's billing rule, and that is what this says.
+    """
     return billed_units(key, generate_seconds)[1]
 
 
@@ -636,7 +722,12 @@ def resolve(intent: dict, prefer: list[str] | None = None) -> dict:
             continue
         candidates.append({
             "backend": key, "label": caps["label"], "generate_seconds": picked,
-            "estimated_cost": clip_price(key, picked),
+            # No generate_audio here, on purpose and not by omission: this is the
+            # coverage-compile quote, and director.generate_paid_clip sends
+            # generate_audio=False unconditionally. Priced for the request that
+            # path actually makes. The beat-level paths honour the studio's audio
+            # toggle and therefore pass their own flag (see backend/paid_video.py).
+            "estimated_cost": clip_price(key, picked, generate_audio=False),
             "note": note,
         })
 
