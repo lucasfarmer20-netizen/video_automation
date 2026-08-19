@@ -886,18 +886,27 @@ def _total_spend(spends: list[dict]) -> dict:
     spent = round(float(sum(s["spent"] for s in spends)), 4)
     risk = round(float(sum(s["at_risk"] for s in spends)), 4)
     at_risk_attempts = sum(s["at_risk_attempts"] for s in spends)
-    summary = f"${spent:.2f} billed"
-    if at_risk_attempts:
-        summary += (f" • ${risk:.2f} at risk on {at_risk_attempts} attempt"
-                    f"{'s' if at_risk_attempts != 1 else ''} whose provider "
-                    f"outcome was never recorded")
+    # The measured/estimated split has to survive aggregation or the scene total
+    # re-creates the defect the beat total just lost: one measured beat and one
+    # estimated beat summed into a single confident number.
+    measured = round(float(sum(s["measured"] for s in spends)), 4)
+    estimated = round(float(sum(s["estimated"] for s in spends)), 4)
+    measured_attempts = sum(s["measured_attempts"] for s in spends)
+    estimated_attempts = sum(s["estimated_attempts"] for s in spends)
     return {
         "attempts": sum(s["attempts"] for s in spends),
         "failed": sum(s["failed"] for s in spends),
         "paid_attempts": sum(s["paid_attempts"] for s in spends),
         "spent": spent,
+        "measured": measured,
+        "estimated": estimated,
+        "measured_attempts": measured_attempts,
+        "estimated_attempts": estimated_attempts,
         "at_risk": risk,
         "at_risk_attempts": at_risk_attempts,
         "spend_is_certain": not at_risk_attempts,
-        "summary": summary,
+        "spend_is_measured": not estimated_attempts,
+        "summary": generation.spend_summary(spent, risk, at_risk_attempts,
+                                            measured, estimated,
+                                            estimated_attempts),
     }

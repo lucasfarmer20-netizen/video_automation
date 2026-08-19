@@ -110,7 +110,7 @@ def test_a_paid_shot_that_fails_after_its_clip_is_bought_is_never_retried(
                                   motion_types=["ai_video"])
     calls = {"paid": 0, "normalize": 0}
 
-    def fake_paid(ds, synth, sb_, out_dir, log=print):
+    def fake_paid(ds, synth, sb_, out_dir, log=print, on_billed=None):
         calls["paid"] += 1
         target = Path(out_dir) / f"{ds.id}.mp4"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -155,7 +155,7 @@ def test_a_paid_shot_that_fails_during_generation_is_never_retried(
                                   motion_types=["ai_video"])
     calls = {"paid": 0}
 
-    def dead_paid(ds, synth, sb_, out_dir, log=print):
+    def dead_paid(ds, synth, sb_, out_dir, log=print, on_billed=None):
         calls["paid"] += 1
         raise BrokenPipeError(32, "Broken pipe")
 

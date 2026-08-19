@@ -1143,7 +1143,7 @@ def quote_shot(ds: "DirectorShot") -> float:
 
 
 def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
-                       out_dir: Path, log=print) -> Path:
+                       out_dir: Path, log=print, on_billed=None) -> Path:
     """Generate one Tier-C coverage clip from its own still.
 
     Deliberately *not* a capability router — that is Spike C. This resolves the
@@ -1162,12 +1162,19 @@ def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
     by ``timeline.build_preview``, and every other clip in the pipeline is silent
     — a sub-clip arriving with its own audio track would be both wasted spend and
     a stream mismatch at concat.
+
+    ``on_billed``, if given, is called once with what fal says it billed for this
+    request — see ``backend.fal_billing``. It is a callback rather than a second
+    return value because the measurement is strictly optional: fal may not report
+    one, and this function's contract is "the clip, or an exception", which a
+    missing price must not disturb.
     """
     import fal_client
 
     from . import assets
 
     from . import capabilities
+    from . import fal_billing
 
     want = float(ds.duration)
 
@@ -1211,10 +1218,29 @@ def generate_paid_clip(ds: DirectorShot, synth: Shot, sb: Storyboard,
     log(f"  PAID video for {ds.id} via {endpoint} ({dur_int}s from {Path(local_still).name})")
     arguments["image_url"] = fal_client.upload_file(str(local_still))
 
-    result = fal_client.subscribe(endpoint, arguments=arguments, with_logs=False)
+    # The request id is fal's handle on the thing we are about to be charged
+    # for, and `subscribe` does not return it. Without it there is no way to ask
+    # fal afterwards what it billed, and no way for a human to find this clip's
+    # line on their fal dashboard. It is captured here, before the call can
+    # fail, so even a request that dies mid-flight leaves the id behind.
+    request_ids: list[str] = []
+    result = fal_client.subscribe(endpoint, arguments=arguments, with_logs=False,
+                                  on_enqueue=request_ids.append)
     url = (result.get("video") or {}).get("url") or (result.get("file") or {}).get("url")
     if not url:
         raise PlanError(f"{ds.id}: no video URL returned by {endpoint}")
+
+    if on_billed is not None and request_ids:
+        # After the money is gone and before anything can go wrong with it. A
+        # re-fetch of a completed result is free, and measure_quietly swallows
+        # its own failures, so the worst case here is that the attempt records
+        # our estimate exactly as it did before this existed.
+        billed = fal_billing.measure_quietly(endpoint, request_ids[0], log=log)
+        if billed is not None:
+            log(f"  fal billed {billed['units']} {billed['unit']} "
+                f"× ${billed['unit_price']} = ${billed['cost']:.4f} "
+                f"(we estimated ${capabilities.clip_price(key, dur_int):.4f})")
+        on_billed(billed)
 
     dest = out_dir / f"{ds.id}.mp4"
     assets._download(url, dest)
@@ -1601,8 +1627,10 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                                                     f"before dispatch: {exc}")
                                     raise
                                 # --- dispatch --------------------------------------
+                                billed: list = []
                                 try:
-                                    generate_paid_clip(ds, synth, sb, out_dir, log=log)
+                                    generate_paid_clip(ds, synth, sb, out_dir, log=log,
+                                                       on_billed=billed.append)
                                 except BaseException as exc:
                                     # NOT marked failed. Once the provider has been
                                     # called, whether it billed is unknown, and
@@ -1616,23 +1644,24 @@ def _compile_locked(plan: CoveragePlan, beat: Shot, sb: Storyboard, render_dir: 
                                 ds.paid_clip = ds.clip
                                 ds.paid_signature = want
                                 ds.selected_attempt = att.id
-                                # cost= is left unset ON PURPOSE. GenerationAttempt
-                                # documents `cost` as "the real one when the provider
-                                # reported it" and `estimated_cost` as ours, and
-                                # _amount() prefers the first -- so writing our own
-                                # figure into `cost` made every attempt look like a
-                                # confirmed invoice and left the distinction between
-                                # the two fields meaning nothing.
+                                # cost= is still left unset ON PURPOSE: a bare
+                                # figure has no provenance, and writing our own
+                                # into `cost` is what made every attempt read as a
+                                # confirmed invoice.
                                 #
-                                # fal does not report one. fal_client.subscribe
-                                # returns the model's output payload and nothing
-                                # else; it surfaces no billing amount and no response
-                                # headers, so there is no billed figure to record on
-                                # this path. Saying that plainly is the honest answer
-                                # -- the total is unchanged, because _amount() falls
-                                # back to estimated_cost, but it is now labelled as
-                                # the estimate it has always been.
-                                generation.succeed(plan.beat_id, att.id, ds.clip)
+                                # `measurement` is the one thing that may claim
+                                # otherwise, and it is fal's own answer or nothing.
+                                # An earlier version of this comment said fal does
+                                # not report a billed amount at all -- that was
+                                # wrong about the API, not just incomplete.
+                                # fal_client.subscribe drops the response headers,
+                                # and `x-fal-billable-units` is in them; the number
+                                # was one free HTTP GET away the whole time.
+                                # `billed` is empty whenever fal would not say, and
+                                # then the attempt keeps its estimate, labelled as
+                                # an estimate.
+                                generation.succeed(plan.beat_id, att.id, ds.clip,
+                                                   measurement=(billed or [None])[0])
                                 save_plan(plan)
                     else:
                         # Tier A/B. Every charge this shot can incur is already

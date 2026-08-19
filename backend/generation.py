@@ -47,6 +47,12 @@ FAILED = "failed"
 # provider did, which is a different money fact from an ordinary fail().
 ABANDONED = "abandoned: "
 
+# The value `cost_source` takes when `cost` is fal's own figure for the request
+# rather than this repo's estimate. Re-exported from backend.fal_billing so the
+# two modules cannot drift to different spellings of the same claim.
+MEASURED = "measured"
+_COST_SOURCES = ("", MEASURED)
+
 
 def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
@@ -67,10 +73,32 @@ class GenerationAttempt:
     backend: str = ""
     paid: bool = False
     cost: float = 0.0
+    # Where `cost` came from. Empty means nobody said -- which is every row this
+    # repo wrote before fal's billed quantity was read back, and every row whose
+    # provider does not report one. MEASURED is a positive claim, set only by
+    # succeed() from a `measurement` that backend.fal_billing obtained from fal
+    # itself, and it is what lets spend() report which money was measured and
+    # which was inferred. Deliberately not derived from `cost > 0`: an estimate
+    # written into `cost` looks identical to a bill, and this codebase already
+    # learned (see `outcome_unknown`) that money must be classified by a
+    # recorded fact rather than by inference.
+    cost_source: str = ""
+    # fal's own count of what it billed this request for, and the unit it
+    # counted in ("seconds", "megapixels", "compute seconds"). Kept beside the
+    # money so the figure is auditable: a human comparing this ledger against
+    # their fal dashboard needs the quantity and the request id, not just a
+    # total that either matches or does not.
+    billable_units: float = 0.0
+    billing_unit: str = ""
+    provider_request_id: str = ""
     # What this attempt was expected to cost, recorded BEFORE the provider was
     # called. It is the only figure available for an attempt whose outcome
     # nobody ever recorded -- and reporting the price we were about to pay is
     # the whole difference between "$0.60 may have gone" and a silent $0.00.
+    #
+    # It is kept even once a measured cost arrives, rather than overwritten:
+    # the two disagreeing is the useful signal. The first measured pair had wan
+    # v2.7 asked for 4s and billed for 6, so the estimate was 33% under.
     estimated_cost: float = 0.0
     # The provider was called and never told us what it did. Written by
     # in_doubt() and abandon(), which are the two ways that happens. Kept as a
@@ -137,8 +165,9 @@ _SHAPE: dict[str, type] = {
     "status": str, "kind": str, "backend": str, "signature": str,
     "idempotency_key": str, "output": str, "error": str,
     "started_at": str, "finished_at": str,
+    "cost_source": str, "billing_unit": str, "provider_request_id": str,
     "attempt": int, "paid": bool, "outcome_unknown": bool,
-    "cost": float, "estimated_cost": float,
+    "cost": float, "estimated_cost": float, "billable_units": float,
 }
 _REQUIRED = ("id", "shot_id", "beat_id", "attempt")
 
@@ -175,6 +204,15 @@ def _row(beat_id: str, index: int, raw) -> GenerationAttempt:
                 f"{where}: {key}={value!r} is not a valid "
                 f"{_SHAPE[key].__name__}. Inspect the file; it has NOT been "
                 f"overwritten.")
+    if raw.get("cost_source", "") not in _COST_SOURCES:
+        # Same reasoning as the status check below. `cost_source` decides whether
+        # a figure is reported as measured or as inferred, so a value neither
+        # branch recognises would fall to "inferred" and quietly demote a real
+        # bill -- or, worse under a future spelling, promote an estimate.
+        raise LedgerUnreadable(
+            f"{where} has cost_source {raw.get('cost_source')!r}, which is "
+            f"neither empty nor {MEASURED!r}. Refusing to guess whether that "
+            f"figure was measured or estimated.")
     if raw.get("status", RUNNING) not in _STATUSES:
         raise LedgerUnreadable(
             f"{where} has status {raw.get('status')!r}, which no guard here "
@@ -417,17 +455,23 @@ def _finish(beat_id: str, attempt_id: str, *, status: str,
 
 def succeed(beat_id: str, attempt_id: str, output: str,
             cost: float = 0.0,
-            estimated_cost: float | None = None) -> GenerationAttempt | None:
+            estimated_cost: float | None = None,
+            measurement: dict | None = None) -> GenerationAttempt | None:
     """Close an attempt as succeeded.
 
-    ``cost`` is THE PROVIDER'S figure and nothing else. Leave it at zero when the
-    provider did not report one -- which, for every fal endpoint this pipeline
-    calls, is always: ``fal_client.subscribe`` returns the model's output payload
-    and exposes neither a billing amount nor the response headers. ``_amount()``
-    then falls back to ``estimated_cost``, so the total is unchanged and the
-    number is labelled as the estimate it is. Callers used to pass their own
-    figure here, which made every attempt read as a confirmed invoice and left
-    the distinction between the two fields meaning nothing.
+    ``measurement`` is the ONLY way an attempt comes to claim a measured cost.
+    Pass what :func:`backend.fal_billing.measure` returned -- fal's own billed
+    quantity for the request, times fal's own live unit price -- and this
+    records the amount, the quantity, the unit and the provider request id, and
+    marks ``cost_source`` as measured. Pass ``None``, which is what happens
+    whenever fal will not say, and the attempt keeps reporting its estimate,
+    labelled as one.
+
+    ``cost`` is a bare figure with no provenance. It still counts toward the
+    total, because money that was spent is money that was spent, but it does NOT
+    make the attempt measured: only a ``measurement`` does that. The distinction
+    exists because callers used to pass their own estimate here, which made
+    every attempt read as a confirmed invoice.
 
     ``estimated_cost`` revises OUR figure when the true scope is only known once
     the call returns -- a draft batch whose variation count decides the price.
@@ -436,7 +480,35 @@ def succeed(beat_id: str, attempt_id: str, output: str,
     changes: dict = {"output": output, "cost": cost}
     if estimated_cost is not None:
         changes["estimated_cost"] = float(estimated_cost)
+    if measurement is not None:
+        changes.update(_measured_changes(measurement))
     return _finish(beat_id, attempt_id, status=SUCCEEDED, **changes)
+
+
+def _measured_changes(measurement: dict) -> dict:
+    """The fields a fal measurement writes, or nothing if it is not one.
+
+    Validated here rather than trusted, because ``measurement`` crosses a
+    network boundary before it gets this far. A malformed one must leave the
+    attempt estimated -- reporting an unusable payload as measured would be the
+    exact lie this whole change exists to remove -- so anything that does not
+    parse yields ``{}`` and the estimate stands.
+    """
+    if not isinstance(measurement, dict):
+        return {}
+    amount = measurement.get("cost")
+    units = measurement.get("units")
+    for value in (amount, units):
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(value) or value < 0):
+            return {}
+    return {
+        "cost": float(amount),
+        "cost_source": MEASURED,
+        "billable_units": float(units),
+        "billing_unit": str(measurement.get("unit") or ""),
+        "provider_request_id": str(measurement.get("request_id") or ""),
+    }
 
 
 def in_doubt(beat_id: str, attempt_id: str, reason: str) -> GenerationAttempt | None:
@@ -494,8 +566,27 @@ def _amount(a: GenerationAttempt) -> float:
 
     The real one when the provider reported it, otherwise the price the attempt
     was opened for. Never zero merely because nobody wrote the invoice down.
+
+    A MEASURED cost is used even when it is 0.00, and that is the point of
+    checking ``cost_source`` first rather than truthiness. fal answering "0
+    billable units" is a fact about the bill; falling through to the estimate
+    there would report a number we invented over a number fal gave us, on the
+    one row where we actually know.
     """
+    if measured(a):
+        return a.cost
     return a.cost if a.cost else a.estimated_cost
+
+
+def measured(a: GenerationAttempt) -> bool:
+    """``cost`` is fal's own figure for this request, not this repo's estimate.
+
+    A positive recorded claim, never inferred from the number being present.
+    Rows written before fal's billed quantity was read back carry no
+    ``cost_source`` and are therefore estimated -- which is what they always
+    were. Nothing backfills them: absent means absent.
+    """
+    return a.cost_source == MEASURED
 
 
 def billed(a: GenerationAttempt) -> bool:
@@ -526,6 +617,44 @@ def at_risk(a: GenerationAttempt) -> bool:
     return a.paid and not billed(a) and (a.status == RUNNING or a.outcome_unknown)
 
 
+def spend_summary(spent: float, risk: float, at_risk_attempts: int,
+                  measured_total: float, estimated_total: float,
+                  estimated_attempts: int) -> str:
+    """The one line a caller renders verbatim. Shared with planner._total_spend
+    so a scene total cannot describe itself differently from a beat.
+
+    Two questions, kept apart because they are different questions:
+
+    * how much may have gone and nobody recorded -- ``at risk``;
+    * how much of what DID go was measured against fal rather than inferred from
+      our own price table.
+
+    The second is new, and it is the reason this function exists. The line used
+    to read "$1.20 billed" over two figures that fal was never asked about. It
+    now says which part of a total is a measurement and which part is our
+    arithmetic, and names the fal billing dashboard as the only invoice --
+    because account discounts are not visible to this pipeline's key.
+    """
+    line = f"${spent:.2f} spent"
+    if measured_total and estimated_total:
+        line += (f" (${measured_total:.2f} measured against fal, "
+                 f"${estimated_total:.2f} estimated on {estimated_attempts} "
+                 f"attempt{'s' if estimated_attempts != 1 else ''} fal did not "
+                 f"report a billed amount for)")
+    elif estimated_total or estimated_attempts:
+        line += (f" — ESTIMATED, not measured: fal reported no billed amount "
+                 f"for any of the {estimated_attempts} paid attempt"
+                 f"{'s' if estimated_attempts != 1 else ''}. Your fal billing "
+                 f"dashboard is the only record of what was actually charged.")
+    elif measured_total:
+        line += " (measured against fal's own billed quantity)"
+    if at_risk_attempts:
+        line += (f" • ${risk:.2f} at risk on {at_risk_attempts} attempt"
+                 f"{'s' if at_risk_attempts != 1 else ''} whose provider "
+                 f"outcome was never recorded")
+    return line
+
+
 def spend(beat_id: str, shot_id: str | None = None) -> dict:
     """What has been billed, and what may have been, per §6.1.
 
@@ -534,10 +663,23 @@ def spend(beat_id: str, shot_id: str | None = None) -> dict:
     never folded into it, because a total that mixes certain with uncertain is
     accurate about nothing.
 
-    The two are separate keys and the pair is stated again in ``summary``, so a
-    caller that renders a total to a human has the at-risk figure in hand
-    without having to know it exists. ``spend_is_certain`` is the one-line
-    version of the same question.
+    ``spent`` splits again into ``measured`` and ``estimated``. That split is
+    not decoration. Every figure this ledger held before fal's billed quantity
+    was read back was OUR arithmetic -- our price table times the duration we
+    asked for -- and the first two clips ever measured showed the estimate 33%
+    under on one of them, because fal billed 6 seconds of a 4-second request.
+    A caller that renders a total to a human can now say which half of it is a
+    measurement.
+
+    Two booleans, answering two questions that were previously conflated into
+    one:
+
+    * ``spend_is_certain`` -- is every attempt's provider OUTCOME recorded? It
+      has always meant this and still does. It is NOT a claim that the amounts
+      were measured; an all-estimated ledger with no unresolved attempts is
+      certain about what happened and uncertain about what it cost.
+    * ``spend_is_measured`` -- did every dollar in ``spent`` come from fal? This
+      is the question ``spend_is_certain`` was being read as answering.
 
     This used to count paid AND succeeded only, so a clip that was bought and
     then locally abandoned -- or one still in doubt -- reported $0.00. Silence is
@@ -547,25 +689,30 @@ def spend(beat_id: str, shot_id: str | None = None) -> dict:
             if (shot_id is None or a.shot_id == shot_id)]
     paid_for = [a for a in rows if billed(a)]
     unsettled = [a for a in rows if at_risk(a)]
+    from_fal = [a for a in paid_for if measured(a)]
+    inferred = [a for a in paid_for if not measured(a)]
     # float() because sum([]) is the integer 0, so an empty ledger reported
     # `"spent": 0` while a populated one reported `"spent": 0.6`. Harmless in
     # JSON and confusing everywhere else; a money field should have one type.
-    spent = round(float(sum(_amount(a) for a in paid_for)), 4)
+    measured_total = round(float(sum(_amount(a) for a in from_fal)), 4)
+    estimated_total = round(float(sum(_amount(a) for a in inferred)), 4)
+    spent = round(measured_total + estimated_total, 4)
     risk = round(float(sum(_amount(a) for a in unsettled)), 4)
-    summary = f"${spent:.2f} billed"
-    if unsettled:
-        summary += (f" • ${risk:.2f} at risk on {len(unsettled)} attempt"
-                    f"{'s' if len(unsettled) != 1 else ''} whose provider "
-                    f"outcome was never recorded")
     return {
         "attempts": len(rows),
         "failed": sum(1 for a in rows if a.status == FAILED),
         "paid_attempts": len(paid_for),
         "spent": spent,
+        "measured": measured_total,
+        "estimated": estimated_total,
+        "measured_attempts": len(from_fal),
+        "estimated_attempts": len(inferred),
         "at_risk": risk,
         "at_risk_attempts": len(unsettled),
         "spend_is_certain": not unsettled,
-        "summary": summary,
+        "spend_is_measured": not inferred,
+        "summary": spend_summary(spent, risk, len(unsettled),
+                                 measured_total, estimated_total, len(inferred)),
     }
 
 
@@ -588,8 +735,16 @@ def unknown_spend(reason: str) -> dict:
         "failed": None,
         "paid_attempts": None,
         "spent": None,
+        # None for the same reason as `spent`: a ledger nobody could read has
+        # not measured $0.00 against fal, it has measured nothing at all. Zeros
+        # here would render as "all of it measured, and it was free".
+        "measured": None,
+        "estimated": None,
+        "measured_attempts": None,
+        "estimated_attempts": None,
         "at_risk": None,
         "at_risk_attempts": None,
         "spend_is_certain": False,
+        "spend_is_measured": False,
         "summary": f"spend is unknown: {reason}",
     }

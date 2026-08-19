@@ -99,7 +99,7 @@ def two_projects(tmp_path, monkeypatch):
 
     paid = {"calls": 0}
 
-    def fake_paid(ds, synth, sb, out_dir, log=print):
+    def fake_paid(ds, synth, sb, out_dir, log=print, on_billed=None):
         paid["calls"] += 1
         target = Path(out_dir) / f"{ds.id}.mp4"
         target.parent.mkdir(parents=True, exist_ok=True)
