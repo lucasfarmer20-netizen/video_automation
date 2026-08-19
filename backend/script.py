@@ -12,7 +12,7 @@ from typing import Any
 
 import anthropic
 
-from . import config
+from . import capabilities, config
 from .assets import IMAGE_BACKEND_KEYS, VIDEO_BACKEND_KEYS
 from .manifest import Camera, MotionType, Shot, Storyboard
 
@@ -351,7 +351,14 @@ def _scope(num_beats: int | None) -> str:
 # script stage can act on. They are estimates and deliberately overridable from
 # the environment: fal's per-model pricing moves, and a hardcoded number that
 # goes stale in silence is worse than one that can be corrected without a deploy.
-COST_PER_IMAGE = float(os.environ.get("COST_PER_IMAGE", "0.15"))        # nano2 @ 2K
+#
+# The still price is IMPORTED, not re-declared. This module used to carry its own
+# `float(os.environ.get("COST_PER_IMAGE", "0.15"))` -- a second literal of the
+# same number, which is how a correction reaches one quote and not the other.
+# When the billed rate turned out to be $0.0398 rather than $0.15, fixing only
+# capabilities would have left every budget plan still sizing an episode against
+# stills priced 3.8x over. One number, one place, both quotes.
+COST_PER_IMAGE = capabilities.COST_PER_IMAGE                            # nano2 @ 2K
 COST_PER_VIDEO_BEAT = float(os.environ.get("COST_PER_VIDEO_BEAT", "1.20"))
 COST_FIXED = float(os.environ.get("COST_FIXED", "3.00"))                # narration, music, SFX
 TAKES_PER_BEAT = int(os.environ.get("TAKES_PER_BEAT", "3"))

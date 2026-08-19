@@ -30,7 +30,7 @@ import json
 from pathlib import Path
 from dataclasses import dataclass, field
 
-from . import assets, config, ledger
+from . import assets, capabilities, config, ledger
 from .manifest import Camera, Shot
 
 # Framing vocabulary, ordered by how much of the film depends on it. Round 4 asked
@@ -192,7 +192,10 @@ def run(cfg: SpikeConfig, log=print) -> dict:
                                     "strategy": strategy, "error": str(exc)})
                     continue
 
-                spent += len(paths) * 0.15
+                # The one price, not a third literal of it. This read
+                # 0.15 while the endpoint bills 0.0398, so the spike's
+                # running total overstated by 3.8x.
+                spent += len(paths) * capabilities.COST_PER_IMAGE
                 for slot, rel in enumerate(paths):
                     ledger.record_generation(
                         scene_id=scene_id, path=rel, strategy=f"spikeA:{strategy}",

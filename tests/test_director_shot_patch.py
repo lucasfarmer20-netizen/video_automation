@@ -20,7 +20,7 @@ for m in ("anthropic", "fal_client", "elevenlabs"):
 
 pytest.importorskip("fastapi.testclient")
 
-from backend import director  # noqa: E402
+from backend import capabilities, director  # noqa: E402
 
 
 @pytest.fixture
@@ -189,7 +189,11 @@ def test_a_free_shot_is_not_charged_a_video_rate_after_a_resize(plan):
     plan.post("/api/director/shot/s011.01", json={"duration": 9.0})
     after = director.load_plan("s011").coverage[0]
     assert after.backend == ""
-    assert after.estimated_cost == pytest.approx(0.15, abs=0.001)
+    # Derived, not a literal: this test asserts which TIER the shot is on, and
+    # a second copy of the price here would have to be corrected every time the
+    # billed rate moves. The literal anchor for the rate itself is the invoice
+    # transcription in tests/test_fal_tariff.py.
+    assert after.estimated_cost == pytest.approx(capabilities.COST_PER_IMAGE, abs=0.0001)
 
 
 def test_a_non_routing_edit_is_not_refused_for_a_stale_duration(plan):
