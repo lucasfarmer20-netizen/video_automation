@@ -93,6 +93,41 @@ export interface DirectorWarning {
   stale?: boolean; // Set true when shot is edited prior to re-critique
 }
 
+/**
+ * One critic finding, as the SCENE carries it.
+ *
+ * A plan is per beat and so are its warnings, but the lock is not:
+ * `POST /api/director/lock_scene` walks every id in `beats[]` and accumulates a
+ * `problems[]` entry per beat, so one undecided finding anywhere in the scene
+ * refuses the whole lock. A queue scoped to the selected beat therefore counts
+ * a different set from the one the gate enforces — which is how the studio came
+ * to say "No finding in this scene is awaiting a decision" while four findings
+ * on two other beats of that same scene were blocking the lock.
+ *
+ * `beats` is every beat in the scene whose plan carries this finding, and it is
+ * a list rather than a single id for a reason visible in the human's own data:
+ * the critic writes `beat_id: ""` on a finding that spans beats (s004.06 and
+ * s006.01 being the same subject at the same shot size is a fact about the
+ * scene, not about either beat), and `POST /api/director/critique` then stores
+ * that copy on EVERY beat it was asked about. Deciding it on one of them leaves
+ * the others still refusing, with nothing on screen to say why. So a decision
+ * is written to every beat in `beats`, and the finding counts as undecided
+ * while ANY of them lacks one — the same condition `lock_scene` refuses on.
+ */
+export interface SceneFinding {
+  /** The server's content-derived warning id: the disposition key on every plan
+   *  in `beats`. Empty only for a finding that arrived without one, which no
+   *  decision can be recorded against. */
+  id: string;
+  /** Every beat in this scene whose saved plan carries this finding. */
+  beats: string[];
+  /** The finding itself, exactly as the plan stores it. */
+  warning: DirectorWarning;
+  /** "resolved" | "accepted", or "" when any beat in `beats` has no decision. */
+  decision: string;
+  note?: string;
+}
+
 export interface DirectorTriageTier {
   shots: number;
   cost: number;
@@ -147,6 +182,15 @@ export interface DirectorCoveragePlan {
   /** Durable human decision per warning id. A warning with no entry
    *  here is unresolved and blocks locking (contract 5.4). */
   warning_dispositions?: Record<string, WarningDisposition>;
+  /** Every beat's findings in this scene, deduplicated and tagged with the
+   *  beats that carry them — the set `lock_scene` will actually check. Absent
+   *  when the plan was not built by `fetchCoveragePlan`, in which case a reader
+   *  has only this beat's `warnings` and must not speak for the scene. */
+  scene_findings?: SceneFinding[];
+  /** The beats `scene_findings` was actually read from. Normally every id in
+   *  `scene_beats`; short of it when a sibling beat could not be read, and then
+   *  no sentence may claim the scene is clear — only these beats are. */
+  findings_scope?: string[];
   /** The server's record of the last compile. Empty until one finishes. */
   compiled?: CompiledRecord;
   estimated_cost: number;

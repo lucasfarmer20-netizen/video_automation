@@ -6,7 +6,9 @@ import {
   DirectorShot,
   DirectorWarning,
   CreativePreferences,
+  SceneFinding,
   SceneSummary,
+  WarningDisposition,
 } from "../types/director";
 import {
   fetchCoveragePlan,
@@ -281,6 +283,47 @@ const SUMMARY_STATUS: Record<DirectorCoveragePlan["status"], SceneSummary["statu
 };
 
 /**
+ * One beat's findings, in scene shape, for a plan that never went through
+ * `fetchCoveragePlan` — a re-check's local update, or a test's fixture.
+ *
+ * It attributes everything to the single beat the plan is for, which is exactly
+ * what it knows. That is not a stand-in for the scene and must not be read as
+ * one: whatever calls this leaves `findingsScope` naming one beat, and the
+ * banner and the idle line both name the beats they counted.
+ */
+function localFindingsOf(
+  plan: DirectorCoveragePlan | null,
+  sceneId: string
+): SceneFinding[] {
+  const beat = plan?.beat_id || sceneId;
+  const dispositions = plan?.warning_dispositions || {};
+  return (plan?.warnings || []).map((warning) => {
+    const decided = warning.id ? dispositions[warning.id] : undefined;
+    return {
+      id: warning.id || "",
+      beats: [beat],
+      warning,
+      decision: decided?.decision || "",
+      note: decided?.note,
+    };
+  });
+}
+
+/**
+ * Mark a shot's findings as no longer describing the plan (Addendum 5.3).
+ *
+ * Applied to the scene's list as well as the open beat's, because the banner's
+ * "Edits made — click Re-check" flag is read off the scene's list now. Marking
+ * only `warnings` would leave a human editing a shot out from under a finding
+ * with no hint that the critic's verdict predates their edit.
+ */
+function markFindingsStale(findings: SceneFinding[], shotId: string): SceneFinding[] {
+  return findings.map((f) =>
+    f.warning.shot_id === shotId ? { ...f, warning: { ...f.warning, stale: true } } : f
+  );
+}
+
+/**
  * This scene, summarised from the server's own numbers.
  *
  * The montage matrix used to be handed `MOCK_SCENES` — a fixture in
@@ -359,6 +402,11 @@ export default function DirectorWorkspace({
   const [lockBusy, setLockBusy] = useState<"locking" | "unlocking" | null>(null);
   const [lockProblem, setLockProblem] = useState<LockProblem | null>(null);
   const [lockDone, setLockDone] = useState<string | null>(null);
+
+  // A decision that did not land everywhere it had to. Deliberately NOT
+  // `setError`, which replaces the whole workspace with "404 / Unplanned Beat
+  // Coverage" — a sentence that is false about a scene whose plan is on screen.
+  const [findingProblem, setFindingProblem] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -787,7 +835,15 @@ export default function DirectorWorkspace({
     const invalidatedWarnings = coveragePlan.warnings.map((w) =>
       w.shot_id === shotId ? { ...w, stale: true } : w
     );
-    setCoveragePlan({ ...coveragePlan, coverage: optimistic, warnings: invalidatedWarnings });
+    setCoveragePlan({
+      ...coveragePlan,
+      coverage: optimistic,
+      warnings: invalidatedWarnings,
+      scene_findings: markFindingsStale(
+        coveragePlan.scene_findings ?? localFindingsOf(coveragePlan, sceneId),
+        shotId
+      ),
+    });
     if (selectedShot && selectedShot.id === shotId) {
       setSelectedShot({ ...selectedShot, ...updates });
     }
@@ -802,6 +858,10 @@ export default function DirectorWorkspace({
         ...fresh,
         warnings: (fresh.warnings || []).map((w) =>
           w.shot_id === shotId ? { ...w, stale: true } : w
+        ),
+        scene_findings: markFindingsStale(
+          fresh.scene_findings ?? localFindingsOf(fresh, sceneId),
+          shotId
         ),
       });
       if (res.shot && selectedShot && selectedShot.id === shotId) {
@@ -864,7 +924,42 @@ export default function DirectorWorkspace({
         return;
       }
       const fresh = res.warnings;
-      setCoveragePlan((prev) => (prev ? { ...prev, warnings: fresh } : prev));
+      setCoveragePlan((prev) => {
+        if (!prev) return prev;
+        const ownBeat = prev.beat_id || sceneId;
+        const before = prev.scene_findings ?? localFindingsOf(prev, sceneId);
+        const decidedBefore = new Map(before.map((f) => [f.id, f]));
+        return {
+          ...prev,
+          // This plan's own list, matching what the route wrote onto it: a
+          // finding the critic filed against no particular beat is saved onto
+          // every beat of the scene, so it belongs here too.
+          warnings: fresh.filter((w) => !w.beat_id || w.beat_id === ownBeat),
+          // …and the scene's, which is what the queue and the lock both read.
+          // `beat_id: ""` means the critic wrote it about the scene rather than
+          // a beat, and `POST /api/director/critique` stores that copy on every
+          // beat it was asked about — so it is carried against all of them, and
+          // a decision about it has to reach all of them.
+          scene_findings: fresh.map((w) => {
+            // The route drops decisions about findings this run no longer
+            // reports and keeps the rest, keyed by the same content-derived id.
+            // Carrying a decision forward on a surviving id is that same rule;
+            // a finding whose wording changed gets a new id and arrives, again
+            // correctly, undecided.
+            const carried = w.id ? decidedBefore.get(w.id) : undefined;
+            return {
+              id: w.id || "",
+              beats: w.beat_id ? [w.beat_id] : beats,
+              warning: w,
+              decision: carried?.decision || "",
+              note: carried?.note,
+            };
+          }),
+          // The critic was asked about every beat in the scene and the route
+          // saved its answer onto every one, so this run examined all of them.
+          findings_scope: beats,
+        };
+      });
       setCritiqueOutcome(
         fresh.length > 0
           ? { kind: "found", count: fresh.length }
@@ -917,28 +1012,128 @@ export default function DirectorWorkspace({
    * attached; that is the record of the review having happened.
    */
   const handleResolveWarning = async (
-    warningId: string,
+    finding: SceneFinding,
     // Empty string CLEARS the decision. It must not be defaulted away: 'undo'
     // sends it, and a default of "resolved" would silently re-resolve the very
     // finding the user was reopening.
     decision: "resolved" | "accepted" | "" = "resolved"
   ) => {
-    if (!coveragePlan || !warningId) return;
+    if (!coveragePlan || !finding?.id) return;
+    const warningId = finding.id;
+    const ownBeat = coveragePlan.beat_id || sceneId;
+    // Every beat whose plan carries this finding, because that is every beat
+    // `lock_scene` will check. A finding the critic wrote about the scene rather
+    // than a beat is stored on all of them under one id, so deciding the copy on
+    // the open beat and stopping there leaves the rest refusing the lock with
+    // nothing on screen to say which, or why.
+    const targets = finding.beats.length > 0 ? finding.beats : [ownBeat];
+    const written: string[] = [];
+    let own: {
+      warnings: DirectorWarning[];
+      warning_dispositions: Record<string, WarningDisposition>;
+    } | null = null;
+    setFindingProblem(null);
     try {
-      const res = await decideDirectorWarning(sceneId, warningId, decision);
-      setCoveragePlan((prev) =>
-        prev ? { ...prev, warnings: res.warnings,
-                 warning_dispositions: res.warning_dispositions } : prev
-      );
+      for (const beat of targets) {
+        const res = await decideDirectorWarning(beat, warningId, decision);
+        written.push(beat);
+        if (beat === ownBeat) own = res;
+      }
     } catch (e: any) {
-      setError(e?.message || "Could not record that decision.");
+      const missed = targets.filter((b) => !written.includes(b));
+      setFindingProblem(
+        written.length > 0
+          ? `That decision was recorded on ${written.join(", ")} but not on ` +
+            `${missed.join(", ")}, so the scene will still refuse to lock. ` +
+            `${e?.message || "The studio did not answer."}`
+          : e?.message || "Could not record that decision."
+      );
     }
+    // Applied for the beats that DID take it, refusal or not: a screen showing
+    // the decision as unrecorded where it was recorded is the same class of
+    // wrong answer as the one above, pointing the other way.
+    if (written.length === 0) return;
+    const settled = written.length === targets.length;
+    setCoveragePlan((prev) => {
+      if (!prev) return prev;
+      const before = prev.scene_findings ?? localFindingsOf(prev, sceneId);
+      return {
+        ...prev,
+        // The open beat's own list, as the server rewrote it. Other beats' plans
+        // are not on screen and are re-read on the next scene load.
+        warnings: own ? own.warnings : prev.warnings,
+        warning_dispositions: own ? own.warning_dispositions : prev.warning_dispositions,
+        scene_findings: before.map((f) =>
+          f.id === warningId
+            ? {
+                ...f,
+                // A part-written decision leaves the finding undecided, which is
+                // what the lock will conclude from the beats that missed it.
+                decision: settled ? decision : "",
+                note: settled ? f.note : undefined,
+              }
+            : f
+        ),
+      };
+    });
   };
 
+  /**
+   * Every finding in the SCENE, which is the scope the lock is gating on.
+   *
+   * `POST /api/director/lock_scene` accumulates a `problems[]` entry per beat in
+   * `beats[]`, so a single undecided finding on any beat of the scene refuses
+   * the whole lock. This list used to be `coveragePlan.warnings` — one beat's
+   * findings, the selected one — and the banner above it then used the word
+   * "scene" to describe what it had counted. A human planning s004/s005/s006 as
+   * one scene was told "No finding in this scene is awaiting a decision" while
+   * s005 held three and s006 held one, and was sent to look for the wrong
+   * problem in front of a gate that was refusing them for the right one.
+   *
+   * `scene_findings` comes from `fetchCoveragePlan`, which reads every beat in
+   * `scene_beats`. The fallback covers a plan built some other way, and it
+   * deliberately claims only the beat it can see: `findingsScope` then falls
+   * short of `scene_beats`, and the sentences below name what was examined
+   * instead of naming the scene.
+   */
+  const sceneFindings: SceneFinding[] =
+    coveragePlan?.scene_findings ?? localFindingsOf(coveragePlan, sceneId);
+  /**
+   * The beats those findings were actually read from.
+   *
+   * Without the server's own answer, this falls back to the beats the findings
+   * NAME plus the plan's own — a lower bound, because a beat that was read and
+   * came back clean names itself nowhere. Understating is the safe direction:
+   * it can only make this screen decline to speak for a beat, never let it
+   * speak for one it has not seen.
+   */
+  const findingsScope: string[] =
+    coveragePlan?.findings_scope ??
+    Array.from(
+      new Set([
+        coveragePlan?.beat_id || sceneId,
+        ...sceneFindings.flatMap((f) => f.beats),
+      ])
+    ).filter(Boolean);
+  /** Beats of this scene nothing has been read from — see `findingsScope`. */
+  const unexaminedBeats: string[] = (
+    coveragePlan?.scene_beats && coveragePlan.scene_beats.length > 0
+      ? coveragePlan.scene_beats
+      : [sceneId]
+  ).filter((b) => !findingsScope.includes(b));
   /** Findings with no recorded decision — the ones that block locking. */
-  const unresolvedWarnings = (coveragePlan?.warnings || []).filter(
-    (w) => !(w.id && coveragePlan?.warning_dispositions?.[w.id]?.decision)
-  );
+  const undecidedFindings = sceneFindings.filter((f) => !f.decision);
+  /** How the undecided ones fall across the scene, in `scene_beats` order. */
+  const undecidedByBeat: Array<{ beat: string; count: number }> = (
+    coveragePlan?.scene_beats && coveragePlan.scene_beats.length > 0
+      ? coveragePlan.scene_beats
+      : [sceneId]
+  )
+    .map((beat) => ({
+      beat,
+      count: undecidedFindings.filter((f) => f.beats.includes(beat)).length,
+    }))
+    .filter((row) => row.count > 0);
 
   if (loading) {
     return (
@@ -1027,6 +1222,34 @@ export default function DirectorWorkspace({
     coveragePlan.live_beat_duration &&
       Math.abs(coveragePlan.live_beat_duration - targetDuration) > 0.1
   );
+  /**
+   * "Nothing is outstanding" — said about the beats actually examined, and no
+   * wider than that.
+   *
+   * The sentence this replaces was `"No finding in this scene is awaiting a
+   * decision"`, rendered off a count taken from the selected beat alone. A human
+   * who had planned s004, s005 and s006 as one scene read it while s005 held
+   * three undecided findings and s006 held one, and was sent to ask the critic
+   * to look again at a scene the critic had already flagged — standing in front
+   * of a lock that was refusing them for exactly those four findings.
+   *
+   * So the beats are named. A sentence that lists what it counted cannot quietly
+   * describe a scope it did not examine, and when a beat could not be read it
+   * says which one rather than leaving it inside the word "scene".
+   */
+  const examinedLabel = findingsScope.length > 0 ? findingsScope.join(", ") : sceneId;
+  const idleScopeSentence =
+    unexaminedBeats.length > 0
+      ? `No finding in ${examinedLabel} is awaiting a decision. ` +
+        `${unexaminedBeats.join(", ")} could not be read, so nothing here speaks ` +
+        `for ${unexaminedBeats.length === 1 ? "it" : "them"} — and the lock covers ` +
+        `every beat in this scene. Reopen the scene before locking.`
+      : findingsScope.length > 1
+        ? `No finding in ${examinedLabel} is awaiting a decision — that is every ` +
+          `beat in this scene. Re-check to ask the critic to look again before locking.`
+        : `No finding in ${examinedLabel} is awaiting a decision. Re-check to ask ` +
+          `the critic to look again before locking.`;
+
   /** The beats a scene-level action covers — what a running job is running ON. */
   const sceneBeatsLabel = (
     coveragePlan.scene_beats && coveragePlan.scene_beats.length > 0
@@ -1300,24 +1523,28 @@ export default function DirectorWorkspace({
                   own fact, and the drawer is one click away. Not derived from
                   the refusal's prose: a reworded message must not be able to
                   change what this says. */}
-              {lockProblem.wasLocking && unresolvedWarnings.length > 0 && (
-                <span className="block mt-1.5 text-[11px] text-amber-300">
-                  This plan carries {unresolvedWarnings.length} finding
-                  {unresolvedWarnings.length === 1 ? "" : "s"} with no recorded decision.
-                  Locking requires each one resolved or accepted.
+              {lockProblem.wasLocking && undecidedFindings.length > 0 && (
+                <span data-testid="lock-undecided-note" className="block mt-1.5 text-[11px] text-amber-300">
+                  {`This scene carries ${undecidedFindings.length} finding` +
+                    `${undecidedFindings.length === 1 ? "" : "s"} with no recorded decision` +
+                    `${
+                      undecidedByBeat.length > 1
+                        ? ` (${undecidedByBeat.map((r) => `${r.beat}: ${r.count}`).join(", ")})`
+                        : ""
+                    }. Locking requires each one resolved or accepted.`}
                 </span>
               )}
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {lockProblem.wasLocking && unresolvedWarnings.length > 0 && (
+            {lockProblem.wasLocking && undecidedFindings.length > 0 && (
               <button
                 data-testid="lock-open-queue"
                 onClick={() => setProblemDrawerOpen(true)}
                 className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 rounded-lg text-[11px] font-mono font-bold transition-colors flex items-center gap-1"
               >
-                <span>Review {unresolvedWarnings.length} problem
-                  {unresolvedWarnings.length === 1 ? "" : "s"}</span>
+                <span>Review {undecidedFindings.length} problem
+                  {undecidedFindings.length === 1 ? "" : "s"}</span>
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             )}
@@ -1684,18 +1911,29 @@ export default function DirectorWorkspace({
           </button>
         </div>
       )}
-      {unresolvedWarnings.length > 0 && (
+      {undecidedFindings.length > 0 && (
         <div className="glass-panel p-3.5 rounded-xl border border-amber-500/40 bg-amber-500/10 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-start gap-2.5">
             <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+            <div className="flex flex-col gap-1">
             <span data-testid="unresolved-count" className="text-xs font-bold text-amber-300 font-mono">
-              ⚠️ {unresolvedWarnings.length} coverage issue{unresolvedWarnings.length === 1 ? "" : "s"} awaiting a decision in this scene
-              {unresolvedWarnings.some((w) => w.stale) && (
+              ⚠️ {undecidedFindings.length} coverage issue{undecidedFindings.length === 1 ? "" : "s"} awaiting a decision in this scene
+              {undecidedFindings.some((f) => f.warning.stale) && (
                 <span className="ml-2 text-[10px] text-amber-400 font-normal bg-amber-500/20 px-1.5 py-0.5 rounded">
                   (Edits made — click Re-check)
                 </span>
               )}
             </span>
+            {/* Where they are. A scene planned as one unit locks as one unit,
+                and findings on a beat the human is not looking at block that
+                lock exactly as hard as the ones in front of them. */}
+            {undecidedByBeat.length > 1 && (
+              <span data-testid="unresolved-by-beat" className="text-[11px] font-mono text-amber-400/90">
+                {undecidedByBeat.map((row) => `${row.beat} (${row.count})`).join(" · ")}
+                {" — the lock checks every beat in this scene."}
+              </span>
+            )}
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -1723,12 +1961,31 @@ export default function DirectorWorkspace({
         </div>
       )}
 
+      {/* A decision that reached some of the beats carrying a finding and not
+          the rest. The scene still will not lock, and the queue would otherwise
+          show the finding as decided — see handleResolveWarning. */}
+      {findingProblem && (
+        <div
+          data-testid="finding-problem"
+          className="flex items-start justify-between gap-3 rounded-lg border border-red-500/50 bg-red-950/40 px-3 py-2"
+        >
+          <span className="text-xs font-mono text-red-300 leading-relaxed">{findingProblem}</span>
+          <button
+            onClick={() => setFindingProblem(null)}
+            className="shrink-0 text-red-400 hover:text-red-200 text-xs font-mono font-bold"
+            aria-label="Dismiss"
+          >
+            &#10005;
+          </button>
+        </div>
+      )}
+
       {/* SECTION 3B: What the last re-check actually produced.
           Deliberately OUTSIDE the banner above, which unmounts the moment the
           findings are all decided — which is exactly when the human asks the
           critic to look again. Rendered there, "the critic ran and raised
           nothing" and "the re-check failed" would both have nowhere to appear. */}
-      {(critiqueOutcome || unresolvedWarnings.length === 0) && (
+      {(critiqueOutcome || undecidedFindings.length === 0) && (
         <div
           data-testid="critique-outcome"
           data-kind={critiqueOutcome?.kind || "idle"}
@@ -1765,13 +2022,12 @@ export default function DirectorWorkspace({
                   : critiqueOutcome?.kind === "found"
                     ? `The critic re-checked this scene and raised ${critiqueOutcome.count} ` +
                       `finding${critiqueOutcome.count === 1 ? "" : "s"}, listed above.`
-                    : "No finding in this scene is awaiting a decision. Re-check to ask " +
-                      "the critic to look again before locking."}
+                    : idleScopeSentence}
             </span>
           </div>
           {/* The same re-check, reachable once every finding has been decided —
               which is precisely when the human wants to run it again. */}
-          {unresolvedWarnings.length === 0 && (
+          {undecidedFindings.length === 0 && (
             <button
               data-testid="recheck-warnings-idle"
               onClick={handleRecheckCritique}
@@ -1902,9 +2158,19 @@ export default function DirectorWorkspace({
       )}
 
       {/* Problem Queue Drawer */}
+      {/* Every beat's findings, because every beat's findings block the lock.
+          `shots` is still the OPEN beat's coverage — a finding on a sibling beat
+          has no card on this screen to jump to, and the drawer says so rather
+          than pretending the link is there. */}
       <ProblemQueueDrawer
-        warnings={coveragePlan.warnings}
+        findings={sceneFindings}
         shots={coveragePlan.coverage}
+        openBeat={coveragePlan.beat_id || sceneId}
+        sceneBeats={
+          coveragePlan.scene_beats && coveragePlan.scene_beats.length > 0
+            ? coveragePlan.scene_beats
+            : [sceneId]
+        }
         isOpen={problemDrawerOpen}
         onClose={() => setProblemDrawerOpen(false)}
         onSelectShot={(shotId) => {
@@ -1912,7 +2178,6 @@ export default function DirectorWorkspace({
           if (s) setSelectedShot(s);
         }}
         onResolveWarning={handleResolveWarning}
-        dispositions={coveragePlan.warning_dispositions || {}}
       />
 
       {/* Take Selector Modal */}
