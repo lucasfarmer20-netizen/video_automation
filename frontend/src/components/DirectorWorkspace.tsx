@@ -130,6 +130,80 @@ function classifyCompileRefusal(err: CompileRefusal | undefined): CompileProblem
 }
 
 /**
+ * Why this workspace has no plan on screen — and the three answers are not
+ * interchangeable.
+ *
+ * The panel below used to have one heading for all of them: **404 / Unplanned
+ * Beat Coverage**, which states that this beat has no plan. That is a claim
+ * about the human's work, and it was being made on the strength of anything at
+ * all going wrong. When Cloud Run shed a request with `429 Rate exceeded.`, the
+ * studio told a director their beat was unplanned. It was planned. The plan was
+ * on disk, unchanged, and would have compiled.
+ *
+ * So the kind comes from the reply's TRANSPORT FACTS — `rateLimited` and
+ * `transport`, set in `lib/http` from the status and content-type — and never
+ * from the message text, for the same reason `classifyCompileRefusal` reads
+ * payload fields rather than prose: a reworded error must not be able to
+ * re-classify a failure into a claim about someone's data.
+ *
+ * `missing` is the only kind that may say "no plan", and it is the only kind
+ * that offers to plan the beat. Planning over a beat whose plan merely could
+ * not be READ would replace real coverage with new coverage — the studio
+ * inviting a director to destroy the work it has just told them is not there.
+ */
+type LoadFailureKind = "missing" | "rate_limited" | "unreachable";
+
+type LoadFailure = { kind: LoadFailureKind; message: string };
+
+/**
+ * Transport facts first; only a reply the server actually wrote can say 404.
+ *
+ * `floor` is what an ordinary, non-transport refusal degrades to, and it is not
+ * always "missing". It is "missing" for the scene READ, where a plain 404 means
+ * exactly that. It must not be for a failed WRITE against a plan that is loaded
+ * and in state: recording a decision can be refused for a dozen reasons and not
+ * one of them is evidence that the beat is unplanned.
+ */
+function classifyLoadFailure(
+  err: unknown,
+  fallback: string,
+  floor: LoadFailureKind = "missing"
+): LoadFailure {
+  const e = err as { message?: string; rateLimited?: boolean; transport?: boolean };
+  const message = e?.message || fallback;
+  if (e?.rateLimited) return { kind: "rate_limited", message };
+  if (e?.transport) return { kind: "unreachable", message };
+  return { kind: floor, message };
+}
+
+/** The heading, which is the part that was making the false claim. */
+function loadFailureHeading(kind: LoadFailureKind, sceneId: string): string {
+  if (kind === "rate_limited") return `429 / Studio Rate-Limited (${sceneId})`;
+  if (kind === "unreachable") return `Coverage Could Not Be Read (${sceneId})`;
+  return `404 / Unplanned Beat Coverage (${sceneId})`;
+}
+
+/** What that heading means for the work, said plainly. */
+function loadFailureBody(kind: LoadFailureKind, sceneId: string): string {
+  if (kind === "rate_limited") {
+    return (
+      `The server shed this request before it reached ${sceneId}. This says ` +
+      `nothing about the beat's coverage — any plan it has is untouched. Try again.`
+    );
+  }
+  if (kind === "unreachable") {
+    return (
+      `The studio could not read an answer about ${sceneId}. This is a failed ` +
+      `request, not a finding about the beat: any plan it has is untouched.`
+    );
+  }
+  return (
+    `No coverage plan exists for beat ${sceneId}. A plan must be requested ` +
+    `before coverage can be reviewed.`
+  );
+}
+
+/**
  * What a re-plan did, and it must survive the thing that asked for it.
  *
  * The re-plan the human reached for is the action inside the Stale Plan
@@ -361,6 +435,17 @@ export default function DirectorWorkspace({
   const [lockDone, setLockDone] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Which of the three failures the empty state is reporting.
+   *
+   * Kept beside `error` rather than folded into it because the message and the
+   * claim are different things: the message is whatever the server or the
+   * transport produced, and the claim is what the studio is willing to assert
+   * about the human's work on the strength of it.
+   */
+  const [errorKind, setErrorKind] = useState<LoadFailureKind>("missing");
+  /** Bumped by "Try again", so a shed read can be re-issued without a reload. */
+  const [reloadNonce, setReloadNonce] = useState<number>(0);
 
   // Load coverage plan on scene switch
   useEffect(() => {
@@ -401,7 +486,12 @@ export default function DirectorWorkspace({
       })
       .catch((err) => {
         if (isMounted) {
-          setError(err.message || "No director coverage plan found for this scene (404)");
+          const failure = classifyLoadFailure(
+            err,
+            `No director coverage plan found for ${sceneId}.`
+          );
+          setErrorKind(failure.kind);
+          setError(failure.message);
           setCoveragePlan(null);
           setLoading(false);
         }
@@ -409,7 +499,7 @@ export default function DirectorWorkspace({
     return () => {
       isMounted = false;
     };
-  }, [sceneId]);
+  }, [sceneId, reloadNonce]);
 
   const toggleShortcut = (shortcut: string) => {
     setSelectedShortcuts((prev) =>
@@ -931,7 +1021,20 @@ export default function DirectorWorkspace({
                  warning_dispositions: res.warning_dispositions } : prev
       );
     } catch (e: any) {
-      setError(e?.message || "Could not record that decision.");
+      // This is the path the reported defect came down: a 429 on
+      // POST /api/director/warning threw, `setError` fed the empty state, and
+      // the studio headed it "404 / Unplanned Beat Coverage". The kind travels
+      // with the message so the empty state says what actually happened.
+      // Floored at "unreachable": whatever refused this write, the plan is
+      // loaded and unchanged, so "404 / Unplanned Beat Coverage" is false for
+      // every branch of it — not only the shed one.
+      const failure = classifyLoadFailure(
+        e,
+        "Could not record that decision.",
+        "unreachable"
+      );
+      setErrorKind(failure.kind);
+      setError(failure.message);
     }
   };
 
@@ -956,12 +1059,25 @@ export default function DirectorWorkspace({
           <AlertTriangle className="w-8 h-8" />
         </div>
         <div>
-          <h3 className="text-lg font-bold text-zinc-100 font-mono">
-            404 / Unplanned Beat Coverage ({sceneId})
+          <h3
+            data-testid="coverage-load-failure"
+            data-kind={errorKind}
+            className="text-lg font-bold text-zinc-100 font-mono"
+          >
+            {loadFailureHeading(errorKind, sceneId)}
           </h3>
           <p className="text-xs text-zinc-400 font-mono mt-1 max-w-lg leading-relaxed">
-            {error || `No coverage plan exists for beat ${sceneId}. A plan must be requested before coverage can be reviewed.`}
+            {loadFailureBody(errorKind, sceneId)}
           </p>
+          {/* The failure's own words, kept apart from the studio's claim about
+              it. Quoting the server is useful; letting the quote stand in for
+              the heading is what put a parser's complaint where a fact about a
+              beat belongs. */}
+          {error && errorKind !== "missing" && (
+            <pre className="text-[10px] text-amber-300/80 font-mono bg-zinc-900 border border-zinc-800 rounded-lg p-3 mt-3 max-w-lg mx-auto whitespace-pre-wrap break-words text-left">
+              {error}
+            </pre>
+          )}
           {activeProjectTitle && (
             <div className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-mono text-zinc-400 bg-zinc-900 border border-zinc-800 px-3 py-1 rounded-full">
               <span className="w-2 h-2 rounded-full bg-amber-500" />
@@ -997,23 +1113,41 @@ export default function DirectorWorkspace({
         {/* Same rule as the two re-plan controls below: the label is the
             feedback. This one had the spinner and the disabled state already and
             still read the same while a minute-long job ran. */}
-        <button
-          data-testid="plan-unplanned-beat"
-          onClick={() => handleRedirectScene()}
-          disabled={redirecting}
-          className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-mono font-bold rounded-xl transition-all flex items-center gap-2 shadow-lg neon-glow-amber disabled:opacity-50"
-        >
-          {redirecting ? (
-            <Sparkles className="w-4 h-4 animate-spin" />
-          ) : (
-            <Clapperboard className="w-4 h-4" />
-          )}
-          <span>
-            {redirecting
-              ? `PLANNING (${sceneId})…`
-              : `POST /api/director/plan (${sceneId})`}
-          </span>
-        </button>
+        {/* Offered ONLY when the server said this beat has no plan. Over a
+            read that merely failed, planning would overwrite coverage that
+            exists — the studio destroying the work it has just failed to show.
+            A request that was shed is re-issued, not replaced. */}
+        {errorKind === "missing" ? (
+          <button
+            data-testid="plan-unplanned-beat"
+            onClick={() => handleRedirectScene()}
+            disabled={redirecting}
+            className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-mono font-bold rounded-xl transition-all flex items-center gap-2 shadow-lg neon-glow-amber disabled:opacity-50"
+          >
+            {redirecting ? (
+              <Sparkles className="w-4 h-4 animate-spin" />
+            ) : (
+              <Clapperboard className="w-4 h-4" />
+            )}
+            <span>
+              {redirecting
+                ? `PLANNING (${sceneId})…`
+                : `POST /api/director/plan (${sceneId})`}
+            </span>
+          </button>
+        ) : (
+          <button
+            data-testid="retry-coverage-load"
+            onClick={() => {
+              setError(null);
+              setReloadNonce((n) => n + 1);
+            }}
+            className="px-5 py-2.5 bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-mono font-bold rounded-xl transition-all flex items-center gap-2 shadow-lg"
+          >
+            <RotateCcw className="w-4 h-4" />
+            <span>RE-READ COVERAGE ({sceneId})</span>
+          </button>
+        )}
       </div>
     );
   }

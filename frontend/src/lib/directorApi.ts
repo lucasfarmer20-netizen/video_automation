@@ -8,6 +8,15 @@ import {
   CoverageSurvey,
   WarningDisposition,
 } from "../types/director";
+import {
+  DEFAULT_RETRY,
+  NO_RETRY,
+  Reply,
+  annotate,
+  failureMessage,
+  fetchReply,
+  readReply,
+} from "./http";
 
 const API_BASE =
   typeof window !== "undefined"
@@ -59,15 +68,18 @@ export function isStaleReply(res: Response): boolean {
  * Authoritative profiles, vocabulary, and video_capabilities
  */
 export async function fetchDirectorProfiles(): Promise<DirectorProfilesResponse> {
-  const res = await fetch(`${API_BASE}/api/director/profiles`, { headers: getAuthHeaders() });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch director profiles: ${res.status} ${res.statusText}`);
+  const reply = await fetchReply(
+    `${API_BASE}/api/director/profiles`,
+    { headers: getAuthHeaders() },
+    DEFAULT_RETRY
+  );
+  if (!reply.ok || !reply.data.ok) {
+    throw annotate(
+      new Error(failureMessage(reply, `Failed to fetch director profiles (${reply.status}).`)),
+      reply
+    );
   }
-  const data = await res.json();
-  if (!data.ok) {
-    throw new Error(data.error || "Failed to load director profiles");
-  }
-  return data;
+  return reply.data as DirectorProfilesResponse;
 }
 
 /**
@@ -150,15 +162,20 @@ export async function fetchCoveragePlan(
     url += `&tier=${tierFilter}`;
   }
 
-  const res = await fetch(url, { headers: getAuthHeaders() });
-  if (!res.ok) {
-    throw new Error(`Director scene endpoint returned ${res.status} ${res.statusText} for beats=${beatsParam}`);
+  // Retried, because this is the read whose failure the studio renders as
+  // "404 / Unplanned Beat Coverage". A shed request that resolves on the second
+  // try never becomes a claim about the human's plan at all.
+  const reply = await fetchReply(url, { headers: getAuthHeaders() }, DEFAULT_RETRY);
+  if (!reply.ok || !reply.data.ok) {
+    throw annotate(
+      new Error(
+        failureMessage(reply, `Failed to fetch scene coverage for beats=${beatsParam}.`)
+      ),
+      reply
+    );
   }
 
-  const data = await res.json();
-  if (!data.ok) {
-    throw new Error(data.error || `Failed to fetch scene coverage for beats=${beatsParam}`);
-  }
+  const data = reply.data;
 
   // If backend returns beat array shape
   if (data.beats && data.beats.length > 0) {
@@ -290,21 +307,21 @@ export async function redirectSceneCoverage(
     }),
   });
 
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) {
+  const reply = await readReply(res);
+  if (!reply.ok || !reply.data.ok) {
     // The status travels with the error. 409 is not a failure and not something
     // the user did wrong -- start_job refused because a plan for this beat is
     // already running, and it will finish. A caller that only sees the message
     // cannot tell that apart from "planning failed", which is how a refusal
-    // came to be reported as a success.
-    const err = new Error(
-      data.error || `Planning failed with status ${res.status}`
-    ) as Error & { status?: number };
-    err.status = res.status;
-    throw err;
+    // came to be reported as a success. 429 travels the same way for the same
+    // reason: it is not a refusal of the plan, it is a request that was shed.
+    throw annotate(
+      new Error(failureMessage(reply, `Planning failed with status ${reply.status}.`)),
+      reply
+    );
   }
 
-  return data;
+  return reply.data as { ok: boolean; job?: string; started?: boolean; error?: string };
 }
 
 /**
@@ -325,8 +342,14 @@ export async function waitForJob(
   const started = Date.now();
   let last = "";
   for (;;) {
-    const res = await fetch(`${API_BASE}/api/assemble/status`, { headers: getAuthHeaders() });
-    const data = await res.json().catch(() => ({}));
+    // NO_RETRY on purpose: this loop IS the retry, and a shed poll simply means
+    // this pass learns nothing. What it must not do is conclude the job ended.
+    const reply = await fetchReply(
+      `${API_BASE}/api/assemble/status`,
+      { headers: getAuthHeaders() },
+      NO_RETRY
+    );
+    const data = reply.data;
     const job = data?.jobs?.[jobKey];
     if (job) {
       if (job.log && job.log !== last) {
@@ -387,13 +410,17 @@ export async function fetchBeatCoverageStates(
   beatIds: string[]
 ): Promise<Record<string, BeatCoverageState>> {
   if (beatIds.length === 0) return {};
-  const res = await fetch(
+  const reply = await fetchReply(
     `${API_BASE}/api/director/scene?beats=${encodeURIComponent(beatIds.join(","))}`,
-    { headers: getAuthHeaders() }
+    { headers: getAuthHeaders() },
+    DEFAULT_RETRY
   );
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) {
-    throw new Error(data.error || `Could not read existing coverage (${res.status})`);
+  const data = reply.data;
+  if (!reply.ok || !data.ok) {
+    throw annotate(
+      new Error(failureMessage(reply, `Could not read existing coverage (${reply.status}).`)),
+      reply
+    );
   }
   /** Only the parts of a `/api/director/scene` entry this reader needs. */
   interface SceneEntry {
@@ -454,8 +481,16 @@ export const PLAN_JOB_PREFIX = "director_plan:";
  * browser — is what actually knows a plan is running.
  */
 export async function fetchRunningPlanJobs(): Promise<Record<string, string>> {
-  const res = await fetch(`${API_BASE}/api/assemble/status`, { headers: getAuthHeaders() });
-  const data = await res.json().catch(() => ({}));
+  // An unreadable registry stays empty here — the survey stands on its own and
+  // its caller treats a failure as "nothing to re-attach to". The retry is what
+  // keeps a merely SHED read from silently costing the re-attachment, which is
+  // the only chance a reload has of finding a plan that is still running.
+  const reply = await fetchReply(
+    `${API_BASE}/api/assemble/status`,
+    { headers: getAuthHeaders() },
+    DEFAULT_RETRY
+  );
+  const data = reply.data;
   const jobs = (data && data.jobs) || {};
   const running: Record<string, string> = {};
   Object.keys(jobs).forEach((key) => {
@@ -494,29 +529,24 @@ export type LockRefusal = Error & {
   changed?: string[];
 };
 
-/** The reply's own words, or the status if it had none. Never a summary. */
-function lockRefusal(
-  status: number,
-  data: { error?: unknown; detail?: unknown; problems?: unknown; warnings?: unknown },
-  fallback: string
-): LockRefusal {
-  // `detail` as well as `error`: `beats[] is required` is an HTTPException, so
-  // FastAPI serialises it under `detail` and there is no `error` key to read.
-  const said = data.error || data.detail;
-  const err = new Error(said ? String(said) : fallback) as LockRefusal;
-  err.status = status;
+/**
+ * The reply's own words, or the status if it had none. Never a summary.
+ *
+ * `failureMessage` picks the sentence: `detail` as well as `error`, because
+ * `beats[] is required` is an HTTPException and FastAPI serialises those under
+ * `detail`. It also outranks both with the rate-limit sentence when the request
+ * was shed, since a 429 means the route never ran and therefore refused nothing.
+ */
+function lockRefusal(reply: Reply, fallback: string): LockRefusal {
+  const data = reply.data;
+  const err = annotate(new Error(failureMessage(reply, fallback)), reply) as LockRefusal;
   if (Array.isArray(data.problems) && data.problems.length > 0) {
-    err.problems = data.problems.map((p) => String(p));
+    err.problems = data.problems.map((x: unknown) => String(x));
   }
   if (Array.isArray(data.warnings) && data.warnings.length > 0) {
     err.warnings = data.warnings as DirectorWarning[];
   }
   return err;
-}
-
-/** A reply body, or `{}` when the response was not JSON at all (502 HTML). */
-async function bodyOf(res: Response): Promise<Record<string, unknown>> {
-  return (await res.json().catch(() => ({}))) as Record<string, unknown>;
 }
 
 /**
@@ -533,23 +563,26 @@ export async function setCoverageStatus(
   // optimistically showed "draft". The user then edited a scene the server
   // considered locked, and the render path kept skipping those beats.
   if (Array.isArray(beatIdOrBeats) && locked) {
-    const res = await fetch(`${API_BASE}/api/director/lock_scene`, {
-      method: "POST",
-      headers: getAuthHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ beats: beatIdOrBeats }),
-    });
-    const data = await bodyOf(res);
-    if (!res.ok || !data.ok) {
+    // NO_RETRY: this is a write. A shed lock is reported, never re-issued.
+    const reply = await fetchReply(
+      `${API_BASE}/api/director/lock_scene`,
+      {
+        method: "POST",
+        headers: getAuthHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ beats: beatIdOrBeats }),
+      },
+      NO_RETRY
+    );
+    if (!reply.ok || !reply.data.ok) {
       // `problems` travels with it. "nothing was locked" is the route's headline
       // and it is true; the list under it is the only part that names the beat
       // and the findings, and it is what the human needs to act.
       throw lockRefusal(
-        res.status,
-        data,
-        `Locking ${beatIdOrBeats.join(", ")} failed with status ${res.status}.`
+        reply,
+        `Locking ${beatIdOrBeats.join(", ")} failed with status ${reply.status}.`
       );
     }
-    return data as { ok: boolean; status?: string };
+    return reply.data as { ok: boolean; status?: string };
   }
 
   // Unlocking a scene: no bulk route exists, so fan out per beat. Which means
@@ -559,32 +592,33 @@ export async function setCoverageStatus(
   if (Array.isArray(beatIdOrBeats)) {
     const results = await Promise.all(
       beatIdOrBeats.map(async (b) => {
-        const r = await fetch(
+        const r = await fetchReply(
           `${API_BASE}/api/director/lock/${encodeURIComponent(b)}?locked=false`,
-          { method: "POST", headers: getAuthHeaders() }
+          { method: "POST", headers: getAuthHeaders() },
+          NO_RETRY
         );
-        const d = await bodyOf(r);
-        // `r.ok` as well as `d.ok`: a 502 from a proxy has no body to read, and
-        // reading only the absent `ok` field would have called it a refusal
+        // `r.ok` as well as `r.data.ok`: a 502 from a proxy has no body to read,
+        // and reading only the absent `ok` field would have called it a refusal
         // with nothing to say. It is still a refusal — it just has to say the
         // status instead.
-        return { beat: b, ok: r.ok && d.ok === true, status: r.status, data: d };
+        return { beat: b, ok: r.ok && r.data.ok === true, reply: r };
       })
     );
     const bad = results.filter((r) => !r.ok);
     if (bad.length > 0) {
       const sentences = bad.map(
         (r) =>
-          `${r.beat}: ${
-            r.data.error || r.data.detail || `unlocking failed with status ${r.status}`
-          }`
+          `${r.beat}: ${failureMessage(
+            r.reply,
+            `unlocking failed with status ${r.reply.status}`
+          )}`
       );
       const err = lockRefusal(
-        bad[0].status,
         // One failed beat: its own sentence is the headline, because there is
         // nothing to summarise. Several: the headline says how many, and every
-        // one of them is listed below it.
-        bad.length === 1 ? bad[0].data : {},
+        // one of them is listed below it — but the transport facts still come
+        // from a real reply, so a shed unlock is never read as a refusal.
+        bad.length === 1 ? bad[0].reply : { ...bad[0].reply, data: {}, said: "" },
         `${bad.length} of ${results.length} beats refused to unlock.`
       );
       err.problems = sentences;
@@ -594,26 +628,25 @@ export async function setCoverageStatus(
     return { ok: true, status: "draft" };
   }
 
-  const res = await fetch(
+  const reply = await fetchReply(
     `${API_BASE}/api/director/lock/${encodeURIComponent(beatIdOrBeats)}?locked=${locked}`,
     {
       method: "POST",
       headers: getAuthHeaders(),
-    }
+    },
+    NO_RETRY
   );
 
-  const data = await bodyOf(res);
-  if (!res.ok || !data.ok) {
+  if (!reply.ok || !reply.data.ok) {
     // This route names its own count and its own finding ids in `error`, and
     // sends the findings themselves under `warnings`.
     throw lockRefusal(
-      res.status,
-      data,
-      `${locked ? "Locking" : "Unlocking"} beat ${beatIdOrBeats} failed with status ${res.status}.`
+      reply,
+      `${locked ? "Locking" : "Unlocking"} beat ${beatIdOrBeats} failed with status ${reply.status}.`
     );
   }
 
-  return data as { ok: boolean; status?: string };
+  return reply.data as { ok: boolean; status?: string };
 }
 
 /**
@@ -700,19 +733,25 @@ export async function compileCoverage(
   const query = planSignature
     ? `?plan_signature=${encodeURIComponent(planSignature)}`
     : "";
-  const res = await fetch(
+  // NO_RETRY, and this is the endpoint that makes the rule matter: compiling
+  // buys the beat's paid shots. A 429 from Google's front end almost certainly
+  // means the request never reached the app — but "almost certainly" is not a
+  // basis for spending money twice, so a shed compile is reported to the human
+  // and re-issued only by them.
+  const reply = await fetchReply(
     `${API_BASE}/api/director/compile/${encodeURIComponent(beatId)}${query}`,
-    { method: "POST", headers: getAuthHeaders() }
+    { method: "POST", headers: getAuthHeaders() },
+    NO_RETRY
   );
 
-  const data: CompileReply = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) {
+  const data: CompileReply = reply.data;
+  if (!reply.ok || !data.ok) {
     // `detail` is the 404: that one is raised as an HTTPException, so FastAPI
     // serialises it under `detail` and there is no `error` key to read.
-    const err = new Error(
-      data.error || data.detail || `Compiling ${beatId} failed with status ${res.status}`
+    const err = annotate(
+      new Error(failureMessage(reply, `Compiling ${beatId} failed with status ${reply.status}.`)),
+      reply
     ) as CompileRefusal;
-    err.status = res.status;
     if (typeof data.approval_drifted === "boolean") {
       err.approvalDrifted = data.approval_drifted;
     }
@@ -763,20 +802,23 @@ type CritiqueReply = {
  * Requires X-Studio-Key auth header.
  */
 export async function critiqueCoverage(beats: string[]): Promise<CritiqueReply> {
-  const res = await fetch(`${API_BASE}/api/director/critique`, {
-    method: "POST",
-    headers: getAuthHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ beats }),
-  });
-  const data: CritiqueReply = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) {
-    const err = new Error(
-      data.error ||
-        data.detail ||
-        `Re-checking ${beats.join(", ")} failed with status ${res.status}`
-    ) as Error & { status?: number };
-    err.status = res.status;
-    throw err;
+  const reply = await fetchReply(
+    `${API_BASE}/api/director/critique`,
+    {
+      method: "POST",
+      headers: getAuthHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ beats }),
+    },
+    NO_RETRY
+  );
+  const data: CritiqueReply = reply.data;
+  if (!reply.ok || !data.ok) {
+    throw annotate(
+      new Error(
+        failureMessage(reply, `Re-checking ${beats.join(", ")} failed with status ${reply.status}.`)
+      ),
+      reply
+    );
   }
   return data;
 }
@@ -806,16 +848,24 @@ export async function updateShot(
   beat_duration?: number;
   error?: string;
 }> {
-  const res = await fetch(`${API_BASE}/api/director/shot/${encodeURIComponent(shotId)}`, {
-    method: "POST",
-    headers: getAuthHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(patch),
-  });
-  const data = await res.json();
-  if (!res.ok || !data.ok) {
-    throw new Error(data.error || data.detail || `Editing ${shotId} failed (${res.status})`);
+  // The bare `res.json()` that used to be here is one of the two calls that put
+  // a parser's complaint about a "Rate exceeded." body in front of a human.
+  const reply = await fetchReply(
+    `${API_BASE}/api/director/shot/${encodeURIComponent(shotId)}`,
+    {
+      method: "POST",
+      headers: getAuthHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(patch),
+    },
+    NO_RETRY
+  );
+  if (!reply.ok || !reply.data.ok) {
+    throw annotate(
+      new Error(failureMessage(reply, `Editing ${shotId} failed (${reply.status}).`)),
+      reply
+    );
   }
-  return data;
+  return reply.data as Awaited<ReturnType<typeof updateShot>>;
 }
 
 /** Which quick actions the server can actually serve today. */
@@ -858,15 +908,18 @@ export async function performShotAction(
  * Answers which beats are worth covering before planning
  */
 export async function fetchCoverageSurvey(): Promise<CoverageSurvey> {
-  const res = await fetch(`${API_BASE}/api/director/survey`, { headers: getAuthHeaders() });
-  if (!res.ok) {
-    throw new Error(`Survey endpoint returned ${res.status} ${res.statusText}`);
+  const reply = await fetchReply(
+    `${API_BASE}/api/director/survey`,
+    { headers: getAuthHeaders() },
+    DEFAULT_RETRY
+  );
+  if (!reply.ok || !reply.data.ok) {
+    throw annotate(
+      new Error(failureMessage(reply, `Failed to fetch coverage survey (${reply.status}).`)),
+      reply
+    );
   }
-  const data = await res.json();
-  if (!data.ok) {
-    throw new Error(data.error || "Failed to fetch coverage survey");
-  }
-  return data;
+  return reply.data as CoverageSurvey;
 }
 
 // Real beat ID mock constant for unit testing / UI preview if needed
@@ -908,17 +961,24 @@ export async function decideDirectorWarning(
   unresolved: number;
   error?: string;
 }> {
-  const res = await fetch(
+  // This is the call that produced the screenshot: a bare `res.json()` over a
+  // 429's plain-text body threw `Unexpected token 'R'`, DirectorWorkspace's
+  // catch fed it to `setError`, and the studio headed it "404 / Unplanned Beat
+  // Coverage" — a transport condition rendered as a claim about the plan.
+  const reply = await fetchReply(
     `${API_BASE}/api/director/warning/${encodeURIComponent(beatId)}/${encodeURIComponent(warningId)}`,
     {
       method: "POST",
       headers: getAuthHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ decision, note }),
-    }
+    },
+    NO_RETRY
   );
-  const data = await res.json();
-  if (!res.ok || !data.ok) {
-    throw new Error(data.error || `Could not record that decision (${res.status})`);
+  if (!reply.ok || !reply.data.ok) {
+    throw annotate(
+      new Error(failureMessage(reply, `Could not record that decision (${reply.status}).`)),
+      reply
+    );
   }
-  return data;
+  return reply.data as Awaited<ReturnType<typeof decideDirectorWarning>>;
 }
