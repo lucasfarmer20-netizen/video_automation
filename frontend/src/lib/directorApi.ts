@@ -2,6 +2,7 @@ import {
   DirectorCoveragePlan,
   DirectorShot,
   DirectorWarning,
+  SceneFinding,
   SceneSummary,
   CreativePreferences,
   DirectorProfilesResponse,
@@ -136,15 +137,78 @@ export const PLAN_FIELDS_DROPPED: Record<string, string> = {
     "and when is a real feature, and a feature is not a fix-round change",
 };
 
+/** One entry of `GET /api/director/scene`'s `beats[]`, as far as this file reads it. */
+type SceneBeatEntry = {
+  beat_id?: string;
+  beat_duration?: number;
+  coverage_total?: number;
+  plan?: {
+    beat_id?: string;
+    scene_beats?: string[];
+    warnings?: DirectorWarning[];
+    warning_dispositions?: Record<string, WarningDisposition>;
+    [k: string]: unknown;
+  } | null;
+};
+
+/**
+ * Every finding in a scene, keyed the way the lock keys them.
+ *
+ * `POST /api/director/lock_scene` refuses if ANY beat in `beats[]` still holds a
+ * finding nobody decided, so the set a human has to work through is the union
+ * across the scene — not the selected beat's slice of it. Collapsing by warning
+ * id is not a nicety here: `director.warning_id` hashes the finding's content,
+ * and `critique` stores a finding whose own `beat_id` is "" onto every beat it
+ * was asked about, so one cross-beat finding arrives as N identical copies with
+ * one shared id. Rendering it N times would be a different lie from the one
+ * being fixed, and deciding one copy would leave the rest refusing the lock.
+ *
+ * A copy with no recorded decision makes the whole finding undecided. That is
+ * the safe direction and it is also the true one: the beat holding the
+ * undecided copy is a beat `lock_scene` will refuse on.
+ *
+ * Findings that arrived without an id (the critique reply returns raw warnings,
+ * un-normalised) cannot be collapsed and cannot be decided; they are kept
+ * distinct per beat so they are at least COUNTED, since they do still block.
+ */
+export function collectSceneFindings(entries: SceneBeatEntry[]): SceneFinding[] {
+  const order: string[] = [];
+  const byKey = new Map<string, SceneFinding>();
+  for (const entry of entries || []) {
+    const plan = entry?.plan;
+    if (!plan) continue;
+    const beatId = String(plan.beat_id || entry.beat_id || "");
+    const dispositions = plan.warning_dispositions || {};
+    (plan.warnings || []).forEach((warning, index) => {
+      const key = warning?.id || `${beatId}#${index}`;
+      const decided = warning?.id ? dispositions[warning.id] : undefined;
+      const seen = byKey.get(key);
+      if (seen) {
+        if (!seen.beats.includes(beatId)) seen.beats.push(beatId);
+        if (!decided?.decision) {
+          seen.decision = "";
+          seen.note = undefined;
+        }
+        return;
+      }
+      order.push(key);
+      byKey.set(key, {
+        id: warning?.id || "",
+        beats: [beatId],
+        warning,
+        decision: decided?.decision || "",
+        note: decided?.note,
+      });
+    });
+  }
+  return order.map((k) => byKey.get(k) as SceneFinding);
+}
+
 /**
  * GET /api/director/scene?beats=s004,s005,s006
  * Read model for a scene or set of beats (unauthenticated reads)
  */
-export async function fetchCoveragePlan(
-  beatIds: string | string[],
-  tierFilter?: "needs_review"
-): Promise<DirectorCoveragePlan> {
-  const beatsParam = Array.isArray(beatIds) ? beatIds.join(",") : beatIds;
+async function readSceneBeats(beatsParam: string, tierFilter?: "needs_review") {
   let url = `${API_BASE}/api/director/scene?beats=${encodeURIComponent(beatsParam)}`;
   if (tierFilter) {
     url += `&tier=${tierFilter}`;
@@ -159,13 +223,71 @@ export async function fetchCoveragePlan(
   if (!data.ok) {
     throw new Error(data.error || `Failed to fetch scene coverage for beats=${beatsParam}`);
   }
+  return data;
+}
+
+/** Whichever id a scene entry is filed under; the route always sends `beat_id`. */
+function entryBeatId(entry: SceneBeatEntry): string {
+  return String(entry?.beat_id || entry?.plan?.beat_id || "");
+}
+
+export async function fetchCoveragePlan(
+  beatIds: string | string[],
+  tierFilter?: "needs_review"
+): Promise<DirectorCoveragePlan> {
+  const beatsParam = Array.isArray(beatIds) ? beatIds.join(",") : beatIds;
+  const data = await readSceneBeats(beatsParam, tierFilter);
 
   // If backend returns beat array shape
   if (data.beats && data.beats.length > 0) {
     const firstBeatWithPlan = data.beats.find((b: any) => b.plan !== null) || data.beats[0];
     if (firstBeatWithPlan && firstBeatWithPlan.plan) {
       const plan = firstBeatWithPlan.plan;
+      const sceneBeats: string[] =
+        plan.scene_beats && plan.scene_beats.length > 0
+          ? plan.scene_beats
+          : Array.isArray(beatIds)
+            ? beatIds
+            : [beatIds];
+
+      // The scene's OWN findings, which is a wider set than this read asked for.
+      //
+      // The workspace mounts on one beat and this endpoint answers about exactly
+      // the beats it was given, so a three-beat scene opened on its first beat
+      // came back holding one beat's warnings — while `lock_scene` gates on all
+      // three. The plan that just arrived is what says how wide the scene is, so
+      // the remaining beats are read here rather than at each of the six call
+      // sites, and ONLY their findings are taken from that second read: summary,
+      // coverage and cost still describe the beats the caller asked about, and
+      // must not silently widen to the scene under a call that did not.
+      //
+      // A failed second read leaves `findings_scope` short of `scene_beats`, and
+      // that is the point of recording it — a reader that cannot see a beat has
+      // to say so rather than count what it can see and call it the scene.
+      const entries: SceneBeatEntry[] = [...data.beats];
+      const missing = sceneBeats.filter(
+        (b) => b && !entries.some((e) => entryBeatId(e) === b)
+      );
+      if (missing.length > 0) {
+        try {
+          const rest = await readSceneBeats(missing.join(","), tierFilter);
+          for (const entry of rest.beats || []) entries.push(entry);
+        } catch {
+          // Deliberately swallowed: the beat this call was FOR did arrive, and
+          // refusing to render it because a sibling read failed would take the
+          // whole workspace away over a widening the caller never requested.
+          // What is not swallowed is the consequence — see `findings_scope`.
+        }
+      }
+      const examined = entries.map(entryBeatId).filter(Boolean);
+      const findingsScope = [
+        ...sceneBeats.filter((b) => examined.includes(b)),
+        ...examined.filter((b) => !sceneBeats.includes(b)),
+      ];
+
       return {
+        scene_findings: collectSceneFindings(entries),
+        findings_scope: findingsScope,
         plan_id: plan.plan_id || `plan_${beatsParam}`,
         // The beat this plan is FOR, which `scene_id` below is not: that is the
         // set of beats the read asked for. A two-beat scene returns one beat's
