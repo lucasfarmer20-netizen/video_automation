@@ -44,6 +44,7 @@ def secure_filename(filename: str) -> str:
 from . import atomic, config, manifest, script, assets, audio, motion, timeline, sizzle, metadata, bundle, ledger
 from . import director, spike_identity, planner, capabilities, casting, characters
 from . import fal_usage, reconcile
+from . import scratch_render
 from . import stages as stagemod
 from . import generation
 from . import fal_billing
@@ -845,38 +846,32 @@ def _pad_clip_to_beat(path: Path, target_seconds: float) -> None:
         # so every beat AFTER it drifts out of sync and -shortest truncates the
         # tail. timeline.build trims correctly via source_range, so the FCPXML
         # and the preview disagreed about the same cut.
-        trimmed = path.with_name(f"{path.stem}__trim.mp4")
         try:
-            subprocess.run(
+            scratch_render.render_to(path, lambda local: subprocess.run(
                 [ffmpeg_bin(), "-y", "-v", "error", "-i", str(path),
                  "-t", f"{float(target_seconds):.3f}",
                  "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-an",
-                 str(trimmed)],
+                 str(local)],
                 check=True,
-            )
-            shutil.copyfile(trimmed, path)
-            trimmed.unlink(missing_ok=True)
+            ))
             log_job("render", f"  trimmed to beat length: {current:.1f}s -> "
                               f"{float(target_seconds):.1f}s")
         except Exception as exc:  # noqa: BLE001
-            trimmed.unlink(missing_ok=True)
             log_job("render", f"  !! could not trim {path.name} to its beat: {exc}")
         return
 
-    padded = path.with_name(f"{path.stem}__padded.mp4")
     try:
-        subprocess.run(
+        # Encoded into local scratch and published once. The temp used to be a
+        # sibling of `path`, i.e. on the bucket, so padding one clip rewrote two
+        # objects in the render directory rather than one. scratch_render.publish
+        # still copies rather than renaming where the mount refuses rename.
+        scratch_render.render_to(path, lambda local: subprocess.run(
             [ffmpeg_bin(), "-y", "-v", "error", "-i", str(path),
              "-vf", f"tpad=stop_mode=clone:stop_duration={shortfall:.3f}",
              "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-an",
-             str(padded)],
+             str(local)],
             check=True,
-        )
-        # Copy the bytes over rather than renaming: a rename on the GCS FUSE
-        # mount is a server-side copy plus delete and is not always permitted,
-        # and the temporary file is disposable either way.
-        shutil.copyfile(padded, path)
-        padded.unlink(missing_ok=True)
+        ))
         log_job("render", f"  padded to beat length: {current:.1f}s -> {target_seconds:.1f}s (froze final frame)")
     except Exception as exc:  # noqa: BLE001 — an unpadded clip still renders
         log_job("render", f"  !! could not pad clip to beat length: {exc}")
@@ -4103,14 +4098,14 @@ async def upload_shot_clip(scene_id: str, file: UploadFile = File(...)):
             
         dest = ep["render"] / f"{scene_id}.mp4"
         try:
-            subprocess.run(
+            scratch_render.render_to(dest, lambda local: subprocess.run(
                 [ffmpeg_bin(), "-y", "-v", "error", "-i", str(tmp),
                  "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,"
                         "pad=1280:720:(ow-iw)/2:(oh-ih)/2",
                  "-r", "24", "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p",
-                 "-an", str(dest)],
+                 "-an", str(local)],
                 check=True,
-            )
+            ))
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"FFmpeg normalization failed: {exc}")
         finally:

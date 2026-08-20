@@ -32,6 +32,7 @@ from scipy import ndimage
 
 from . import config
 from . import depth as depthmod
+from . import scratch_render
 from .manifest import MotionType, Shot, load
 
 RENDER_DIR = config.ROOT / "render"
@@ -448,25 +449,32 @@ def render_shot(shot: Shot, fps: int = DEFAULT_FPS, height: int = DEFAULT_HEIGHT
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{shot.scene_id}.mp4"
-    writer = imageio.get_writer(
-        out_path, fps=fps, codec="libx264", macro_block_size=None,
-        ffmpeg_log_level="error",
-        output_params=["-crf", "20", "-pix_fmt", "yuv420p", "-preset", "medium"],
-    )
-    try:
-        for i in range(n_frames):
-            t = i / max(1, n_frames - 1)
-            if has_move:
-                frame = _warp_frame(src_rgb, disp, base_y, base_x, move, t,
-                                    out_w, out_h, zoom_amt, pan_amt,
-                                    base_scale, disp_ref)
-            else:
-                frame = src_rgb.copy()   # static plate; FX only
-            frame = fx.apply(frame, t, i)
-            writer.append_data((frame * 255).astype(np.uint8))
-    finally:
-        writer.close()
-    return out_path
+
+    # Encode to local scratch, publish once. `out_dir` is under /gcs when
+    # deployed, and handing that path to the writer means every flush the mp4
+    # muxer performs is a whole-object mutation against a per-object rate limit.
+    # See backend/scratch_render.py for the evidence and the three decisions.
+    def _encode(local: Path) -> None:
+        writer = imageio.get_writer(
+            local, fps=fps, codec="libx264", macro_block_size=None,
+            ffmpeg_log_level="error",
+            output_params=["-crf", "20", "-pix_fmt", "yuv420p", "-preset", "medium"],
+        )
+        try:
+            for i in range(n_frames):
+                t = i / max(1, n_frames - 1)
+                if has_move:
+                    frame = _warp_frame(src_rgb, disp, base_y, base_x, move, t,
+                                        out_w, out_h, zoom_amt, pan_amt,
+                                        base_scale, disp_ref)
+                else:
+                    frame = src_rgb.copy()   # static plate; FX only
+                frame = fx.apply(frame, t, i)
+                writer.append_data((frame * 255).astype(np.uint8))
+        finally:
+            writer.close()
+
+    return scratch_render.render_to(out_path, _encode)
 
 
 def render_all(only: set[str] | None = None, fps: int = DEFAULT_FPS,

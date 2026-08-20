@@ -29,7 +29,7 @@ from pathlib import Path
 
 import opentimelineio as otio
 
-from . import audio, config
+from . import audio, config, scratch_render
 from .ffmpeg_bin import ffmpeg_bin, ffprobe_bin
 from .manifest import Storyboard, load
 
@@ -59,13 +59,15 @@ def placeholder_clip(dest: Path, seconds: float, label: str = "") -> Path:
                 return dest
         except Exception:  # noqa: BLE001 - a bad probe just means rebuild it
             pass
-    subprocess.run(
+    # Encoded locally and published once: `dest` is `render/_placeholders/` on
+    # the bucket, and a re-timed beat rebuilds its placeholder every build.
+    scratch_render.render_to(dest, lambda local: subprocess.run(
         [ffmpeg_bin(), "-y", "-v", "error",
          "-f", "lavfi", "-i", f"color=c=black:s=1280x720:r=24:d={want}",
          "-t", f"{want}", "-c:v", "libx264", "-crf", "30", "-pix_fmt", "yuv420p",
-         "-an", str(dest)],
+         "-an", str(local)],
         check=True,
-    )
+    ))
     return dest
 
 
@@ -513,10 +515,13 @@ def build_preview(storyboard: Storyboard | None = None, render_dir: Path | None 
     subprocess.run([ffmpeg_bin(), "-y", "-v", "error", "-f", "concat", "-safe", "0",
                     "-i", str(concat), "-c", "copy", str(tmpv)], check=True)
     out = Path(out) if out else (render_dir / "_preview.mp4")
-    subprocess.run([ffmpeg_bin(), "-y", "-v", "error", "-i", str(tmpv), "-i", str(wav),
-                    "-vf", f"scale=-2:{height}", "-c:v", "libx264", "-crf", "30",
-                    "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k",
-                    "-shortest", str(out)], check=True)
+    # The concat above already staged in scratch; the mux did not, and it was the
+    # one writing a whole episode onto the bucket a muxer-flush at a time.
+    scratch_render.render_to(out, lambda local: subprocess.run(
+        [ffmpeg_bin(), "-y", "-v", "error", "-i", str(tmpv), "-i", str(wav),
+         "-vf", f"scale=-2:{height}", "-c:v", "libx264", "-crf", "30",
+         "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k",
+         "-shortest", str(local)], check=True))
 
     # The preview's own timing, written beside it. The timeline view is laid out
     # from LIVE manifest durations, but this file was rendered from whatever they
