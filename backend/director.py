@@ -42,6 +42,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import atomic, config, generation, ledger
+from . import scratch_render
 from .ffmpeg_bin import ffmpeg_bin, ffprobe_bin
 from .manifest import Camera, MotionType, Shot, Storyboard, approval_is_explicit
 
@@ -887,14 +888,17 @@ def normalize_clip(path: Path, log=print) -> Path:
     currently guarantees. A locally-rendered clip is already conformant and is
     left alone after a probe; anything from fal or a library asset is re-encoded.
 
-    Writes to a temp name and copies over the target — ``shutil.copyfile``, not
-    ``rename``, because gcsfuse rejects the metadata operations rename and
-    ``copy2`` imply and raises ``[Errno 1] Operation not permitted``.
+    Re-encodes into local scratch and publishes over the target once. The temp
+    file used to live beside the target, i.e. on the bucket, so a re-encode
+    mutated two objects in the render directory many times over instead of one
+    object once. ``scratch_render.publish`` keeps the property this docstring
+    used to describe by hand -- ``shutil.copyfile`` and never ``copy2``, because
+    gcsfuse rejects the metadata operations copy2 implies and raises
+    ``[Errno 1] Operation not permitted``.
     """
     path = Path(path)
     if is_canonical(path):
         return path
-    tmp = path.with_name(f"{path.stem}__norm.mp4")
     # Fit inside the canvas, then pad to it exactly. An aspect-preserving
     # `scale=-2:720` is NOT enough: a source that is not precisely 16:9 lands at
     # 1278x720 or similar, and mixed widths break `-c copy` just as surely as
@@ -903,15 +907,13 @@ def normalize_clip(path: Path, log=print) -> Path:
     vf = (f"scale={CANON_WIDTH}:{CANON_HEIGHT}:force_original_aspect_ratio=decrease,"
           f"pad={CANON_WIDTH}:{CANON_HEIGHT}:(ow-iw)/2:(oh-ih)/2,"
           f"fps={CANON_FPS},setsar=1")
-    subprocess.run(
+    scratch_render.render_to(path, lambda local: subprocess.run(
         [_ffmpeg(), "-y", "-v", "error", "-i", str(path),
          "-vf", vf,
          "-c:v", "libx264", "-crf", CANON_CRF, "-pix_fmt", CANON_PIXFMT,
-         "-preset", "medium", "-an", str(tmp)],
+         "-preset", "medium", "-an", str(local)],
         check=True,
-    )
-    shutil.copyfile(tmp, path)
-    tmp.unlink(missing_ok=True)
+    ))
     log(f"  normalized {path.name} to {CANON_HEIGHT}p/{CANON_FPS}fps")
     return path
 
@@ -935,16 +937,13 @@ def fit_clip(path: Path, want: float, gestural: bool = False, log=print) -> None
         return
 
     if delta > 0:
-        tmp = path.with_name(f"{path.stem}__fit.mp4")
-        subprocess.run(
+        scratch_render.render_to(path, lambda local: subprocess.run(
             [_ffmpeg(), "-y", "-v", "error", "-i", str(path),
              "-vf", f"tpad=stop_mode=clone:stop_duration={delta:.3f}",
              "-c:v", "libx264", "-crf", CANON_CRF, "-pix_fmt", CANON_PIXFMT, "-an",
-             str(tmp)],
+             str(local)],
             check=True,
-        )
-        shutil.copyfile(tmp, path)
-        tmp.unlink(missing_ok=True)
+        ))
         log(f"  {path.name}: padded {have:.2f}s -> {want:.2f}s (froze final frame)")
         return
 
@@ -955,23 +954,28 @@ def fit_clip(path: Path, want: float, gestural: bool = False, log=print) -> None
             f"trimmed mid-movement — regenerate it at a legal duration for this "
             f"model, or clear `gestural`"
         )
-    tmp = path.with_name(f"{path.stem}__fit.mp4")
-    subprocess.run(
+    scratch_render.render_to(path, lambda local: subprocess.run(
         [_ffmpeg(), "-y", "-v", "error", "-i", str(path), "-t", f"{want:.3f}",
          "-c:v", "libx264", "-crf", CANON_CRF, "-pix_fmt", CANON_PIXFMT, "-an",
-         str(tmp)],
+         str(local)],
         check=True,
-    )
-    shutil.copyfile(tmp, path)
-    tmp.unlink(missing_ok=True)
+    ))
     log(f"  {path.name}: trimmed {have:.2f}s -> {want:.2f}s (ambient motion)")
 
 
 def concat(clips: list[Path], dest: Path, log=print) -> Path:
     """Join sub-clips with stream copy. Order is the caller's, never a glob.
 
-    Builds to a temp file and copies over ``dest`` only on success, so a failure
-    leaves the previous beat clip intact rather than half-written.
+    Builds in local scratch and copies over ``dest`` only on success, so a
+    failure leaves the previous beat clip intact rather than half-written.
+
+    The build file and the concat listing used to be written into ``dest``'s own
+    directory, which is the bucket. That is the single most expensive write in
+    the pipeline: on 2026-08-18 the s006 beat clip took 82 rate-limited
+    ComposeObject retries and about three and a half minutes of wall clock, and
+    the s001 beat clip was rate-limited with all ten of its shots skipped --
+    nothing encoded from frames at all, just this copy. Both now happen on local
+    disk and reach the bucket as a single publish.
     """
     missing = [c for c in clips if not Path(c).is_file()]
     if missing:
@@ -979,23 +983,24 @@ def concat(clips: list[Path], dest: Path, log=print) -> Path:
 
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    listing = dest.parent / f"_{dest.stem}_concat.txt"
-    listing.write_text(
-        "".join(f"file '{Path(c).resolve().as_posix()}'\n" for c in clips),
-        encoding="utf-8",
-    )
-    tmp = dest.with_name(f"{dest.stem}__build.mp4")
-    try:
-        subprocess.run(
-            [_ffmpeg(), "-y", "-v", "error", "-f", "concat", "-safe", "0",
-             "-i", str(listing), "-c", "copy", str(tmp)],
-            check=True,
+
+    def _build(local: Path) -> None:
+        listing = local.with_name(f"_{dest.stem}_concat.txt")
+        listing.write_text(
+            "".join(f"file '{Path(c).resolve().as_posix()}'\n" for c in clips),
+            encoding="utf-8",
         )
-        shutil.copyfile(tmp, dest)
-        log(f"  concatenated {len(clips)} clips -> {dest.name}")
-    finally:
-        tmp.unlink(missing_ok=True)
-        listing.unlink(missing_ok=True)
+        try:
+            subprocess.run(
+                [_ffmpeg(), "-y", "-v", "error", "-f", "concat", "-safe", "0",
+                 "-i", str(listing), "-c", "copy", str(local)],
+                check=True,
+            )
+        finally:
+            listing.unlink(missing_ok=True)
+
+    scratch_render.render_to(dest, _build)
+    log(f"  concatenated {len(clips)} clips -> {dest.name}")
     return dest
 
 
