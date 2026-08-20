@@ -38,6 +38,14 @@ import DirectorWorkspace from "../components/DirectorWorkspace";
 import LockedCoverageModal from "../components/LockedCoverageModal";
 import CoverageSurveyPanel from "../components/CoverageSurveyPanel";
 import { setActiveProjectId, fetchBeatCoverageStates } from "../lib/directorApi";
+import {
+  DEFAULT_RETRY,
+  RATE_LIMIT_MESSAGE,
+  excerpt,
+  failureMessage,
+  fetchReply,
+  readReply,
+} from "../lib/http";
 import type { BeatCoverageState } from "../lib/directorApi";
 import { filmCoverageView, defaultSelectedBeat } from "../lib/filmCoverage";
 import { NO_SLOT_VIEW, viewForProject } from "../lib/slots";
@@ -186,6 +194,18 @@ export default function WorkspacePage() {
   // screen: the no-project screen offers to INITIALISE A FRESH WORKSPACE, which
   // over a project that is merely unreachable is the worst available action.
   const [storageBlock, setStorageBlock] = useState<string | null>(null);
+  /**
+   * The active-project read did not answer — and that is not the same fact as
+   * "there is no active project".
+   *
+   * Held separately from `storageBlock` because the cause is different and the
+   * sentence has to be. Storage unavailable is the server telling us it cannot
+   * vouch for what it would serve; this is the request never reaching the server
+   * at all: a 429 shed at the edge, a gateway HTML page, a body that would not
+   * parse. Both must beat the no-project screen, whose call to action creates a
+   * new film over one that is merely unreachable.
+   */
+  const [loadBlock, setLoadBlock] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const [voiceStudioOpen, setVoiceStudioOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -208,10 +228,9 @@ export default function WorkspacePage() {
   const fetchProjects = async (ch?: string) => {
     try {
       const url = ch ? `${API_BASE}/api/projects?channel=${ch}` : `${API_BASE}/api/projects`;
-      const res = await fetch(url);
-      const data = await res.json();
-      if (data.ok) {
-        setProjects(data.projects);
+      const reply = await fetchReply(url, {}, DEFAULT_RETRY);
+      if (reply.ok && reply.data.ok) {
+        setProjects(reply.data.projects);
       }
     } catch (e) {
       console.error("Failed to load projects", e);
@@ -247,9 +266,30 @@ export default function WorkspacePage() {
   const fetchActiveProject = async (): Promise<boolean> => {
     let installed = false;
     try {
-      const res = await fetch(`${API_BASE}/api/project/active`, { headers: authHeaders() });
-      if (isStaleReply(res)) return false;
-      const data = await res.json();
+      const reply = await fetchReply(
+        `${API_BASE}/api/project/active`,
+        { headers: authHeaders() },
+        DEFAULT_RETRY
+      );
+      if (isStaleReply(reply.raw)) return false;
+      // A body the server WROTE is a statement about this project whatever
+      // status carries it — the storage gate answers 503 with a JSON body that
+      // names itself, and a 404 saying "unknown project" means exactly that. So
+      // the reads held here are only the ones where nothing readable came back:
+      // a 429 shed at the edge, or a body that is not JSON at all.
+      //
+      // It matters because the screen that renders on `!activeProject` offers
+      // to initialize a fresh workspace, which over a film that exists and is
+      // merely unreachable is the most destructive thing the studio can offer —
+      // the same reason the storage gate is checked before it.
+      if (reply.rateLimited || !reply.isJson) {
+        setLoadBlock(
+          failureMessage(reply, `GET /api/project/active answered ${reply.status}.`)
+        );
+        return false;
+      }
+      setLoadBlock(null);
+      const data = reply.data;
       // Checked before `data.ok`, and before anything is installed. The server
       // refuses rather than answering with local state it cannot vouch for, so
       // there is nothing to render here — what there is to do is SAY SO. Read
@@ -345,12 +385,16 @@ export default function WorkspacePage() {
     // it lands.
     const forProject = projectIdRef.current;
     try {
-      const res = await fetch(`${API_BASE}/api/timeline/slots`, { headers: authHeaders() });
+      const reply = await fetchReply(
+        `${API_BASE}/api/timeline/slots`,
+        { headers: authHeaders() },
+        DEFAULT_RETRY
+      );
       // Another film answered a request we issued before switching. Keep what is
       // on screen rather than repainting this cut with someone else's.
-      if (isStaleReply(res)) return;
-      const data = await res.json().catch(() => null);
-      if (res.ok && data?.ok) {
+      if (isStaleReply(reply.raw)) return;
+      const data = reply.data;
+      if (reply.ok && data?.ok) {
         setSlotView((prev) => ({
           projectId: forProject,
           slots: data.slots || [],
@@ -366,7 +410,7 @@ export default function WorkspacePage() {
       // film has no clips", which is a different and false statement.
       setSlotView({
         projectId: forProject, slots: null, coverage: null,
-        error: data?.error || `server error (${res.status})`, takes: {},
+        error: failureMessage(reply, `server error (${reply.status})`), takes: {},
       });
     } catch (e) {
       setSlotView({
@@ -661,11 +705,27 @@ export default function WorkspacePage() {
     return Boolean(said && projectIdRef.current && said !== projectIdRef.current);
   };
 
-  /** GET that carries project identity and drops stale replies. */
-  const getJson = async (url: string) => {
-    const res = await fetch(`${API_BASE}${url}`, { headers: authHeaders() });
-    if (!res.ok || isStaleReply(res)) return null;
-    return await res.json();
+  /**
+   * GET that carries project identity, drops stale replies, and never parses a
+   * body the server did not call JSON.
+   *
+   * Null means "this read produced nothing usable" and every caller already
+   * treats it that way — keep what is on screen rather than replace it with a
+   * claim. What changed is the two ways it used to fail: a non-2xx reached
+   * `res.json()` in some callers' hands, and a rate-limited read was never
+   * retried even though a 429 is transient by definition.
+   */
+  // `any`, as before: these bodies are a dozen different route shapes and the
+  // callers narrow them. Widening that here would be a refactor, not a fix.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const getJson = async (url: string): Promise<any> => {
+    const reply = await fetchReply(
+      `${API_BASE}${url}`,
+      { headers: authHeaders() },
+      DEFAULT_RETRY
+    );
+    if (!reply.ok || !reply.isJson || isStaleReply(reply.raw)) return null;
+    return reply.data;
   };
 
   const promptForStudioKey = () => {
@@ -680,6 +740,18 @@ export default function WorkspacePage() {
 
   const parseError = async (res: Response) => {
     const text = await res.text();
+    // A 429 is Google's front end shedding load, not this application refusing
+    // anything. Whatever `text` holds is that front end's words about the
+    // request, never a statement about the project — so it is quoted, not read.
+    if (res.status === 429) {
+      return {
+        ok: false,
+        rateLimited: true,
+        error: text.trim()
+          ? `${RATE_LIMIT_MESSAGE} (server said: ${excerpt(text)})`
+          : RATE_LIMIT_MESSAGE,
+      };
+    }
     let errMsg = `Server error (${res.status} ${res.statusText})`;
     try {
       const parsed = JSON.parse(text);
@@ -707,7 +779,11 @@ export default function WorkspacePage() {
   const sendWithKey = async (
     url: string,
     build: (headers: Record<string, string>) => RequestInit
-  ) => {
+    // `any`, as `res.json()` was: every route has its own reply shape and the
+    // call sites narrow them. The union this function now returns would
+    // otherwise force a cast at each one.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ): Promise<any> => {
     try {
       let res = await fetch(`${API_BASE}${url}`, build(authHeaders()));
       if (res.status === 401 && promptForStudioKey()) {
@@ -719,7 +795,16 @@ export default function WorkspacePage() {
         // attribute the result to the film now on screen.
         return { ok: false, stale: true, error: "Project changed while that request was running — nothing was applied to the project you are now viewing." };
       }
-      return await res.json();
+      // A 2xx whose body is not JSON is still not a result. Reporting it as one
+      // is how an unreadable reply became "saved".
+      const reply = await readReply(res);
+      if (!reply.isJson) {
+        return {
+          ok: false,
+          error: failureMessage(reply, `The server answered ${reply.status} with no readable body.`),
+        };
+      }
+      return reply.data;
     } catch (err: any) {
       return { ok: false, error: err.message || "Network request failed" };
     }
@@ -1211,9 +1296,18 @@ Moved to: ${res.moved_to}`);
   const fetchBudgetPlan = useCallback(async (budget: number, beats: number | null) => {
     const q = new URLSearchParams({ budget: String(budget) });
     if (beats) q.set("beats", String(beats));
-    const res = await fetch(`${API_BASE}/api/script/budget_plan?${q}`,
-                            { headers: authHeaders() });
-    return res.json();
+    const reply = await fetchReply(
+      `${API_BASE}/api/script/budget_plan?${q}`,
+      { headers: authHeaders() },
+      DEFAULT_RETRY
+    );
+    if (!reply.ok || !reply.isJson) {
+      return {
+        ok: false,
+        error: failureMessage(reply, `Could not price that budget (${reply.status}).`),
+      };
+    }
+    return reply.data;
   }, []);
 
   const handleDraftStoryboard = async (topic: string, beats: number | null, budget: number | null) => {
@@ -1334,6 +1428,50 @@ Moved to: ${res.moved_to}`);
           </p>
           <pre className="text-[10px] text-red-300/80 bg-zinc-950 border border-zinc-800 rounded-lg p-3 whitespace-pre-wrap break-words">
             {storageBlock}
+          </pre>
+          <button
+            onClick={() => whileLoading(fetchActiveProject)}
+            className="w-full py-2.5 bg-zinc-100 hover:bg-white text-zinc-950 font-bold text-xs rounded-xl shadow-lg transition"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Same rule as the storage gate above, and for the same screen: a read that
+  // was never answered is not evidence that there is nothing to answer with.
+  // Rendering "No Active Project Loaded" over a transient 429 invites the human
+  // to initialize a workspace on top of the film they are already working on.
+  // Guarded on `!activeProject`, because this REPLACES the no-project screen —
+  // it never replaces a film. A switch whose load fails rolls back to the film
+  // still on screen (see handleSelectProject), and blanking that out to state a
+  // transport failure would take away a working studio to report a request.
+  if (loadBlock && (!activeProject || !activeProject.project)) {
+    return (
+      <div
+        data-testid="load-block"
+        className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center text-zinc-300 gap-4 font-mono p-6"
+      >
+        <div className="bg-zinc-900 border border-amber-500/30 rounded-2xl p-8 max-w-lg w-full space-y-4 shadow-2xl">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 shrink-0 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center text-lg font-bold">
+              !
+            </div>
+            <h3 className="text-lg font-bold text-zinc-100">The studio could not reach the server</h3>
+          </div>
+          <p className="text-xs text-zinc-400 leading-relaxed">
+            The request for your active project was not answered, so the studio
+            is not showing you a film. It has not been told that there isn&apos;t
+            one — it has been told nothing at all.
+          </p>
+          <p className="text-xs text-zinc-500 leading-relaxed">
+            <span className="text-zinc-400">Nothing has been lost and nothing has been changed.</span>{" "}
+            Your work is where you left it.
+          </p>
+          <pre className="text-[10px] text-amber-300/80 bg-zinc-950 border border-zinc-800 rounded-lg p-3 whitespace-pre-wrap break-words">
+            {loadBlock}
           </pre>
           <button
             onClick={() => whileLoading(fetchActiveProject)}

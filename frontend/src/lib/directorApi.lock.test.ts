@@ -313,7 +313,13 @@ describe("unlocking a scene: not the mirror of locking", () => {
     const err = await caught(() => setCoverageStatus(["s001"], false));
 
     // `r.ok` is what catches this: the body has no `ok` field to be falsy.
-    expect(err.problems?.[0], SENTENCE_LOST).toBe("s001: unlocking failed with status 502");
+    // `toContain` rather than `toBe`, because the sentence now carries a second
+    // clause saying the reply was unreadable — a 502 HTML page is something in
+    // FRONT of the app answering, so it states nothing about this beat. The
+    // part asserted here is the part the server's own refusal would occupy.
+    expect(err.problems?.[0], SENTENCE_LOST).toContain(
+      "s001: unlocking failed with status 502"
+    );
   });
 
   test("unlocking sends locked=false per beat, never the bulk lock route", async () => {
